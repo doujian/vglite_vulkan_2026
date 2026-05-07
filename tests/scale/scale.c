@@ -27,6 +27,9 @@ static void cleanup(void)
     vg_lite_close();
 }
 
+static int g_golden_pass = 0;
+static int g_golden_fail = 0;
+
 static vg_lite_error_t blitOperation(vg_lite_buffer_t *src, vg_lite_buffer_t *dst, float scale)
 {
     vg_lite_filter_t filter = VG_LITE_FILTER_BI_LINEAR;
@@ -53,6 +56,16 @@ static vg_lite_error_t blitOperation(vg_lite_buffer_t *src, vg_lite_buffer_t *ds
     CHECK_ERROR(vg_lite_finish());
 
     vg_lite_save_png(filename, dst);
+
+    {
+        vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst->width, dst->height, dst->format);
+        vg_lite_expected_clear(eb, NULL, 0xFF000000);
+        vg_lite_expected_blit(eb, src, &matrix, 1, VG_LITE_FILTER_BI_LINEAR);
+        int fail = vg_lite_expected_verify(eb, dst, 8);
+        vg_lite_expected_destroy(eb);
+        if (fail == 0) g_golden_pass++;
+        else           g_golden_fail += fail;
+    }
     return error;
 
 ErrorHandler:
@@ -89,8 +102,9 @@ int main(int argc, const char *argv[])
     }
 
     printf("Scale test done - saved %d PNGs\n", num_scales);
+    printf("Golden verification: %d passed, %d failed\n", g_golden_pass, g_golden_fail);
 
 ErrorHandler:
     cleanup();
-    return (error == VG_LITE_SUCCESS) ? 0 : -1;
+    return (error == VG_LITE_SUCCESS && g_golden_fail == 0) ? 0 : -1;
 }
