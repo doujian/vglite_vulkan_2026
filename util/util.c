@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 float WINDSIZEX = 256.0f;
 float WINDSIZEY = 256.0f;
@@ -184,4 +185,234 @@ int vg_lite_check_pixel(vg_lite_buffer_t *buffer, int x, int y, uint32_t expecte
         return 0;
     }
     return 1;
+}
+
+void unpack_rgba(uint32_t pixel, int *r, int *g, int *b, int *a)
+{
+    *r = pixel & 0xFF;
+    *g = (pixel >> 8) & 0xFF;
+    *b = (pixel >> 16) & 0xFF;
+    *a = (pixel >> 24) & 0xFF;
+}
+
+static int mat3_inverse(vg_lite_float_t m[3][3], vg_lite_float_t inv[3][3])
+{
+    float det = m[0][0]*(m[1][1]*m[2][2] - m[1][2]*m[2][1])
+              - m[0][1]*(m[1][0]*m[2][2] - m[1][2]*m[2][0])
+              + m[0][2]*(m[1][0]*m[2][1] - m[1][1]*m[2][0]);
+    if (fabsf(det) < 1e-6f) return 0;
+
+    float idet = 1.0f / det;
+    inv[0][0] = (m[1][1]*m[2][2] - m[1][2]*m[2][1]) * idet;
+    inv[0][1] = (m[0][2]*m[2][1] - m[0][1]*m[2][2]) * idet;
+    inv[0][2] = (m[0][1]*m[1][2] - m[0][2]*m[1][1]) * idet;
+    inv[1][0] = (m[1][2]*m[2][0] - m[1][0]*m[2][2]) * idet;
+    inv[1][1] = (m[0][0]*m[2][2] - m[0][2]*m[2][0]) * idet;
+    inv[1][2] = (m[0][2]*m[1][0] - m[0][0]*m[1][2]) * idet;
+    inv[2][0] = (m[1][0]*m[2][1] - m[1][1]*m[2][0]) * idet;
+    inv[2][1] = (m[0][1]*m[2][0] - m[0][0]*m[2][1]) * idet;
+    inv[2][2] = (m[0][0]*m[1][1] - m[0][1]*m[1][0]) * idet;
+    return 1;
+}
+
+static int transform_point(vg_lite_float_t inv[3][3], float dx, float dy, float *sx, float *sy)
+{
+    float w = inv[2][0]*dx + inv[2][1]*dy + inv[2][2];
+    if (fabsf(w) < 1e-6f) return 0;
+    *sx = (inv[0][0]*dx + inv[0][1]*dy + inv[0][2]) / w;
+    *sy = (inv[1][0]*dx + inv[1][1]*dy + inv[1][2]) / w;
+    return 1;
+}
+
+/* VGLite blit pixel semantics: inv(M)*(x+0.5,y+0.5) -> source coord.
+ * In source range: sample src + blend with dst_px. Out of range: keep dst_px.
+ * is_bilinear: 0=POINT (nearest), 1=BI_LINEAR (bilinear interpolation). */
+static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
+                                             vg_lite_float_t inv[3][3],
+                                             int x, int y,
+                                             uint32_t dst_px,
+                                             int blend_mode, int is_bilinear)
+{
+    float sx, sy;
+    int inside_src = transform_point(inv, (float)x + 0.5f, (float)y + 0.5f, &sx, &sy)
+                  && sx >= 0 && sy >= 0
+                  && sx < (float)src->width && sy < (float)src->height;
+
+    if (!inside_src) return dst_px;
+
+    int sr, sg, sb, sa;
+
+    if (!is_bilinear) {
+        int ix = (int)sx, iy = (int)sy;
+        if (ix >= (int)src->width)  ix = src->width - 1;
+        if (iy >= (int)src->height) iy = src->height - 1;
+        unpack_rgba(vg_lite_read_pixel(src, ix, iy), &sr, &sg, &sb, &sa);
+    } else {
+        int x0 = (int)sx, y0 = (int)sy;
+        int x1 = x0 + 1, y1 = y0 + 1;
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 >= (int)src->width)  x1 = src->width - 1;
+        if (y1 >= (int)src->height) y1 = src->height - 1;
+
+        float fx = sx - (int)sx, fy = sy - (int)sy;
+        if (fx < 0) fx = 0;
+        if (fy < 0) fy = 0;
+
+        int r00, g00, b00, a00, r10, g10, b10, a10;
+        int r01, g01, b01, a01, r11, g11, b11, a11;
+        unpack_rgba(vg_lite_read_pixel(src, x0, y0), &r00, &g00, &b00, &a00);
+        unpack_rgba(vg_lite_read_pixel(src, x1, y0), &r10, &g10, &b10, &a10);
+        unpack_rgba(vg_lite_read_pixel(src, x0, y1), &r01, &g01, &b01, &a01);
+        unpack_rgba(vg_lite_read_pixel(src, x1, y1), &r11, &g11, &b11, &a11);
+
+        sr = (int)(r00*(1-fx)*(1-fy) + r10*fx*(1-fy) + r01*(1-fx)*fy + r11*fx*fy + 0.5f);
+        sg = (int)(g00*(1-fx)*(1-fy) + g10*fx*(1-fy) + g01*(1-fx)*fy + g11*fx*fy + 0.5f);
+        sb = (int)(b00*(1-fx)*(1-fy) + b10*fx*(1-fy) + b01*(1-fx)*fy + b11*fx*fy + 0.5f);
+        sa = (int)(a00*(1-fx)*(1-fy) + a10*fx*(1-fy) + a01*(1-fx)*fy + a11*fx*fy + 0.5f);
+    }
+
+    int dr, dg, db, da;
+    unpack_rgba(dst_px, &dr, &dg, &db, &da);
+
+    int or_, og, ob, oa;
+    switch (blend_mode) {
+    case 0: /* BLEND_NONE */
+        or_ = sr; og = sg; ob = sb; oa = sa;
+        break;
+    case 1: /* BLEND_SRC_OVER: S + D*(1-Sa), A: Sa + Da*(1-Sa) */
+        or_ = (sr * sa + dr * (255 - sa)) / 255;
+        og  = (sg * sa + dg * (255 - sa)) / 255;
+        ob  = (sb * sa + db * (255 - sa)) / 255;
+        oa  = sa + da * (255 - sa) / 255;
+        break;
+    case 11: /* BLEND_NORMAL_LVGL / PREMULTIPLY_SRC_OVER: S*Sa + D*(1-Sa), A: 0xFF */
+        or_ = (sr * sa + dr * (255 - sa)) / 255;
+        og  = (sg * sa + dg * (255 - sa)) / 255;
+        ob  = (sb * sa + db * (255 - sa)) / 255;
+        oa  = 0xFF;
+        break;
+    default:
+        or_ = sr; og = sg; ob = sb; oa = sa;
+        break;
+    }
+    if (or_ > 255) or_ = 255; if (or_ < 0) or_ = 0;
+    if (og > 255) og = 255;  if (og < 0) og = 0;
+    if (ob > 255) ob = 255;  if (ob < 0) ob = 0;
+    if (oa > 255) oa = 255;  if (oa < 0) oa = 0;
+    return or_ | (og << 8) | (ob << 16) | (oa << 24);
+}
+
+struct vg_lite_expected_buffer {
+    uint32_t *pixels;
+    int width;
+    int height;
+    vg_lite_buffer_format_t format;
+};
+
+vg_lite_expected_buffer_t *vg_lite_expected_create(int width, int height,
+                                                    vg_lite_buffer_format_t format)
+{
+    vg_lite_expected_buffer_t *eb = calloc(1, sizeof(*eb));
+    if (!eb) return NULL;
+    eb->width = width;
+    eb->height = height;
+    eb->format = format;
+    eb->pixels = calloc((size_t)width * height, sizeof(uint32_t));
+    if (!eb->pixels) { free(eb); return NULL; }
+    return eb;
+}
+
+void vg_lite_expected_destroy(vg_lite_expected_buffer_t *eb)
+{
+    if (!eb) return;
+    free(eb->pixels);
+    free(eb);
+}
+
+void vg_lite_expected_clear(vg_lite_expected_buffer_t *eb,
+                             vg_lite_rectangle_t *rect,
+                             vg_lite_color_t color)
+{
+    if (!eb) return;
+    uint32_t c = color;
+    if (eb->format == VG_LITE_RGB565) c |= 0xFF000000;
+
+    int x0 = 0, y0 = 0, x1 = eb->width, y1 = eb->height;
+    if (rect) {
+        x0 = rect->x; y0 = rect->y;
+        x1 = rect->x + rect->width;
+        y1 = rect->y + rect->height;
+    }
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > eb->width)  x1 = eb->width;
+    if (y1 > eb->height) y1 = eb->height;
+
+    for (int y = y0; y < y1; y++)
+        for (int x = x0; x < x1; x++)
+            eb->pixels[y * eb->width + x] = c;
+}
+
+void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
+                            vg_lite_buffer_t *src,
+                            vg_lite_matrix_t *matrix,
+                            int blend_mode, int filter)
+{
+    if (!eb || !src) return;
+    vg_lite_float_t inv[3][3];
+    if (!mat3_inverse(matrix->m, inv)) return;
+
+    int is_bilinear = (filter != 0 && filter != VG_LITE_FILTER_POINT);
+
+    for (int y = 0; y < eb->height; y++) {
+        for (int x = 0; x < eb->width; x++) {
+            uint32_t dst_px = eb->pixels[y * eb->width + x];
+            eb->pixels[y * eb->width + x] = compute_expected_blit_pixel(
+                src, inv, x, y, dst_px, blend_mode, is_bilinear);
+        }
+    }
+}
+
+int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
+                             vg_lite_buffer_t *actual,
+                             int tolerance)
+{
+    if (!eb || !actual) return -1;
+    int total = eb->width * eb->height;
+    int fail = 0;
+    int max_print = 10;
+
+    for (int y = 0; y < eb->height; y++) {
+        for (int x = 0; x < eb->width; x++) {
+            uint32_t expected = eb->pixels[y * eb->width + x];
+            uint32_t got = vg_lite_read_pixel(actual, x, y);
+
+            int ar, ag, ab, aa, er, eg, eb_, ea;
+            unpack_rgba(got, &ar, &ag, &ab, &aa);
+            unpack_rgba(expected, &er, &eg, &eb_, &ea);
+            if (actual->format == VG_LITE_RGB565) { aa = 0xFF; ea = 0xFF; }
+
+            if (abs(ar - er) > tolerance || abs(ag - eg) > tolerance ||
+                abs(ab - eb_) > tolerance || abs(aa - ea) > tolerance) {
+                if (fail < max_print)
+                    printf("  MISMATCH (%d,%d): got R=%d G=%d B=%d A=%d, exp R=%d G=%d B=%d A=%d\n",
+                           x, y, ar, ag, ab, aa, er, eg, eb_, ea);
+                fail++;
+            }
+        }
+    }
+
+    if (fail > max_print) printf("  ... %d more mismatches\n", fail - max_print);
+    int pass_rate = (total > 0) ? ((total - fail) * 100) / total : 100;
+    printf("  VERIFY: %d/%d pixels match (%d%% pass rate)\n", total - fail, total, pass_rate);
+    return fail;
+}
+
+void vg_lite_expected_copy(vg_lite_expected_buffer_t *eb, vg_lite_buffer_t *buf)
+{
+    if (!eb || !buf) return;
+    for (int y = 0; y < eb->height; y++)
+        for (int x = 0; x < eb->width; x++)
+            eb->pixels[y * eb->width + x] = vg_lite_read_pixel(buf, x, y);
 }
