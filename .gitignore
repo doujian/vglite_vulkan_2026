@@ -1,0 +1,26 @@
+# Build artifacts
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sisyphus agent files
+.sisyphus/
+
+# Compiled objects
+*.o
+*.o.d
+*.so
+*.a
+*.spv
+
+# Test output images (build output only, keep test data)
+build/tests/*.png

@@ -1,0 +1,13 @@
+add_library(vg_lite SHARED
+    vg_lite.c
+    vg_lite_vulkan.c
+    vg_lite_format.c
+)
+
+target_include_directories(vg_lite PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/stb
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(vg_lite PUBLIC Vulkan::Vulkan m)
