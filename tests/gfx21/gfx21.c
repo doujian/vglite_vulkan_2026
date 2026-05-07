@@ -39,15 +39,6 @@ int main(int argc, char *argv[])
     CHECK_ERROR(vg_lite_allocate(&dst));
 
     CHECK_ERROR(vg_lite_clear(&dst, NULL, 0xFFFF0000));
-    CHECK_ERROR(vg_lite_finish());
-
-    if (vg_lite_check_pixel(&dst, 0, 0, 0xFFFF0000, 0) &&
-        vg_lite_check_pixel(&dst, 128, 128, 0xFFFF0000, 0)) {
-        g_golden_pass++;
-        printf("Background clear OK\n");
-    } else {
-        g_golden_fail++;
-    }
 
     CHECK_ERROR(vg_lite_identity(&matrix));
     CHECK_ERROR(vg_lite_translate((float)dst.width / 2.0f, (float)dst.height / 2.0f, &matrix));
@@ -61,12 +52,13 @@ int main(int argc, char *argv[])
     vg_lite_save_png("gfx21.png", &dst);
     printf("gfx21 test done - saved gfx21.png\n");
 
-    /* Verify blit produced content: center pixel should differ from white background */
     {
-        uint32_t center = vg_lite_read_pixel(&dst, 128, 128);
-        int r = center & 0xFF, g = (center >> 8) & 0xFF, b = (center >> 16) & 0xFF;
-        if (!(r == 0 && g == 0 && b == 0xFF)) { g_golden_pass++; printf("Blit content OK\n"); }
-        else { printf("  FAIL: center pixel is blue background (should have rotated content)\n"); g_golden_fail++; }
+        vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst.width, dst.height, dst.format);
+        vg_lite_expected_clear(eb, NULL, 0xFFFF0000);
+        vg_lite_expected_blit(eb, &src, &matrix, 0, 0);
+        g_golden_fail += vg_lite_expected_verify(eb, &dst, 0);
+        vg_lite_expected_destroy(eb);
+        g_golden_pass = (g_golden_fail == 0) ? 1 : 0;
     }
     printf("Golden verification: %d passed, %d failed\n", g_golden_pass, g_golden_fail);
 

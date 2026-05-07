@@ -62,9 +62,13 @@ int main(int argc, const char *argv[])
     vg_lite_save_png("gfx3.png", &buffer);
 
     {
-        uint32_t px = vg_lite_read_pixel(&buffer, 320, 240);
-        int r = px & 0xFF, g = (px >> 8) & 0xFF, b = (px >> 16) & 0xFF;
-        printf("gfx3 OK (center pixel: R=%d G=%d B=%d)\n", r, g, b);
+        vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buffer.width, buffer.height, buffer.format);
+        vg_lite_expected_clear(eb, NULL, 0xFFFF0000);
+        vg_lite_expected_blit(eb, &image, &matrix, 0, 0);
+        int fail = vg_lite_expected_verify(eb, &buffer, 0);
+        vg_lite_expected_destroy(eb);
+        if (fail == 0) printf("gfx3 OK\n");
+        else           printf("gfx3 FAILED (%d mismatches)\n", fail);
     }
 
 ErrorHandler:
