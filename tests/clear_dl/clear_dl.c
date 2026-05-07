@@ -19,8 +19,8 @@ void cleanup(void)
 int main(int argc, const char *argv[])
 {
     vg_lite_error_t error = VG_LITE_SUCCESS;
-    /* 0xFFFF0000 = R=0,G=0,B=0xFF,A=0xFF = blue in vg_lite_color_t */
     const vg_lite_color_t blue = 0xFFFF0000;
+    int fail = 0;
 
     CHECK_ERROR(vg_lite_init(0, 0));
 
@@ -34,15 +34,17 @@ int main(int argc, const char *argv[])
 
     vg_lite_save_png("clear_dl.png", &buffer);
 
-    /* Verify center pixel is blue (tolerance 8 for RGB565 quantization) */
-    if (vg_lite_check_pixel(&buffer, 960, 540, blue, 8)) {
-        printf("clear_dl OK (1920x1080 RGB565 blue clear)\n");
-    } else {
-        uint32_t px = vg_lite_read_pixel(&buffer, 960, 540);
-        printf("FAIL: center pixel not blue (got 0x%08X)\n", px);
+    {
+        vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buffer.width, buffer.height, buffer.format);
+        vg_lite_expected_clear(eb, NULL, blue);
+        fail += vg_lite_expected_verify(eb, &buffer, 12);
+        vg_lite_expected_destroy(eb);
     }
+
+    if (fail == 0) printf("clear_dl OK (1920x1080 RGB565 blue clear)\n");
+    else           printf("clear_dl FAILED (%d mismatches)\n", fail);
 
 ErrorHandler:
     cleanup();
-    return (error == VG_LITE_SUCCESS) ? 0 : -1;
+    return (error == VG_LITE_SUCCESS && fail == 0) ? 0 : -1;
 }

@@ -18,6 +18,7 @@ void cleanup(void)
 int main(int argc, const char *argv[])
 {
     vg_lite_error_t error = VG_LITE_SUCCESS;
+    int fail = 0;
 
     CHECK_ERROR(vg_lite_init(640, 480));
 
@@ -31,14 +32,17 @@ int main(int argc, const char *argv[])
 
     vg_lite_save_png("gfx1.png", &buffer);
 
-    /* Verify center pixel is blue (tolerance 0 for BGRA8888) */
-    if (vg_lite_check_pixel(&buffer, 320, 240, 0xFFFF0000, 0)) {
-        printf("gfx1 OK (640x480 BGRA8888 blue clear)\n");
-    } else {
-        printf("FAIL: center pixel not blue\n");
+    {
+        vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buffer.width, buffer.height, buffer.format);
+        vg_lite_expected_clear(eb, NULL, 0xFFFF0000);
+        fail += vg_lite_expected_verify(eb, &buffer, 0);
+        vg_lite_expected_destroy(eb);
     }
+
+    if (fail == 0) printf("gfx1 OK (640x480 BGRA8888 blue clear)\n");
+    else           printf("gfx1 FAILED (%d mismatches)\n", fail);
 
 ErrorHandler:
     cleanup();
-    return (error == VG_LITE_SUCCESS) ? 0 : -1;
+    return (error == VG_LITE_SUCCESS && fail == 0) ? 0 : -1;
 }

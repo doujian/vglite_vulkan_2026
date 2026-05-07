@@ -16,43 +16,27 @@ static vg_lite_buffer_format_t formats[] =
 static int g_golden_pass = 0;
 static int g_golden_fail = 0;
 
-static void verify_full_clear(vg_lite_buffer_t *buf, vg_lite_color_t cc)
+static int verify_full_clear(vg_lite_buffer_t *buf, vg_lite_color_t cc)
 {
-    int bx = buf->width / 4, by = buf->height / 4;
-    int cx = buf->width / 2, cy = buf->height / 2;
-    int dx = 3 * buf->width / 4, dy = 3 * buf->height / 4;
     int tol = (buf->format == VG_LITE_RGB565) ? 12 : 0;
-    int ok = 1;
-    ok &= vg_lite_check_pixel(buf, bx, by, cc, tol);
-    ok &= vg_lite_check_pixel(buf, cx, cy, cc, tol);
-    ok &= vg_lite_check_pixel(buf, dx, dy, cc, tol);
-    if (ok) g_golden_pass++; else g_golden_fail++;
+    vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buf->width, buf->height, buf->format);
+    vg_lite_expected_clear(eb, NULL, cc);
+    int fail = vg_lite_expected_verify(eb, buf, tol);
+    vg_lite_expected_destroy(eb);
+    if (fail == 0) g_golden_pass++; else g_golden_fail++;
+    return fail;
 }
 
-static void verify_rect_clear(vg_lite_buffer_t *buf, vg_lite_rectangle_t *rect, vg_lite_color_t cc, vg_lite_color_t bg)
+static int verify_rect_clear(vg_lite_buffer_t *buf, vg_lite_rectangle_t *rect, vg_lite_color_t cc, vg_lite_color_t bg)
 {
     int tol = (buf->format == VG_LITE_RGB565) ? 12 : 0;
-    int ok = 1;
-    int inside_x = rect->x + rect->width / 2;
-    int inside_y = rect->y + rect->height / 2;
-    int outside_x, outside_y;
-
-    if (rect->x > 0) outside_x = rect->x / 2;
-    else if (rect->x + rect->width < (int)buf->width) outside_x = rect->x + rect->width + 1;
-    else outside_x = 0;
-
-    if (rect->y > 0) outside_y = rect->y / 2;
-    else if (rect->y + rect->height < (int)buf->height) outside_y = rect->y + rect->height + 1;
-    else outside_y = 0;
-
-    if (inside_x >= (int)buf->width) inside_x = buf->width - 1;
-    if (inside_y >= (int)buf->height) inside_y = buf->height - 1;
-    if (outside_x >= (int)buf->width) outside_x = buf->width - 1;
-    if (outside_y >= (int)buf->height) outside_y = buf->height - 1;
-
-    ok &= vg_lite_check_pixel(buf, inside_x, inside_y, cc, tol);
-    ok &= vg_lite_check_pixel(buf, outside_x, outside_y, bg, tol);
-    if (ok) g_golden_pass++; else g_golden_fail++;
+    vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buf->width, buf->height, buf->format);
+    vg_lite_expected_clear(eb, NULL, bg);
+    vg_lite_expected_clear(eb, rect, cc);
+    int fail = vg_lite_expected_verify(eb, buf, tol);
+    vg_lite_expected_destroy(eb);
+    if (fail == 0) g_golden_pass++; else g_golden_fail++;
+    return fail;
 }
 
 /* different buffer formats, different clear modes, and part region. */
