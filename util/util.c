@@ -119,11 +119,26 @@ uint32_t get_bpp(vg_lite_buffer_format_t format)
 uint32_t pack_pixel(vg_lite_buffer_format_t format, uint32_t r, uint32_t g, uint32_t b, uint32_t a)
 {
     switch (format) {
-    case VG_LITE_RGB565:
-        return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+    case VG_LITE_RGBA8888:
+        return r | (g << 8) | (b << 16) | (a << 24);
     case VG_LITE_BGRA8888:
         return b | (g << 8) | (r << 16) | (a << 24);
-    case VG_LITE_RGBA8888:
+    case VG_LITE_RGB565:
+        return ((r & 0xf8) >> 3) | ((g & 0xfc) << 3) | ((b & 0xf8) << 8);
+    case VG_LITE_BGR565:
+        return ((b & 0xf8) >> 3) | ((g & 0xfc) << 3) | ((r & 0xf8) << 8);
+    case VG_LITE_RGBA4444:
+        return ((r & 0xf0) >> 4) | (g & 0xf0) | ((b & 0xf0) << 4) | ((a & 0xf0) << 8);
+    case VG_LITE_BGRA4444:
+        return ((b & 0xf0) >> 4) | (g & 0xf0) | ((r & 0xf0) << 4) | ((a & 0xf0) << 8);
+    case VG_LITE_A8:
+        return a;
+    case VG_LITE_L8:
+        return (uint32_t)(0.2126f * r + 0.7152f * g + 0.0722f * b);
+    case VG_LITE_RGBX8888:
+        return r | (g << 8) | (b << 16);
+    case VG_LITE_BGRX8888:
+        return b | (g << 8) | (r << 16);
     default:
         return r | (g << 8) | (b << 16) | (a << 24);
     }
@@ -151,6 +166,31 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
         uint8_t b = p & 0x1F;
         return (r << 3) | ((g << 2) << 8) | ((b << 3) << 16) | (0xFF << 24);
     }
+    case VG_LITE_BGR565: {
+        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        uint8_t b = (p >> 11) & 0x1F;
+        uint8_t g = (p >> 5) & 0x3F;
+        uint8_t r = p & 0x1F;
+        return (r << 3) | ((g << 2) << 8) | ((b << 3) << 16) | (0xFF << 24);
+    }
+    case VG_LITE_RGBA4444: {
+        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        uint8_t r = (p >> 4) & 0xF;
+        uint8_t g = p & 0xF;
+        uint8_t b = (p >> 8) & 0xF;
+        uint8_t a = (p >> 12) & 0xF;
+        return ((r << 4) | (r >> 0)) | (((g << 4) | (g >> 0)) << 8) |
+               (((b << 4) | (b >> 0)) << 16) | (((a << 4) | (a >> 0)) << 24);
+    }
+    case VG_LITE_BGRA4444: {
+        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        uint8_t b = (p >> 4) & 0xF;
+        uint8_t g = p & 0xF;
+        uint8_t r = (p >> 8) & 0xF;
+        uint8_t a = (p >> 12) & 0xF;
+        return ((r << 4) | (r >> 0)) | (((g << 4) | (g >> 0)) << 8) |
+               (((b << 4) | (b >> 0)) << 16) | (((a << 4) | (a >> 0)) << 24);
+    }
     case VG_LITE_BGRA8888: {
         uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
         uint8_t b = p & 0xFF;
@@ -159,9 +199,29 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
         uint8_t a = (p >> 24) & 0xFF;
         return r | (g << 8) | (b << 16) | (a << 24);
     }
-    case VG_LITE_RGBA8888: {
-        return *(uint32_t*)(ptr + y * buffer->stride + x * 4);
+    case VG_LITE_BGRX8888: {
+        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
+        uint8_t b = p & 0xFF;
+        uint8_t g = (p >> 8) & 0xFF;
+        uint8_t r = (p >> 16) & 0xFF;
+        return r | (g << 8) | (b << 16) | (0xFF << 24);
     }
+    case VG_LITE_RGBX8888: {
+        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
+        uint8_t r = p & 0xFF;
+        uint8_t g = (p >> 8) & 0xFF;
+        uint8_t b = (p >> 16) & 0xFF;
+        return r | (g << 8) | (b << 16) | (0xFF << 24);
+    }
+    case VG_LITE_A8: {
+        uint8_t a = *(ptr + y * buffer->stride + x);
+        return a | (a << 8) | (a << 16) | (a << 24);
+    }
+    case VG_LITE_L8: {
+        uint8_t l = *(ptr + y * buffer->stride + x);
+        return l | (l << 8) | (l << 16) | (0xFF << 24);
+    }
+    case VG_LITE_RGBA8888:
     default:
         return *(uint32_t*)(ptr + y * buffer->stride + x * 4);
     }
@@ -335,8 +395,27 @@ void vg_lite_expected_clear(vg_lite_expected_buffer_t *eb,
                              vg_lite_color_t color)
 {
     if (!eb) return;
-    uint32_t c = color;
-    if (eb->format == VG_LITE_RGB565) c |= 0xFF000000;
+
+    uint32_t c;
+    switch (eb->format) {
+    case VG_LITE_RGB565:
+    case VG_LITE_BGR565:
+    case VG_LITE_RGBX8888:
+    case VG_LITE_BGRX8888:
+        c = color | 0xFF000000;
+        break;
+    case VG_LITE_A8:
+        c = (color & 0xFF) * 0x01010101u;
+        break;
+    case VG_LITE_L8: {
+        uint8_t lum = color & 0xFF;
+        c = lum | (lum << 8) | (lum << 16) | (0xFFu << 24);
+        break;
+    }
+    default:
+        c = color;
+        break;
+    }
 
     int x0 = 0, y0 = 0, x1 = eb->width, y1 = eb->height;
     if (rect) {
@@ -415,4 +494,176 @@ void vg_lite_expected_copy(vg_lite_expected_buffer_t *eb, vg_lite_buffer_t *buf)
     for (int y = 0; y < eb->height; y++)
         for (int x = 0; x < eb->width; x++)
             eb->pixels[y * eb->width + x] = vg_lite_read_pixel(buf, x, y);
+}
+
+static void *gen_checker(vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
+{
+    int checker = 20;
+    int color0[4], color1[4];
+    int bpp = get_bpp(format);
+    uint32_t *pdata32;
+    uint16_t *pdata16;
+    uint8_t  *pdata8;
+    void     *pdata;
+    uint32_t pixel[2];
+    int x, y, idx;
+
+    color0[0] = (int)Random_r(0, 255);
+    color0[1] = (int)Random_r(0, 255);
+    color0[2] = (int)Random_r(0, 255);
+    color0[3] = (int)Random_r(0, 255);
+    color1[0] = (int)Random_r(0, 255);
+    color1[1] = (int)Random_r(0, 255);
+    color1[2] = (int)Random_r(0, 255);
+    color1[3] = (int)Random_r(0, 255);
+
+    pdata = malloc((size_t)(bpp / 8) * width * height);
+    pdata32 = (uint32_t *)pdata;
+    pdata16 = (uint16_t *)pdata;
+    pdata8  = (uint8_t  *)pdata;
+
+    pixel[0] = pack_pixel(format, color0[0], color0[1], color0[2], color0[3]);
+    pixel[1] = pack_pixel(format, color1[0], color1[1], color1[2], color1[3]);
+
+    for (y = 0; y < (int)height; y++) {
+        for (x = 0; x < (int)width; x++) {
+            idx = ((x / checker) + (y / checker)) % 2;
+            switch (bpp) {
+            case 32: *pdata32++ = pixel[idx];            break;
+            case 16: *pdata16++ = (uint16_t)pixel[idx];  break;
+            case 8:  *pdata8++  = (uint8_t)pixel[idx];   break;
+            default: break;
+            }
+        }
+    }
+    return pdata;
+}
+
+static void *gen_gradient(vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
+{
+    int orient;
+    int color0[4], color1[4], color[4];
+    int x, y;
+    float ratio;
+    uint32_t pixel;
+    uint32_t *pdata32;
+    uint16_t *pdata16;
+    uint8_t  *pdata8;
+    void     *pdata;
+    int bpp = get_bpp(format);
+
+    pdata = malloc((size_t)(bpp / 8) * width * height);
+    pdata32 = (uint32_t *)pdata;
+    pdata16 = (uint16_t *)pdata;
+    pdata8  = (uint8_t  *)pdata;
+
+    orient = (int)Random_r(0, 1);
+
+    color0[0] = (int)Random_r(0, 255);
+    color0[1] = (int)Random_r(0, 255);
+    color0[2] = (int)Random_r(0, 255);
+    color0[3] = (int)Random_r(0, 255);
+    color1[0] = (int)Random_r(0, 255);
+    color1[1] = (int)Random_r(0, 255);
+    color1[2] = (int)Random_r(0, 255);
+    color1[3] = (int)Random_r(0, 255);
+
+    for (y = 0; y < (int)height; y++) {
+        for (x = 0; x < (int)width; x++) {
+            if (orient == 0)
+                ratio = (float)x / (width - 1);
+            else
+                ratio = (float)y / (height - 1);
+
+            color[0] = (int)(ratio * color1[0] + (1.0f - ratio) * color0[0]);
+            color[1] = (int)(ratio * color1[1] + (1.0f - ratio) * color0[1]);
+            color[2] = (int)(ratio * color1[2] + (1.0f - ratio) * color0[2]);
+            color[3] = (int)(ratio * color1[3] + (1.0f - ratio) * color0[3]);
+
+            pixel = pack_pixel(format, color[0], color[1], color[2], color[3]);
+            switch (bpp) {
+            case 32: *pdata32++ = pixel;                   break;
+            case 16: *pdata16++ = (uint16_t)pixel;         break;
+            case 8:  *pdata8++  = (uint8_t)pixel;          break;
+            default: break;
+            }
+        }
+    }
+    return pdata;
+}
+
+static void *gen_solid(vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
+{
+    uint32_t r, g, b, a, pixel;
+    void *data;
+    uint8_t  *pdata8;
+    uint32_t *pdata32;
+    uint16_t *pdata16;
+    uint32_t bpp = get_bpp(format);
+    int i, j;
+
+    r = (uint32_t)Random_r(0, 255);
+    g = (uint32_t)Random_r(0, 255);
+    b = (uint32_t)Random_r(0, 255);
+    a = (uint32_t)Random_r(0, 255);
+
+    data = malloc((size_t)width * height * bpp / 8);
+    pdata8  = (uint8_t  *)data;
+    pdata32 = (uint32_t *)data;
+    pdata16 = (uint16_t *)data;
+
+    pixel = pack_pixel(format, r, g, b, a);
+    for (i = 0; i < (int)height; i++) {
+        for (j = 0; j < (int)width; j++) {
+            switch (bpp) {
+            case 32: *pdata32++ = pixel;                   break;
+            case 16: *pdata16++ = (uint16_t)pixel;         break;
+            case 8:  *pdata8++  = (uint8_t)pixel;          break;
+            default: break;
+            }
+        }
+    }
+    return data;
+}
+
+void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
+{
+    switch (type) {
+    case 0: return gen_checker(format, width, height);
+    case 1: return gen_gradient(format, width, height);
+    case 2: return gen_solid(format, width, height);
+    default: return NULL;
+    }
+}
+
+int gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
+{
+    vg_lite_error_t error;
+    uint32_t bpp = get_bpp(format);
+    void *data;
+
+    memset(buf, 0, sizeof(*buf));
+    buf->width  = width;
+    buf->height = height;
+    buf->format = format;
+
+    error = vg_lite_allocate(buf);
+    if (error != VG_LITE_SUCCESS) return -1;
+
+    data = gen_image(type, format, width, height);
+    if (!data) { vg_lite_free(buf); return -1; }
+
+    /* Copy generated pixel data into the GPU buffer's memory.
+     * The stride may include padding, so copy row-by-row. */
+    {
+        uint8_t *src = (uint8_t *)data;
+        uint8_t *dst = (uint8_t *)buf->memory;
+        uint32_t row_bytes = width * bpp / 8;
+        for (uint32_t y = 0; y < height; y++) {
+            memcpy(dst + y * buf->stride, src + y * row_bytes, row_bytes);
+        }
+    }
+
+    free(data);
+    return 0;
 }

@@ -62,7 +62,10 @@ void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
                             int blend_mode, int filter);
 void vg_lite_expected_copy(vg_lite_expected_buffer_t *eb, vg_lite_buffer_t *buf);
 int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
-                             vg_lite_buffer_t *actual,
-                             int tolerance);
+                              vg_lite_buffer_t *actual,
+                              int tolerance);
+
+void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32_t height);
+int   gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, uint32_t width, uint32_t height);
 
 #endif

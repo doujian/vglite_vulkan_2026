@@ -52,5 +52,13 @@ add_dependencies(test_gfx2 spirv_compilation)
 add_executable(test_gfx3 gfx3/gfx3.c)
 add_dependencies(test_gfx3 spirv_compilation)
 
+# SFT clear test
+add_executable(test_sft_clear sft_clear/sft_clear.c)
+add_dependencies(test_sft_clear spirv_compilation)
+
+# SFT blit test
+add_executable(test_sft_blit sft_blit/sft_blit.c)
+add_dependencies(test_sft_blit spirv_compilation)
+
 # Copy test data files to build directory
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
