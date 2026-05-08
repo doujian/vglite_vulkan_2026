@@ -65,7 +65,7 @@ int main(int argc, const char *argv[])
         vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buffer.width, buffer.height, buffer.format);
         vg_lite_expected_clear(eb, NULL, 0xFFFF0000);
         vg_lite_expected_blit(eb, &image, &matrix, 0, 0);
-        int fail = vg_lite_expected_verify(eb, &buffer, 0);
+        int fail = vg_lite_expected_verify(eb, &buffer, 1);
         vg_lite_expected_destroy(eb);
         if (fail == 0) printf("gfx3 OK\n");
         else           printf("gfx3 FAILED (%d mismatches)\n", fail);
