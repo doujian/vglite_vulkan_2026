@@ -15,7 +15,8 @@
 
 typedef struct {
     VkImage image;
-    VkImageView view;
+    VkImageView view;       /* identity swizzle - for framebuffer attachment */
+    VkImageView swizzle_view; /* L8/A8 swizzle - for texture sampling */
     VkDeviceMemory memory;
     VkRenderPass render_pass;
     VkSampler sampler;
@@ -168,7 +169,23 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     view_ci.subresourceRange.levelCount = 1;
     view_ci.subresourceRange.layerCount = 1;
+
     vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->view);
+    internal->swizzle_view = VK_NULL_HANDLE;
+
+    if (buffer->format == VG_LITE_L8) {
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_R;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_R;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_R;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
+        vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view);
+    } else if (buffer->format == VG_LITE_A8) {
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_ZERO;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
+        vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view);
+    }
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
 
@@ -211,6 +228,7 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
     void *mapped_base = (void *)internal->sampler;
     if (internal->view) vkDestroyImageView(g_vk_ctx.device, internal->view, NULL);
+    if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
     if (internal->image) vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
     if (mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
@@ -232,7 +250,27 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     clear_att.colorAttachment = 0;
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-    vg_lite_color_argb_to_vk(color, vkfmt, &clear_att.clearValue.color);
+
+    /* For L8/A8 (VK_FORMAT_R8_UNORM), only R channel is stored.
+     * vkClearAttachments uses float32[0]=R regardless of format.
+     * L8: R = luminance = 0.2126*r + 0.7152*g + 0.0722*b
+     * A8: R = alpha = a/255 */
+    if (target->format == VG_LITE_L8) {
+        uint8_t r = color & 0xFF, g = (color >> 8) & 0xFF, b = (color >> 16) & 0xFF;
+        float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        clear_att.clearValue.color.float32[0] = lum / 255.0f;
+        clear_att.clearValue.color.float32[1] = 0.0f;
+        clear_att.clearValue.color.float32[2] = 0.0f;
+        clear_att.clearValue.color.float32[3] = 1.0f;
+    } else if (target->format == VG_LITE_A8) {
+        uint8_t a = (color >> 24) & 0xFF;
+        clear_att.clearValue.color.float32[0] = (float)a / 255.0f;
+        clear_att.clearValue.color.float32[1] = 0.0f;
+        clear_att.clearValue.color.float32[2] = 0.0f;
+        clear_att.clearValue.color.float32[3] = 1.0f;
+    } else {
+        vg_lite_color_argb_to_vk(color, vkfmt, &clear_att.clearValue.color);
+    }
 
     VkClearRect clear_rect;
     if (rect) {
@@ -363,6 +401,19 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     tmpv_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     tmpv_ci.subresourceRange.levelCount = 1;
     tmpv_ci.subresourceRange.layerCount = 1;
+
+    if (target->format == VG_LITE_L8) {
+        tmpv_ci.components.r = VK_COMPONENT_SWIZZLE_R;
+        tmpv_ci.components.g = VK_COMPONENT_SWIZZLE_R;
+        tmpv_ci.components.b = VK_COMPONENT_SWIZZLE_R;
+        tmpv_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
+    } else if (target->format == VG_LITE_A8) {
+        tmpv_ci.components.r = VK_COMPONENT_SWIZZLE_ZERO;
+        tmpv_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
+        tmpv_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
+        tmpv_ci.components.a = VK_COMPONENT_SWIZZLE_R;
+    }
+
     if (vkCreateImageView(g_vk_ctx.device, &tmpv_ci, NULL, &tmp_view) != VK_SUCCESS) {
         vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
         vkFreeMemory(g_vk_ctx.device, tmp_memory, NULL);
@@ -415,7 +466,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set);
 
     VkSampler sampler = get_or_create_sampler();
-    VkDescriptorImageInfo si = {sampler, src_int->view, VK_IMAGE_LAYOUT_GENERAL};
+    VkImageView src_view = src_int->swizzle_view ? src_int->swizzle_view : src_int->view;
+    VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo di = {sampler, tmp_view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet ws[2] = {
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
@@ -432,7 +484,10 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     memset(&pc, 0, sizeof(pc));
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) pc.m[j*4+i] = shader_mat[i][j];
     pc.blend = (int)blend; pc.color = color;
-    pc.im_mode = (int)VG_LITE_NORMAL_IMAGE_MODE; pc.filt = (int)filter; pc.flags = 0;
+    pc.im_mode = (int)VG_LITE_NORMAL_IMAGE_MODE; pc.filt = (int)filter;
+    pc.flags = 0;
+    if (target->format == VG_LITE_L8)  pc.flags = 1;
+    if (target->format == VG_LITE_A8)  pc.flags = 2;
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.blit_pipeline_layout,
         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 

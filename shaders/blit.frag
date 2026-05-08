@@ -50,6 +50,11 @@ layout(location = 0) out vec4 out_color;
 #define IMAGE_MODE_MULTIPLY 0x1F01
 #define IMAGE_MODE_STENCIL  0x1F02
 
+/* Output format flags */
+#define OUTPUT_FORMAT_RGBA  0
+#define OUTPUT_FORMAT_L8    1
+#define OUTPUT_FORMAT_A8    2
+
 vec4 apply_image_mode(vec4 src, uint mix_color)
 {
     float mr = float((mix_color >> 16) & 0xFFu) / 255.0;
@@ -264,5 +269,19 @@ void main()
         result = blend_non_premul(src, dst);
     }
 
-    out_color = clamp(result, 0.0, 1.0);
+    result = clamp(result, 0.0, 1.0);
+
+    /* For L8 render target: pack luminance into R channel (G=B=0, A=1)
+     * For A8 render target: pack alpha into R channel (G=B=0, A=1)
+     * Vulkan VK_FORMAT_R8_UNORM only stores R, so we must put the
+     * meaningful value there. When reading back, componentMapping
+     * swizzles R→RGB for L8 or R→A for A8. */
+    if (pc.flags == OUTPUT_FORMAT_L8) {
+        float lum = 0.2126 * result.r + 0.7152 * result.g + 0.0722 * result.b;
+        out_color = vec4(lum, 0.0, 0.0, 1.0);
+    } else if (pc.flags == OUTPUT_FORMAT_A8) {
+        out_color = vec4(result.a, 0.0, 0.0, 1.0);
+    } else {
+        out_color = result;
+    }
 }

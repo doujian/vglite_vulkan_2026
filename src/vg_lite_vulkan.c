@@ -220,6 +220,7 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
 typedef struct {
     VkImage image;
     VkImageView view;
+    VkImageView swizzle_view;
     VkDeviceMemory memory;
     VkRenderPass render_pass;
     VkSampler sampler;
