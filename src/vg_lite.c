@@ -120,6 +120,15 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     buffer->tiled = VG_LITE_LINEAR;
     VkFormat vkfmt = vg_lite_format_to_vk(buffer->format);
 
+    VkImageFormatProperties img_fmt_props;
+    if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, vkfmt,
+            VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_LINEAR,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            0, &img_fmt_props) != VK_SUCCESS) {
+        return VG_LITE_NOT_SUPPORT;
+    }
+
     VkImageCreateInfo img_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     img_ci.imageType = VK_IMAGE_TYPE_2D;
     img_ci.format = vkfmt;
@@ -329,18 +338,22 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     tmp_ci.mipLevels = 1;
     tmp_ci.arrayLayers = 1;
     tmp_ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    tmp_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    tmp_ci.tiling = VK_IMAGE_TILING_LINEAR;
     tmp_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     tmp_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     tmp_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    vkCreateImage(g_vk_ctx.device, &tmp_ci, NULL, &tmp_image);
+    if (vkCreateImage(g_vk_ctx.device, &tmp_ci, NULL, &tmp_image) != VK_SUCCESS)
+        return VG_LITE_OUT_OF_MEMORY;
 
     VkMemoryRequirements tmp_req;
     vkGetImageMemoryRequirements(g_vk_ctx.device, tmp_image, &tmp_req);
     VkMemoryAllocateInfo tmp_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     tmp_alloc.allocationSize = tmp_req.size;
-    tmp_alloc.memoryTypeIndex = find_memory_type(tmp_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    vkAllocateMemory(g_vk_ctx.device, &tmp_alloc, NULL, &tmp_memory);
+    tmp_alloc.memoryTypeIndex = find_memory_type(tmp_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (vkAllocateMemory(g_vk_ctx.device, &tmp_alloc, NULL, &tmp_memory) != VK_SUCCESS) {
+        vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
     vkBindImageMemory(g_vk_ctx.device, tmp_image, tmp_memory, 0);
 
     VkImageViewCreateInfo tmpv_ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -350,13 +363,17 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     tmpv_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     tmpv_ci.subresourceRange.levelCount = 1;
     tmpv_ci.subresourceRange.layerCount = 1;
-    vkCreateImageView(g_vk_ctx.device, &tmpv_ci, NULL, &tmp_view);
+    if (vkCreateImageView(g_vk_ctx.device, &tmpv_ci, NULL, &tmp_view) != VK_SUCCESS) {
+        vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
+        vkFreeMemory(g_vk_ctx.device, tmp_memory, NULL);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
 
-    /* Transition tmp to transfer dst */
+    /* Transition tmp to GENERAL (LINEAR tiling must use GENERAL layout) */
     VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.image = tmp_image;
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.levelCount = 1;
@@ -375,13 +392,13 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     cp.extent.depth = 1;
     vkCmdCopyImage(g_vk_ctx.cmd_buf,
         target_int->image, VK_IMAGE_LAYOUT_GENERAL,
-        tmp_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cp);
+        tmp_image, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
 
-    /* Transition tmp to shader read */
+    /* Transition tmp to shader read (still GENERAL for LINEAR tiling) */
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     barrier.image = tmp_image;
     vkCmdPipelineBarrier(g_vk_ctx.cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
@@ -399,7 +416,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
     VkSampler sampler = get_or_create_sampler();
     VkDescriptorImageInfo si = {sampler, src_int->view, VK_IMAGE_LAYOUT_GENERAL};
-    VkDescriptorImageInfo di = {sampler, tmp_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo di = {sampler, tmp_view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet ws[2] = {
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
