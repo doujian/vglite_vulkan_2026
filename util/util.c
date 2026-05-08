@@ -164,14 +164,14 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
         uint8_t r = (p >> 11) & 0x1F;
         uint8_t g = (p >> 5) & 0x3F;
         uint8_t b = p & 0x1F;
-        return (r << 3) | ((g << 2) << 8) | ((b << 3) << 16) | (0xFF << 24);
+        return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
     }
     case VG_LITE_BGR565: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
         uint8_t b = (p >> 11) & 0x1F;
         uint8_t g = (p >> 5) & 0x3F;
         uint8_t r = p & 0x1F;
-        return (r << 3) | ((g << 2) << 8) | ((b << 3) << 16) | (0xFF << 24);
+        return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
     }
     case VG_LITE_RGBA4444: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
@@ -284,9 +284,37 @@ static int transform_point(vg_lite_float_t inv[3][3], float dx, float dy, float 
     return 1;
 }
 
-/* VGLite blit pixel semantics: inv(M)*(x+0.5,y+0.5) -> source coord.
- * In source range: sample src + blend with dst_px. Out of range: keep dst_px.
- * is_bilinear: 0=POINT (nearest), 1=BI_LINEAR (bilinear interpolation). */
+/* Vulkan spec §15.1 LINEAR sampling:
+ *   texel center at (i+0.5)/size, i = floor(u - 0.5), alpha = frac(u - 0.5)
+ *   result = tex[i]*(1-a) + tex[i+1]*a, clamp-to-edge: i,i+1 ∈ [0,size-1] */
+static void vulkan_linear_sample(vg_lite_buffer_t *src, float sx, float sy,
+                                  int *sr, int *sg, int *sb, int *sa)
+{
+    int w = (int)src->width, h = (int)src->height;
+
+    float ux = sx - 0.5f, uy = sy - 0.5f;
+    int ix = (int)floorf(ux), iy = (int)floorf(uy);
+    float fx = ux - floorf(ux), fy = uy - floorf(uy);
+
+    int x0 = ix < 0 ? 0 : (ix >= w ? w - 1 : ix);
+    int x1 = ix + 1; if (x1 < 0) x1 = 0; else if (x1 >= w) x1 = w - 1;
+    int y0 = iy < 0 ? 0 : (iy >= h ? h - 1 : iy);
+    int y1 = iy + 1; if (y1 < 0) y1 = 0; else if (y1 >= h) y1 = h - 1;
+
+    int r00, g00, b00, a00, r10, g10, b10, a10;
+    int r01, g01, b01, a01, r11, g11, b11, a11;
+    unpack_rgba(vg_lite_read_pixel(src, x0, y0), &r00, &g00, &b00, &a00);
+    unpack_rgba(vg_lite_read_pixel(src, x1, y0), &r10, &g10, &b10, &a10);
+    unpack_rgba(vg_lite_read_pixel(src, x0, y1), &r01, &g01, &b01, &a01);
+    unpack_rgba(vg_lite_read_pixel(src, x1, y1), &r11, &g11, &b11, &a11);
+
+    float w00 = (1-fx)*(1-fy), w10 = fx*(1-fy), w01 = (1-fx)*fy, w11 = fx*fy;
+    *sr = (int)(r00*w00 + r10*w10 + r01*w01 + r11*w11 + 0.5f);
+    *sg = (int)(g00*w00 + g10*w10 + g01*w01 + g11*w11 + 0.5f);
+    *sb = (int)(b00*w00 + b10*w10 + b01*w01 + b11*w11 + 0.5f);
+    *sa = (int)(a00*w00 + a10*w10 + a01*w01 + a11*w11 + 0.5f);
+}
+
 static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
                                              vg_lite_float_t inv[3][3],
                                              int x, int y,
@@ -294,59 +322,75 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
                                              int blend_mode, int is_bilinear)
 {
     float sx, sy;
-    int inside_src = transform_point(inv, (float)x + 0.5f, (float)y + 0.5f, &sx, &sy)
-                  && sx >= 0 && sy >= 0
-                  && sx < (float)src->width && sy < (float)src->height;
+    int has_src = transform_point(inv, (float)x + 0.5f, (float)y + 0.5f, &sx, &sy);
+    if (!has_src) return dst_px;
 
-    if (!inside_src) return dst_px;
+    float sw = (float)src->width, sh = (float)src->height;
+    float src_uv_x = sx / sw, src_uv_y = sy / sh;
+    if (src_uv_x < 0.0f || src_uv_x > 1.0f || src_uv_y < 0.0f || src_uv_y > 1.0f)
+        return dst_px;
 
     int sr, sg, sb, sa;
-
-    if (!is_bilinear) {
-        int ix = (int)sx, iy = (int)sy;
-        if (ix >= (int)src->width)  ix = src->width - 1;
-        if (iy >= (int)src->height) iy = src->height - 1;
-        unpack_rgba(vg_lite_read_pixel(src, ix, iy), &sr, &sg, &sb, &sa);
-    } else {
-        int x0 = (int)sx, y0 = (int)sy;
-        int x1 = x0 + 1, y1 = y0 + 1;
-        if (x0 < 0) x0 = 0;
-        if (y0 < 0) y0 = 0;
-        if (x1 >= (int)src->width)  x1 = src->width - 1;
-        if (y1 >= (int)src->height) y1 = src->height - 1;
-
-        float fx = sx - (int)sx, fy = sy - (int)sy;
-        if (fx < 0) fx = 0;
-        if (fy < 0) fy = 0;
-
-        int r00, g00, b00, a00, r10, g10, b10, a10;
-        int r01, g01, b01, a01, r11, g11, b11, a11;
-        unpack_rgba(vg_lite_read_pixel(src, x0, y0), &r00, &g00, &b00, &a00);
-        unpack_rgba(vg_lite_read_pixel(src, x1, y0), &r10, &g10, &b10, &a10);
-        unpack_rgba(vg_lite_read_pixel(src, x0, y1), &r01, &g01, &b01, &a01);
-        unpack_rgba(vg_lite_read_pixel(src, x1, y1), &r11, &g11, &b11, &a11);
-
-        sr = (int)(r00*(1-fx)*(1-fy) + r10*fx*(1-fy) + r01*(1-fx)*fy + r11*fx*fy + 0.5f);
-        sg = (int)(g00*(1-fx)*(1-fy) + g10*fx*(1-fy) + g01*(1-fx)*fy + g11*fx*fy + 0.5f);
-        sb = (int)(b00*(1-fx)*(1-fy) + b10*fx*(1-fy) + b01*(1-fx)*fy + b11*fx*fy + 0.5f);
-        sa = (int)(a00*(1-fx)*(1-fy) + a10*fx*(1-fy) + a01*(1-fx)*fy + a11*fx*fy + 0.5f);
-    }
+    vulkan_linear_sample(src, sx, sy, &sr, &sg, &sb, &sa);
+    (void)is_bilinear;
 
     int dr, dg, db, da;
     unpack_rgba(dst_px, &dr, &dg, &db, &da);
 
     int or_, og, ob, oa;
     switch (blend_mode) {
-    case 0: /* BLEND_NONE */
+    case 0: /* NONE: S */
         or_ = sr; og = sg; ob = sb; oa = sa;
         break;
-    case 1: /* BLEND_SRC_OVER: S + D*(1-Sa), A: Sa + Da*(1-Sa) */
-        or_ = (sr * sa + dr * (255 - sa)) / 255;
-        og  = (sg * sa + dg * (255 - sa)) / 255;
-        ob  = (sb * sa + db * (255 - sa)) / 255;
-        oa  = sa + da * (255 - sa) / 255;
+    case 1: /* SRC_OVER: S + D*(1-Sa) */
+        or_ = sr + (dr * (255 - sa) + 127) / 255;
+        og  = sg + (dg * (255 - sa) + 127) / 255;
+        ob  = sb + (db * (255 - sa) + 127) / 255;
+        oa  = sa + (da * (255 - sa) + 127) / 255;
         break;
-    case 11: /* BLEND_NORMAL_LVGL / PREMULTIPLY_SRC_OVER: S*Sa + D*(1-Sa), A: 0xFF */
+    case 2: /* DST_OVER: S*(1-Da) + D */
+        or_ = (sr * (255 - da) + 127) / 255 + dr;
+        og  = (sg * (255 - da) + 127) / 255 + dg;
+        ob  = (sb * (255 - da) + 127) / 255 + db;
+        oa  = (sa * (255 - da) + 127) / 255 + da;
+        break;
+    case 3: /* SRC_IN: S*Da */
+        or_ = (sr * da + 127) / 255;
+        og  = (sg * da + 127) / 255;
+        ob  = (sb * da + 127) / 255;
+        oa  = (sa * da + 127) / 255;
+        break;
+    case 4: /* DST_IN: D*Sa */
+        or_ = (dr * sa + 127) / 255;
+        og  = (dg * sa + 127) / 255;
+        ob  = (db * sa + 127) / 255;
+        oa  = (da * sa + 127) / 255;
+        break;
+    case 5: /* MULTIPLY: S*(1-Da) + D*(1-Sa) + S*D */
+        or_ = (sr * (255 - da) + dr * (255 - sa) + sr * dr + 127) / 255;
+        og  = (sg * (255 - da) + dg * (255 - sa) + sg * dg + 127) / 255;
+        ob  = (sb * (255 - da) + db * (255 - sa) + sb * db + 127) / 255;
+        oa  = (sa * (255 - da) + da * (255 - sa) + sa * da + 127) / 255;
+        break;
+    case 6: /* SCREEN: S + D - S*D */
+        or_ = (sr * 255 + dr * 255 - sr * dr + 127) / 255;
+        og  = (sg * 255 + dg * 255 - sg * dg + 127) / 255;
+        ob  = (sb * 255 + db * 255 - sb * db + 127) / 255;
+        oa  = (sa * 255 + da * 255 - sa * da + 127) / 255;
+        break;
+    case 9: /* ADDITIVE: S + D */
+        or_ = sr + dr;
+        og  = sg + dg;
+        ob  = sb + db;
+        oa  = sa + da;
+        break;
+    case 10: /* SUBTRACT: D*(1-Sa) */
+        or_ = (dr * (255 - sa) + 127) / 255;
+        og  = (dg * (255 - sa) + 127) / 255;
+        ob  = (db * (255 - sa) + 127) / 255;
+        oa  = (da * (255 - sa) + 127) / 255;
+        break;
+    case 11: /* NORMAL_LVGL (premultiplied): S*Sa + D*(1-Sa) */
         or_ = (sr * sa + dr * (255 - sa)) / 255;
         og  = (sg * sa + dg * (255 - sa)) / 255;
         ob  = (sb * sa + db * (255 - sa)) / 255;
@@ -405,10 +449,11 @@ void vg_lite_expected_clear(vg_lite_expected_buffer_t *eb,
         c = color | 0xFF000000;
         break;
     case VG_LITE_A8:
-        c = (color & 0xFF) * 0x01010101u;
+        c = ((color >> 24) & 0xFF) * 0x01010101u;
         break;
     case VG_LITE_L8: {
-        uint8_t lum = color & 0xFF;
+        int r = color & 0xFF, g = (color >> 8) & 0xFF, b = (color >> 16) & 0xFF;
+        uint8_t lum = (uint8_t)(0.2126f * r + 0.7152f * g + 0.0722f * b + 0.5f);
         c = lum | (lum << 8) | (lum << 16) | (0xFFu << 24);
         break;
     }
@@ -461,6 +506,9 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
     int total = eb->width * eb->height;
     int fail = 0;
     int max_print = 10;
+    int is_l8 = (actual->format == VG_LITE_L8 || actual->format == VG_LITE_A8);
+    int is_565 = (actual->format == VG_LITE_RGB565 || actual->format == VG_LITE_BGR565);
+    int is_4444 = (actual->format == VG_LITE_RGBA4444 || actual->format == VG_LITE_BGRA4444);
 
     for (int y = 0; y < eb->height; y++) {
         for (int x = 0; x < eb->width; x++) {
@@ -470,7 +518,20 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
             int ar, ag, ab, aa, er, eg, eb_, ea;
             unpack_rgba(got, &ar, &ag, &ab, &aa);
             unpack_rgba(expected, &er, &eg, &eb_, &ea);
-            if (actual->format == VG_LITE_RGB565) { aa = 0xFF; ea = 0xFF; }
+
+            if (is_l8) {
+                int el = (int)(0.2126f * er + 0.7152f * eg + 0.0722f * eb_ + 0.5f);
+                if (actual->format == VG_LITE_A8) el = ea;
+                er = el; eg = el; eb_ = el; ea = 0xFF;
+                ar = ar; ag = ar; ab = ar; aa = 0xFF;
+            } else if (is_565) {
+                int r5 = er >> 3, g6 = eg >> 2, b5 = eb_ >> 3;
+                er = (r5 << 3) | (r5 >> 2); eg = (g6 << 2) | (g6 >> 4); eb_ = (b5 << 3) | (b5 >> 2);
+                ea = 0xFF; aa = 0xFF;
+            } else if (is_4444) {
+                er = (er >> 4) << 4; eg = (eg >> 4) << 4;
+                eb_ = (eb_ >> 4) << 4; ea = (ea >> 4) << 4;
+            }
 
             if (abs(ar - er) > tolerance || abs(ag - eg) > tolerance ||
                 abs(ab - eb_) > tolerance || abs(aa - ea) > tolerance) {
