@@ -88,6 +88,10 @@ static vg_lite_error_t SFT_Clear_001(void)
             fail += vg_lite_expected_verify(eb, &buffer, get_tolerance(buffer.format));
             vg_lite_expected_destroy(eb);
         }
+
+        char fname[128];
+        snprintf(fname, sizeof(fname), "SFT_Clear_001_%d.png", i);
+        vg_lite_save_png(fname, &buffer);
     }
 
     if (fail == 0)
@@ -140,6 +144,10 @@ static vg_lite_error_t SFT_Clear_002(void)
             vg_lite_expected_destroy(eb);
         }
 
+        char fname[128];
+        snprintf(fname, sizeof(fname), "SFT_Clear_002_%d.png", i);
+        vg_lite_save_png(fname, &buffer);
+
         vg_lite_free(&buffer);
     }
 
@@ -185,6 +193,10 @@ static vg_lite_error_t SFT_Clear_003(void)
             fail += vg_lite_expected_verify(eb, &buffer, 0);
             vg_lite_expected_destroy(eb);
         }
+
+        char fname[128];
+        snprintf(fname, sizeof(fname), "SFT_Clear_003_%d.png", i);
+        vg_lite_save_png(fname, &buffer);
 
         vg_lite_free(&buffer);
     }

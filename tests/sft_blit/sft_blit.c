@@ -3,6 +3,7 @@
 // Tests blitting of different sizes/formats/transformations/blend modes.
 //-----------------------------------------------------------------------------
 #include "vg_lite.h"
+#include "vg_lite_util.h"
 #include "util.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,7 +51,20 @@ static int get_tolerance(vg_lite_buffer_format_t format)
 
 static int can_verify_blend(vg_lite_blend_t blend)
 {
-    return (blend == VG_LITE_BLEND_NONE || blend == VG_LITE_BLEND_SRC_OVER);
+    switch (blend) {
+    case VG_LITE_BLEND_NONE:
+    case VG_LITE_BLEND_SRC_OVER:
+    case VG_LITE_BLEND_DST_OVER:
+    case VG_LITE_BLEND_SRC_IN:
+    case VG_LITE_BLEND_DST_IN:
+    case VG_LITE_BLEND_MULTIPLY:
+    case VG_LITE_BLEND_SCREEN:
+    case VG_LITE_BLEND_ADDITIVE:
+    case VG_LITE_BLEND_SUBTRACT:
+        return 1;
+    default:
+        return 0;
+    }
 }
 
 static vg_lite_error_t Allocate_Buffer(vg_lite_buffer_t *buffer,
@@ -135,6 +149,7 @@ static vg_lite_error_t SFT_Blit_001(void)
     vg_lite_color_t cc = 0xffffffff;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -173,6 +188,10 @@ static vg_lite_error_t SFT_Blit_001(void)
                 vg_lite_expected_destroy(eb);
             }
 
+            char fname[128];
+            snprintf(fname, sizeof(fname), "SFT_Blit_001_%d.png", img_idx++);
+            vg_lite_save_png(fname, &dst_buf);
+
             Free_Buffer(&dst_buf);
             memset(&dst_buf, 0, sizeof(dst_buf));
         }
@@ -200,6 +219,7 @@ static vg_lite_error_t SFT_Blit_002(void)
     vg_lite_float_t xScl, yScl;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -237,6 +257,10 @@ static vg_lite_error_t SFT_Blit_002(void)
                 vg_lite_expected_destroy(eb);
             }
 
+            char fname[128];
+            snprintf(fname, sizeof(fname), "SFT_Blit_002_%d.png", img_idx++);
+            vg_lite_save_png(fname, &dst_buf);
+
             Free_Buffer(&dst_buf);
             memset(&dst_buf, 0, sizeof(dst_buf));
         }
@@ -264,6 +288,7 @@ static vg_lite_error_t SFT_Blit_003(void)
     vg_lite_float_t degrees;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -300,6 +325,10 @@ static vg_lite_error_t SFT_Blit_003(void)
                 vg_lite_expected_destroy(eb);
             }
 
+            char fname[128];
+            snprintf(fname, sizeof(fname), "SFT_Blit_003_%d.png", img_idx++);
+            vg_lite_save_png(fname, &dst_buf);
+
             Free_Buffer(&dst_buf);
             memset(&dst_buf, 0, sizeof(dst_buf));
         }
@@ -326,6 +355,7 @@ static vg_lite_error_t SFT_Blit_004(void)
     vg_lite_float_t xOffs, yOffs;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -360,6 +390,10 @@ static vg_lite_error_t SFT_Blit_004(void)
                 vg_lite_expected_destroy(eb);
             }
 
+            char fname[128];
+            snprintf(fname, sizeof(fname), "SFT_Blit_004_%d.png", img_idx++);
+            vg_lite_save_png(fname, &dst_buf);
+
             Free_Buffer(&dst_buf);
             memset(&dst_buf, 0, sizeof(dst_buf));
         }
@@ -387,6 +421,7 @@ static vg_lite_error_t SFT_Blit_005(void)
     int32_t width, height;
     vg_lite_float_point4_t src, dst;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -433,6 +468,10 @@ static vg_lite_error_t SFT_Blit_005(void)
                 vg_lite_expected_destroy(eb);
             }
 
+            char fname[128];
+            snprintf(fname, sizeof(fname), "SFT_Blit_005_%d.png", img_idx++);
+            vg_lite_save_png(fname, &dst_buf);
+
             Free_Buffer(&dst_buf);
             memset(&dst_buf, 0, sizeof(dst_buf));
         }
@@ -460,6 +499,7 @@ static vg_lite_error_t SFT_Blit_006(void)
     int32_t width, height;
     vg_lite_float_point4_t src, dst;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -517,6 +557,10 @@ static vg_lite_error_t SFT_Blit_006(void)
                 vg_lite_expected_destroy(eb);
             }
 
+            char fname[128];
+            snprintf(fname, sizeof(fname), "SFT_Blit_006_%d.png", img_idx++);
+            vg_lite_save_png(fname, &dst_buf);
+
             Free_Buffer(&dst_buf);
             memset(&dst_buf, 0, sizeof(dst_buf));
         }
@@ -542,6 +586,7 @@ static vg_lite_error_t SFT_Blit_007(void)
     vg_lite_buffer_t tempBuffer;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&srcbuffer, 0, sizeof(srcbuffer));
     memset(&dstbuffer, 0, sizeof(dstbuffer));
@@ -575,6 +620,10 @@ static vg_lite_error_t SFT_Blit_007(void)
             printf("    blend mode %d: skipped verification (CPU not implemented)\n", blend_mode[i]);
         }
 
+        char fname[128];
+        snprintf(fname, sizeof(fname), "SFT_Blit_007_%d.png", img_idx++);
+        vg_lite_save_png(fname, &dstbuffer);
+
         Free_Buffer(&srcbuffer);
         Free_Buffer(&dstbuffer);
         Free_Buffer(&tempBuffer);
@@ -602,6 +651,7 @@ static vg_lite_error_t SFT_Blit_008(void)
     vg_lite_buffer_t tempBuffer;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&srcbuffer, 0, sizeof(srcbuffer));
     memset(&dstbuffer, 0, sizeof(dstbuffer));
@@ -638,6 +688,10 @@ static vg_lite_error_t SFT_Blit_008(void)
                     printf("    blend mode %d: skipped verification\n", blend_mode[k]);
                 }
 
+                char fname[128];
+                snprintf(fname, sizeof(fname), "SFT_Blit_008_%d.png", img_idx++);
+                vg_lite_save_png(fname, &dstbuffer);
+
                 /* Restore dstbuffer */
                 CHECK_ERROR(vg_lite_blit(&dstbuffer, &tempBuffer, &identity_matrix, VG_LITE_BLEND_NONE, 0, filter));
                 CHECK_ERROR(vg_lite_finish());
@@ -671,6 +725,7 @@ static vg_lite_error_t SFT_Blit_009(void)
     vg_lite_buffer_t tempBuffer;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -705,6 +760,10 @@ static vg_lite_error_t SFT_Blit_009(void)
                 printf("    blend mode %d: skipped verification\n", blend_mode[j]);
             }
 
+            char fname[128];
+            snprintf(fname, sizeof(fname), "SFT_Blit_009_%d.png", img_idx++);
+            vg_lite_save_png(fname, &dst_buf);
+
             /* Restore the dst */
             CHECK_ERROR(vg_lite_blit(&dst_buf, &tempBuffer, &identity_matrix, VG_LITE_BLEND_NONE, 0, filter));
             CHECK_ERROR(vg_lite_finish());
@@ -736,6 +795,7 @@ static vg_lite_error_t SFT_Blit_010(void)
     vg_lite_buffer_t tempBuffer;
     int32_t width, height;
     int total_fail = 0;
+    int img_idx = 0;
 
     memset(&src_buf, 0, sizeof(src_buf));
     memset(&dst_buf, 0, sizeof(dst_buf));
@@ -770,6 +830,10 @@ static vg_lite_error_t SFT_Blit_010(void)
                 } else {
                     printf("    blend mode %d: skipped verification\n", blend_mode[k]);
                 }
+
+                char fname[128];
+                snprintf(fname, sizeof(fname), "SFT_Blit_010_%d.png", img_idx++);
+                vg_lite_save_png(fname, &dst_buf);
 
                 /* Restore dst */
                 CHECK_ERROR(vg_lite_blit(&dst_buf, &tempBuffer, &identity_matrix, VG_LITE_BLEND_NONE, 0, filter));
