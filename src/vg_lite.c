@@ -13,26 +13,17 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-typedef struct {
-    VkImage image;
-    VkImageView view;       /* identity swizzle - for framebuffer attachment */
-    VkImageView swizzle_view; /* L8/A8 swizzle - for texture sampling */
-    VkDeviceMemory memory;
-    VkRenderPass render_pass;
-    VkSampler sampler;
-} buffer_internal_t;
-
 static int g_initialized = 0;
 
-static uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
+static int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
 {
     VkPhysicalDeviceMemoryProperties mem_props;
     vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
     for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
         if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & props) == props)
-            return i;
+            return (int32_t)i;
     }
-    return 0;
+    return -1;
 }
 
 static VkSampler s_sampler = VK_NULL_HANDLE;
@@ -154,8 +145,13 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     vkGetImageMemoryRequirements(g_vk_ctx.device, internal->image, &mem_req);
     VkMemoryAllocateInfo alloc_ci = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     alloc_ci.allocationSize = mem_req.size;
-    alloc_ci.memoryTypeIndex = find_memory_type(mem_req.memoryTypeBits,
+    int32_t mem_type = find_memory_type(mem_req.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mem_type < 0) {
+        vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
+        free(internal); return VG_LITE_OUT_OF_MEMORY;
+    }
+    alloc_ci.memoryTypeIndex = (uint32_t)mem_type;
     if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, &internal->memory) != VK_SUCCESS) {
         vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
         free(internal); return VG_LITE_OUT_OF_MEMORY;
@@ -188,6 +184,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     }
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
+    internal->mapped_base = NULL;
 
     /* Get actual image layout in memory (offset and row pitch) */
     VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
@@ -217,8 +214,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     buffer->memory = (uint8_t *)mapped + layout.offset;
     buffer->address = 0;
 
-    /* Store mapped base for proper unmap later */
-    internal->sampler = (VkSampler)mapped;
+    internal->mapped_base = mapped;
     return VG_LITE_SUCCESS;
 }
 
@@ -226,12 +222,11 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
-    void *mapped_base = (void *)internal->sampler;
     if (internal->view) vkDestroyImageView(g_vk_ctx.device, internal->view, NULL);
     if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
     if (internal->image) vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
-    if (mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
+    if (internal->mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
     if (internal->memory) vkFreeMemory(g_vk_ctx.device, internal->memory, NULL);
     free(internal);
     buffer->handle = NULL;
@@ -398,7 +393,12 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vkGetImageMemoryRequirements(g_vk_ctx.device, tmp_image, &tmp_req);
     VkMemoryAllocateInfo tmp_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     tmp_alloc.allocationSize = tmp_req.size;
-    tmp_alloc.memoryTypeIndex = find_memory_type(tmp_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    int32_t tmp_mem_type = find_memory_type(tmp_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (tmp_mem_type < 0) {
+        vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+    tmp_alloc.memoryTypeIndex = (uint32_t)tmp_mem_type;
     if (vkAllocateMemory(g_vk_ctx.device, &tmp_alloc, NULL, &tmp_memory) != VK_SUCCESS) {
         vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
         return VG_LITE_OUT_OF_MEMORY;
@@ -475,7 +475,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     ds_alloc.descriptorSetCount = 1;
     ds_alloc.pSetLayouts = &g_vk_ctx.blit_descriptor_layout;
     VkDescriptorSet desc_set;
-    vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set);
+    if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
+        return VG_LITE_OUT_OF_MEMORY;
 
     VkSampler sampler = get_or_create_sampler();
     VkImageView src_view = src_int->swizzle_view ? src_int->swizzle_view : src_int->view;

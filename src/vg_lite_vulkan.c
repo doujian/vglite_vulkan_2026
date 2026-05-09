@@ -217,15 +217,6 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
     return rp;
 }
 
-typedef struct {
-    VkImage image;
-    VkImageView view;
-    VkImageView swizzle_view;
-    VkDeviceMemory memory;
-    VkRenderPass render_pass;
-    VkSampler sampler;
-} buffer_internal_t;
-
 vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
 {
     if (g_vk_ctx.current_fb) { vg_lite_vulkan_end_render_pass(); }

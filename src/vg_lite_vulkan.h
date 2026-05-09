@@ -14,6 +14,16 @@
 #define MAX_PIPELINE_CACHE 64
 
 typedef struct {
+    VkImage image;
+    VkImageView view;        /* identity swizzle - for framebuffer attachment */
+    VkImageView swizzle_view; /* L8/A8 swizzle - for texture sampling */
+    VkDeviceMemory memory;
+    VkRenderPass render_pass;
+    VkSampler sampler;
+    void *mapped_base;       /* host mapped memory pointer for vkUnmapMemory */
+} buffer_internal_t;
+
+typedef struct {
     VkPipeline pipeline;
     VkFormat format;
     int blend_group;
