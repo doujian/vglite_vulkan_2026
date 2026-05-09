@@ -10,6 +10,10 @@ layout(push_constant) uniform PushConstants {
     int   flags;
 } pc;
 
+#define FLAG_OUTPUT_L8       1
+#define FLAG_OUTPUT_A8       2
+#define FLAG_NATIVE_BLEND    4
+
 layout(set = 0, binding = 0) uniform sampler2D src_texture;
 layout(set = 0, binding = 1) uniform sampler2D dst_texture;
 
@@ -49,11 +53,6 @@ layout(location = 0) out vec4 out_color;
 #define IMAGE_MODE_NORMAL   0x1F00
 #define IMAGE_MODE_MULTIPLY 0x1F01
 #define IMAGE_MODE_STENCIL  0x1F02
-
-/* Output format flags */
-#define OUTPUT_FORMAT_RGBA  0
-#define OUTPUT_FORMAT_L8    1
-#define OUTPUT_FORMAT_A8    2
 
 vec4 apply_image_mode(vec4 src, uint mix_color)
 {
@@ -246,40 +245,56 @@ vec4 blend_premul(vec4 S, vec4 D)
 void main()
 {
     vec3 src_coords = pc.matrix * vec3(frag_pos, 1.0);
-    vec2 src_uv = src_coords.xy;
+    vec2 src_uv;
+    if (abs(src_coords.z - 1.0) < 0.001) {
+        src_uv = src_coords.xy;
+    } else {
+        src_uv = src_coords.xy / src_coords.z;
+    }
 
-    vec4 dst = texture(dst_texture, frag_pos);
+    bool native_blend = (pc.flags & FLAG_NATIVE_BLEND) != 0;
 
-    /* If source UV is out of bounds, keep destination color unchanged */
-    if (src_uv.x < 0.0 || src_uv.x > 1.0 || src_uv.y < 0.0 || src_uv.y > 1.0) {
+    if (src_uv.x < -0.001 || src_uv.x > 1.001 || src_uv.y < -0.001 || src_uv.y > 1.001) {
+        if (native_blend) {
+            out_color = vec4(0.0, 0.0, 0.0, 0.0);
+            return;
+        }
+        vec4 dst = texture(dst_texture, frag_pos);
         out_color = dst;
         return;
     }
 
     vec4 src = texture(src_texture, src_uv);
-
-    /* Apply image mode (color multiply/stencil) */
     src = apply_image_mode(src, pc.color);
 
-    /* Apply blend mode */
+    if (native_blend) {
+        if (pc.blend_mode == BLEND_NORMAL_LVGL) {
+            src = vec4(src.rgb * src.a, src.a);
+        }
+        if ((pc.flags & FLAG_OUTPUT_L8) != 0) {
+            float lum = 0.2126 * src.r + 0.7152 * src.g + 0.0722 * src.b;
+            out_color = vec4(lum, 0.0, 0.0, src.a);
+        } else if ((pc.flags & FLAG_OUTPUT_A8) != 0) {
+            out_color = vec4(src.a, 0.0, 0.0, src.a);
+        } else {
+            out_color = src;
+        }
+        return;
+    }
+
+    vec4 dst = texture(dst_texture, frag_pos);
     vec4 result;
     if (pc.blend_mode >= OPENVG_BLEND_SRC) {
         result = blend_premul(src, dst);
     } else {
         result = blend_non_premul(src, dst);
     }
-
     result = clamp(result, 0.0, 1.0);
 
-    /* For L8 render target: pack luminance into R channel (G=B=0, A=1)
-     * For A8 render target: pack alpha into R channel (G=B=0, A=1)
-     * Vulkan VK_FORMAT_R8_UNORM only stores R, so we must put the
-     * meaningful value there. When reading back, componentMapping
-     * swizzles R→RGB for L8 or R→A for A8. */
-    if (pc.flags == OUTPUT_FORMAT_L8) {
+    if ((pc.flags & FLAG_OUTPUT_L8) != 0) {
         float lum = 0.2126 * result.r + 0.7152 * result.g + 0.0722 * result.b;
         out_color = vec4(lum, 0.0, 0.0, 1.0);
-    } else if (pc.flags == OUTPUT_FORMAT_A8) {
+    } else if ((pc.flags & FLAG_OUTPUT_A8) != 0) {
         out_color = vec4(result.a, 0.0, 0.0, 1.0);
     } else {
         out_color = result;

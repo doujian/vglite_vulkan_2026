@@ -309,10 +309,19 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     buffer_internal_t *src_int = (buffer_internal_t *)source->handle;
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
-    if (!g_vk_ctx.blit_pipeline || g_vk_ctx.blit_pipeline_format != vkfmt)
-        vg_lite_vulkan_create_pipelines(vkfmt);
+    int blend_group = vg_lite_blend_to_group(blend);
+    /* Native blend only works correctly when the framebuffer stores all 4 channels
+       (BGRA8888). For L8/A8/RGB565 targets, the GPU blends on 4 channels but only
+       stores R (L8/A8) or packs to 16-bit (RGB565), losing data in the process.
+       Fall back to shader-blend for non-BGRA8888 targets. */
+    if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888)
+        blend_group = BG_SHADER;
+    int native_blend = (blend_group != BG_SHADER);
+
+    VkPipeline pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
+    if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
     vg_lite_vulkan_begin_command();
-    vg_lite_vulkan_end_render_pass();  /* end any active render pass before barriers/copy */
+    vg_lite_vulkan_end_render_pass();
 
     /* Compute shader matrix: maps normalized frag_pos [0,1] -> source UV [0,1]
        VGLite matrix M: dst_pixel = M * src_pixel
@@ -363,10 +372,12 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
                 shader_mat[i][j] += s_inv[i][k] * temp[k][j];
         }
 
-    /* Temp image to hold copy of target (avoid feedback loop) */
-    VkImage tmp_image;
-    VkDeviceMemory tmp_memory;
-    VkImageView tmp_view;
+    /* Temp image to hold copy of target (shader-blend only, native-blend reads dst directly) */
+    VkImage tmp_image = VK_NULL_HANDLE;
+    VkDeviceMemory tmp_memory = VK_NULL_HANDLE;
+    VkImageView tmp_view = VK_NULL_HANDLE;
+
+    if (!native_blend) {
     VkImageCreateInfo tmp_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     tmp_ci.imageType = VK_IMAGE_TYPE_2D;
     tmp_ci.format = vkfmt;
@@ -453,6 +464,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     barrier.image = tmp_image;
     vkCmdPipelineBarrier(g_vk_ctx.cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    }
 
     /* Begin render pass */
     vg_lite_vulkan_set_render_target(target);
@@ -468,14 +480,19 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkSampler sampler = get_or_create_sampler();
     VkImageView src_view = src_int->swizzle_view ? src_int->swizzle_view : src_int->view;
     VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
-    VkDescriptorImageInfo di = {sampler, tmp_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo di;
+    if (native_blend) {
+        di = si;
+    } else {
+        di = (VkDescriptorImageInfo){sampler, tmp_view, VK_IMAGE_LAYOUT_GENERAL};
+    }
     VkWriteDescriptorSet ws[2] = {
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
     };
     vkUpdateDescriptorSets(g_vk_ctx.device, 2, ws, 0, NULL);
 
-    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_ctx.blit_pipeline);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
         g_vk_ctx.blit_pipeline_layout, 0, 1, &desc_set, 0, NULL);
 
@@ -486,8 +503,9 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     pc.blend = (int)blend; pc.color = color;
     pc.im_mode = (int)VG_LITE_NORMAL_IMAGE_MODE; pc.filt = (int)filter;
     pc.flags = 0;
-    if (target->format == VG_LITE_L8)  pc.flags = 1;
-    if (target->format == VG_LITE_A8)  pc.flags = 2;
+    if (target->format == VG_LITE_L8)  pc.flags |= 1;
+    if (target->format == VG_LITE_A8)  pc.flags |= 2;
+    if (native_blend)                   pc.flags |= 4;
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.blit_pipeline_layout,
         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
 
@@ -501,9 +519,11 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     /* Cleanup temp resources after submit */
     vg_lite_vulkan_submit_command(1);
     vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &desc_set);
-    vkDestroyImageView(g_vk_ctx.device, tmp_view, NULL);
-    vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
-    vkFreeMemory(g_vk_ctx.device, tmp_memory, NULL);
+    if (!native_blend) {
+        vkDestroyImageView(g_vk_ctx.device, tmp_view, NULL);
+        vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
+        vkFreeMemory(g_vk_ctx.device, tmp_memory, NULL);
+    }
     return VG_LITE_SUCCESS;
 }
 
