@@ -287,16 +287,69 @@ static VkShaderModule create_shader_module(const uint32_t *code, size_t size)
     return mod;
 }
 
-vg_lite_error_t vg_lite_vulkan_create_pipelines(VkFormat format)
+int vg_lite_blend_to_group(vg_lite_blend_t blend)
 {
-    if (g_vk_ctx.blit_pipeline && g_vk_ctx.blit_pipeline_format == format)
-        return VG_LITE_SUCCESS;
-
-    if (g_vk_ctx.blit_pipeline) {
-        vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.blit_pipeline, NULL);
-        g_vk_ctx.blit_pipeline = VK_NULL_HANDLE;
+    switch (blend) {
+    case VG_LITE_BLEND_SRC_OVER:
+    case VG_LITE_BLEND_NORMAL_LVGL:
+        return BG_SRC_OVER;
+    case VG_LITE_BLEND_DST_OVER:
+        return BG_DST_OVER;
+    case VG_LITE_BLEND_ADDITIVE:
+        return BG_ADDITIVE;
+    case VG_LITE_BLEND_SUBTRACT:
+        return BG_SUBTRACT;
+    default:
+        return BG_SHADER;
     }
+}
 
+static void get_blend_attachment_state(int blend_group, VkPipelineColorBlendAttachmentState *cba)
+{
+    memset(cba, 0, sizeof(*cba));
+    cba->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    switch (blend_group) {
+    case BG_SRC_OVER:
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
+    case BG_DST_OVER:
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        break;
+    case BG_ADDITIVE:
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        break;
+    case BG_SUBTRACT:
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
+    default:
+        break;
+    }
+}
+
+static VkPipeline create_blit_pipeline(VkFormat format, int blend_group)
+{
     if (!g_vk_ctx.vert_shader) {
         extern const uint32_t g_vert_spv_data[];
         extern const uint32_t g_frag_spv_data[];
@@ -342,8 +395,9 @@ vg_lite_error_t vg_lite_vulkan_create_pipelines(VkFormat format)
     rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; ms.minSampleShading = 1.0f;
-    VkPipelineColorBlendAttachmentState cba = {0};
-    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendAttachmentState cba;
+    get_blend_attachment_state(blend_group, &cba);
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1; cb.pAttachments = &cba;
 
@@ -365,15 +419,38 @@ vg_lite_error_t vg_lite_vulkan_create_pipelines(VkFormat format)
     gp_ci.pColorBlendState = &cb; gp_ci.pDynamicState = &dyn_ci;
     gp_ci.layout = g_vk_ctx.blit_pipeline_layout;
     gp_ci.renderPass = rp; gp_ci.subpass = 0;
-    vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_vk_ctx.blit_pipeline);
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline);
     vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
-    g_vk_ctx.blit_pipeline_format = format;
-    return VG_LITE_SUCCESS;
+    return pipeline;
+}
+
+VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group)
+{
+    for (int i = 0; i < g_vk_ctx.pipeline_cache_count; i++) {
+        if (g_vk_ctx.pipeline_cache[i].format == format &&
+            g_vk_ctx.pipeline_cache[i].blend_group == blend_group)
+            return g_vk_ctx.pipeline_cache[i].pipeline;
+    }
+
+    VkPipeline pipeline = create_blit_pipeline(format, blend_group);
+    if (pipeline && g_vk_ctx.pipeline_cache_count < MAX_PIPELINE_CACHE) {
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].pipeline = pipeline;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].format = format;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.pipeline_cache_count++;
+    }
+    return pipeline;
 }
 
 void vg_lite_vulkan_destroy_pipelines(void)
 {
-    if (g_vk_ctx.blit_pipeline) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.blit_pipeline, NULL); g_vk_ctx.blit_pipeline = VK_NULL_HANDLE; }
+    for (int i = 0; i < g_vk_ctx.pipeline_cache_count; i++) {
+        if (g_vk_ctx.pipeline_cache[i].pipeline)
+            vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.pipeline_cache[i].pipeline, NULL);
+    }
+    g_vk_ctx.pipeline_cache_count = 0;
     if (g_vk_ctx.blit_pipeline_layout) { vkDestroyPipelineLayout(g_vk_ctx.device, g_vk_ctx.blit_pipeline_layout, NULL); g_vk_ctx.blit_pipeline_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.blit_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.blit_descriptor_layout, NULL); g_vk_ctx.blit_descriptor_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.vert_shader, NULL); g_vk_ctx.vert_shader = VK_NULL_HANDLE; }
