@@ -192,38 +192,49 @@ vg_lite_error_t vg_lite_vulkan_submit_command(int wait)
 
 VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
 {
-    VkAttachmentDescription attachments[2] = {0};
-    /* Color attachment */
+    VkAttachmentDescription attachments[3] = {0};
+    /* MSAA color attachment */
     attachments[0].format = format;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
-    /* Depth/stencil attachment */
-    attachments[1].format = VK_FORMAT_D24_UNORM_S8_UINT;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    /* Resolve attachment (final output) */
+    attachments[1].format = format;
     attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+    /* MSAA depth/stencil attachment */
+    attachments[2].format = VK_FORMAT_D24_UNORM_S8_UINT;
+    attachments[2].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[2].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     
     VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference stencil_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference resolve_ref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference stencil_ref = {2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     
     VkSubpassDescription sub = {0};
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sub.colorAttachmentCount = 1;
     sub.pColorAttachments = &color_ref;
+    sub.pResolveAttachments = &resolve_ref;
     sub.pDepthStencilAttachment = &stencil_ref;
     
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    ci.attachmentCount = 2;
+    ci.attachmentCount = 3;
     ci.pAttachments = attachments;
     ci.subpassCount = 1;
     ci.pSubpasses = &sub;
@@ -254,6 +265,143 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     if (internal->render_pass == VK_NULL_HANDLE) {
         VkFormat vkfmt = vg_lite_format_to_vk(target->format);
         internal->render_pass = vg_lite_vulkan_create_render_pass(vkfmt);
+    }
+    
+    /* Create MSAA color attachment (4x sample) */
+    if (internal->msaa_color_image == VK_NULL_HANDLE) {
+        printf("Creating MSAA color image: %dx%d\n", target->width, target->height);
+        VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+        VkImageCreateInfo img_ci = {0};
+        img_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        img_ci.imageType = VK_IMAGE_TYPE_2D;
+        img_ci.format = vkfmt;
+        img_ci.extent.width = target->width;
+        img_ci.extent.height = target->height;
+        img_ci.extent.depth = 1;
+        img_ci.mipLevels = 1;
+        img_ci.arrayLayers = 1;
+        img_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+        img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        img_ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(g_vk_ctx.device, &img_ci, NULL, &internal->msaa_color_image) != VK_SUCCESS)
+            return VG_LITE_OUT_OF_MEMORY;
+        
+        VkMemoryRequirements mem_req;
+        vkGetImageMemoryRequirements(g_vk_ctx.device, internal->msaa_color_image, &mem_req);
+        VkMemoryAllocateInfo alloc_ci = {0};
+        alloc_ci.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_ci.allocationSize = mem_req.size;
+        VkPhysicalDeviceMemoryProperties mem_props;
+        vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
+        for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
+            if ((mem_req.memoryTypeBits & (1 << i)) && 
+                (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                alloc_ci.memoryTypeIndex = i; break;
+            }
+        }
+        if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, &internal->msaa_color_memory) != VK_SUCCESS)
+            return VG_LITE_OUT_OF_MEMORY;
+        vkBindImageMemory(g_vk_ctx.device, internal->msaa_color_image, internal->msaa_color_memory, 0);
+        
+        VkImageViewCreateInfo view_ci = {0};
+        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_ci.image = internal->msaa_color_image;
+        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_ci.format = vkfmt;
+        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_ci.subresourceRange.baseMipLevel = 0;
+        view_ci.subresourceRange.levelCount = 1;
+        view_ci.subresourceRange.baseArrayLayer = 0;
+        view_ci.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->msaa_color_view) != VK_SUCCESS)
+            return VG_LITE_OUT_OF_MEMORY;
+        
+        VkImageMemoryBarrier color_barrier = {0};
+        color_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        color_barrier.srcAccessMask = 0;
+        color_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        color_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        color_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        color_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        color_barrier.image = internal->msaa_color_image;
+        color_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        color_barrier.subresourceRange.baseMipLevel = 0;
+        color_barrier.subresourceRange.levelCount = 1;
+        color_barrier.subresourceRange.baseArrayLayer = 0;
+        color_barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, NULL, 0, NULL, 1, &color_barrier);
+    }
+    
+    /* Create MSAA depth/stencil attachment (4x sample) */
+    if (internal->msaa_depth_image == VK_NULL_HANDLE) {
+        printf("Creating MSAA depth/stencil image: %dx%d\n", target->width, target->height);
+        VkImageCreateInfo img_ci = {0};
+        img_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        img_ci.imageType = VK_IMAGE_TYPE_2D;
+        img_ci.format = VK_FORMAT_D24_UNORM_S8_UINT;
+        img_ci.extent.width = target->width;
+        img_ci.extent.height = target->height;
+        img_ci.extent.depth = 1;
+        img_ci.mipLevels = 1;
+        img_ci.arrayLayers = 1;
+        img_ci.samples = VK_SAMPLE_COUNT_4_BIT;
+        img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        img_ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(g_vk_ctx.device, &img_ci, NULL, &internal->msaa_depth_image) != VK_SUCCESS)
+            return VG_LITE_OUT_OF_MEMORY;
+        
+        VkMemoryRequirements mem_req;
+        vkGetImageMemoryRequirements(g_vk_ctx.device, internal->msaa_depth_image, &mem_req);
+        VkMemoryAllocateInfo alloc_ci = {0};
+        alloc_ci.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_ci.allocationSize = mem_req.size;
+        VkPhysicalDeviceMemoryProperties mem_props;
+        vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
+        for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
+            if ((mem_req.memoryTypeBits & (1 << i)) && 
+                (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                alloc_ci.memoryTypeIndex = i; break;
+            }
+        }
+        if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, &internal->msaa_depth_memory) != VK_SUCCESS)
+            return VG_LITE_OUT_OF_MEMORY;
+        vkBindImageMemory(g_vk_ctx.device, internal->msaa_depth_image, internal->msaa_depth_memory, 0);
+        
+        VkImageViewCreateInfo view_ci = {0};
+        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_ci.image = internal->msaa_depth_image;
+        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_ci.format = VK_FORMAT_D24_UNORM_S8_UINT;
+        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        view_ci.subresourceRange.baseMipLevel = 0;
+        view_ci.subresourceRange.levelCount = 1;
+        view_ci.subresourceRange.baseArrayLayer = 0;
+        view_ci.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->msaa_depth_view) != VK_SUCCESS)
+            return VG_LITE_OUT_OF_MEMORY;
+        
+        VkImageMemoryBarrier stencil_barrier = {0};
+        stencil_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        stencil_barrier.srcAccessMask = 0;
+        stencil_barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        stencil_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        stencil_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        stencil_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        stencil_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        stencil_barrier.image = internal->msaa_depth_image;
+        stencil_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        stencil_barrier.subresourceRange.baseMipLevel = 0;
+        stencil_barrier.subresourceRange.levelCount = 1;
+        stencil_barrier.subresourceRange.baseArrayLayer = 0;
+        stencil_barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+            0, 0, NULL, 0, NULL, 1, &stencil_barrier);
     }
     
     if (internal->depth_stencil_image == VK_NULL_HANDLE) {
@@ -324,11 +472,11 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
             0, 0, NULL, 0, NULL, 1, &stencil_barrier);
     }
     
-    VkImageView fb_views[2] = {internal->view, internal->depth_stencil_view};
+    VkImageView fb_views[3] = {internal->msaa_color_view, internal->view, internal->msaa_depth_view};
     VkFramebufferCreateInfo fb_ci = {0};
     fb_ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fb_ci.renderPass = internal->render_pass;
-    fb_ci.attachmentCount = 2;
+    fb_ci.attachmentCount = 3;
     fb_ci.pAttachments = fb_views;
     fb_ci.width = target->width;
     fb_ci.height = target->height;
@@ -342,9 +490,13 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
     
-    VkClearValue clear_values[2] = {0};
-    clear_values[1].depthStencil.depth = 0.0f;
-    clear_values[1].depthStencil.stencil = 0;
+    VkClearValue clear_values[3] = {0};
+    clear_values[0].color.float32[0] = 0.0f;
+    clear_values[0].color.float32[1] = 0.0f;
+    clear_values[0].color.float32[2] = 0.0f;
+    clear_values[0].color.float32[3] = 0.0f;
+    clear_values[2].depthStencil.depth = 0.0f;
+    clear_values[2].depthStencil.stencil = 0;
     
     VkRenderPassBeginInfo rpbi = {0};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -354,7 +506,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     rpbi.renderArea.offset.y = 0;
     rpbi.renderArea.extent.width = target->width;
     rpbi.renderArea.extent.height = target->height;
-    rpbi.clearValueCount = 2;
+    rpbi.clearValueCount = 3;
     rpbi.pClearValues = clear_values;
     
     static int rp_begin_debug = 0;

@@ -237,6 +237,12 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
+    if (internal->msaa_color_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_color_image, NULL);
+    if (internal->msaa_color_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_color_memory, NULL);
+    if (internal->msaa_depth_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_depth_view, NULL);
+    if (internal->msaa_depth_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_depth_image, NULL);
+    if (internal->msaa_depth_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_depth_memory, NULL);
     if (internal->depth_stencil_view) vkDestroyImageView(g_vk_ctx.device, internal->depth_stencil_view, NULL);
     if (internal->depth_stencil_image) vkDestroyImage(g_vk_ctx.device, internal->depth_stencil_image, NULL);
     if (internal->depth_stencil_memory) vkFreeMemory(g_vk_ctx.device, internal->depth_stencil_memory, NULL);

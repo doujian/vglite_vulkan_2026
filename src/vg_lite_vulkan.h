@@ -25,6 +25,13 @@ typedef struct {
     VkImage depth_stencil_image;
     VkImageView depth_stencil_view;
     VkDeviceMemory depth_stencil_memory;
+    /* MSAA attachments */
+    VkImage msaa_color_image;
+    VkImageView msaa_color_view;
+    VkDeviceMemory msaa_color_memory;
+    VkImage msaa_depth_image;
+    VkImageView msaa_depth_view;
+    VkDeviceMemory msaa_depth_memory;
 } buffer_internal_t;
 
 typedef struct {
