@@ -21,6 +21,10 @@ typedef struct {
     VkRenderPass render_pass;
     VkSampler sampler;
     void *mapped_base;       /* host mapped memory pointer for vkUnmapMemory */
+    /* Depth/stencil for fill rules */
+    VkImage depth_stencil_image;
+    VkImageView depth_stencil_view;
+    VkDeviceMemory depth_stencil_memory;
 } buffer_internal_t;
 
 typedef struct {
