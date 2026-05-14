@@ -2,6 +2,9 @@ add_library(vg_lite SHARED
     vg_lite.c
     vg_lite_vulkan.c
     vg_lite_format.c
+    vlc_parser.c
+    tessellator.c
+    vg_lite_draw.c
 )
 
 target_include_directories(vg_lite PUBLIC
