@@ -551,6 +551,7 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
             vkDestroyFramebuffer(g_vk_ctx.device, g_vk_ctx.current_fb, NULL);
         }
         g_vk_ctx.current_fb = VK_NULL_HANDLE;
+        g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
     }
     return VG_LITE_SUCCESS;
 }
@@ -673,7 +674,7 @@ static VkPipeline create_blit_pipeline(VkFormat format, int blend_group)
     VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT; ms.minSampleShading = 1.0f;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT; ms.minSampleShading = 1.0f;
 
     VkPipelineColorBlendAttachmentState cba;
     get_blend_attachment_state(blend_group, &cba);
