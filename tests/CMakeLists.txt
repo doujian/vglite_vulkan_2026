@@ -49,10 +49,4 @@ add_dependencies(test_sft_blit spirv_compilation)
 add_executable(test_tiger tiger/tiger.c tiger/tiger_paths.h)
 add_dependencies(test_tiger spirv_compilation)
 
-add_executable(test_simple_triangle simple_triangle.c)
-add_dependencies(test_simple_triangle spirv_compilation)
-
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-
-add_executable(test_debug_triangle debug_triangle.c)
-add_dependencies(test_debug_triangle spirv_compilation)
