@@ -150,19 +150,20 @@ static void init_draw_pipeline(VkFormat format)
     stencil_ds.depthTestEnable = VK_FALSE;
     stencil_ds.depthWriteEnable = VK_FALSE;
     stencil_ds.stencilTestEnable = VK_TRUE;
+    /* EVEN_ODD fill rule: INVERT LSB on every triangle pass */
     stencil_ds.front.failOp = VK_STENCIL_OP_KEEP;
-    stencil_ds.front.passOp = VK_STENCIL_OP_INCREMENT_AND_WRAP;
+    stencil_ds.front.passOp = VK_STENCIL_OP_INVERT;
     stencil_ds.front.depthFailOp = VK_STENCIL_OP_KEEP;
     stencil_ds.front.compareOp = VK_COMPARE_OP_ALWAYS;
-    stencil_ds.front.compareMask = 0xFF;
-    stencil_ds.front.writeMask = 0xFF;
+    stencil_ds.front.compareMask = 0x01;
+    stencil_ds.front.writeMask = 0x01;
     stencil_ds.front.reference = 0;
     stencil_ds.back.failOp = VK_STENCIL_OP_KEEP;
-    stencil_ds.back.passOp = VK_STENCIL_OP_DECREMENT_AND_WRAP;
+    stencil_ds.back.passOp = VK_STENCIL_OP_INVERT;
     stencil_ds.back.depthFailOp = VK_STENCIL_OP_KEEP;
     stencil_ds.back.compareOp = VK_COMPARE_OP_ALWAYS;
-    stencil_ds.back.compareMask = 0xFF;
-    stencil_ds.back.writeMask = 0xFF;
+    stencil_ds.back.compareMask = 0x01;
+    stencil_ds.back.writeMask = 0x01;
     stencil_ds.back.reference = 0;
     
     VkPipelineColorBlendAttachmentState stencil_cba = {0};
@@ -183,16 +184,16 @@ static void init_draw_pipeline(VkFormat format)
     cover_ds.front.failOp = VK_STENCIL_OP_KEEP;
     cover_ds.front.passOp = VK_STENCIL_OP_ZERO;  /* Reset stencil after cover */
     cover_ds.front.depthFailOp = VK_STENCIL_OP_KEEP;
-    cover_ds.front.compareOp = VK_COMPARE_OP_NOT_EQUAL;  /* Pass if stencil != 0 */
-    cover_ds.front.compareMask = 0xFF;
-    cover_ds.front.writeMask = 0xFF;
+    cover_ds.front.compareOp = VK_COMPARE_OP_NOT_EQUAL;  /* Pass if stencil LSB != 0 */
+    cover_ds.front.compareMask = 0x01;
+    cover_ds.front.writeMask = 0x01;
     cover_ds.front.reference = 0;
     cover_ds.back.failOp = VK_STENCIL_OP_KEEP;
     cover_ds.back.passOp = VK_STENCIL_OP_ZERO;
     cover_ds.back.depthFailOp = VK_STENCIL_OP_KEEP;
     cover_ds.back.compareOp = VK_COMPARE_OP_NOT_EQUAL;
-    cover_ds.back.compareMask = 0xFF;
-    cover_ds.back.writeMask = 0xFF;
+    cover_ds.back.compareMask = 0x01;
+    cover_ds.back.writeMask = 0x01;
     cover_ds.back.reference = 0;
     
     VkPipelineInputAssemblyStateCreateInfo cover_ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};

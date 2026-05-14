@@ -4,8 +4,8 @@
 #include <math.h>
 #include <float.h>
 
-#define BEZIER_FLATTEN_TOLERANCE 0.5f
-#define MAX_BEZIER_SEGMENTS 64
+#define BEZIER_FLATTEN_TOLERANCE 0.125f
+#define MAX_BEZIER_SEGMENTS 256
 
 void tess_geometry_init(TessGeometry* geom)
 {
