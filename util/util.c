@@ -223,9 +223,9 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
     }
     case VG_LITE_RGBA8888: {
         uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t b = p & 0xFF;
+        uint8_t r = p & 0xFF;
         uint8_t g = (p >> 8) & 0xFF;
-        uint8_t r = (p >> 16) & 0xFF;
+        uint8_t b = (p >> 16) & 0xFF;
         uint8_t a = (p >> 24) & 0xFF;
         return r | (g << 8) | (b << 16) | (a << 24);
     }
@@ -322,6 +322,18 @@ static void vulkan_linear_sample(vg_lite_buffer_t *src, float sx, float sy,
     *sa = (int)(a00*w00 + a10*w10 + a01*w01 + a11*w11 + 0.5f);
 }
 
+/* Nearest neighbor sampling: snap to nearest texel center */
+static void vulkan_nearest_sample(vg_lite_buffer_t *src, float sx, float sy,
+                                   int *sr, int *sg, int *sb, int *sa)
+{
+    int w = (int)src->width, h = (int)src->height;
+    int ix = (int)floorf(sx + 0.5f);
+    int iy = (int)floorf(sy + 0.5f);
+    if (ix < 0) ix = 0; else if (ix >= w) ix = w - 1;
+    if (iy < 0) iy = 0; else if (iy >= h) iy = h - 1;
+    unpack_rgba(vg_lite_read_pixel(src, ix, iy), sr, sg, sb, sa);
+}
+
 static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
                                              vg_lite_float_t inv[3][3],
                                              int x, int y,
@@ -344,8 +356,10 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
     sy = src_uv_y * sh;
 
     int sr, sg, sb, sa;
-    vulkan_linear_sample(src, sx, sy, &sr, &sg, &sb, &sa);
-    (void)is_bilinear;
+    if (is_bilinear)
+        vulkan_linear_sample(src, sx, sy, &sr, &sg, &sb, &sa);
+    else
+        vulkan_nearest_sample(src, sx, sy, &sr, &sg, &sb, &sa);
 
     int dr, dg, db, da;
     unpack_rgba(dst_px, &dr, &dg, &db, &da);
@@ -453,10 +467,11 @@ void vg_lite_expected_clear(vg_lite_expected_buffer_t *eb,
 {
     if (!eb) return;
 
-    uint8_t r = (color)       & 0xFF;
-    uint8_t g = (color >> 8)  & 0xFF;
-    uint8_t b = (color >> 16) & 0xFF;
+    /* VGLite color is 0xAARRGGBB: A at bits 24-31, R at bits 16-23, G at bits 8-15, B at bits 0-7 */
     uint8_t a = (color >> 24) & 0xFF;
+    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t g = (color >> 8)  & 0xFF;
+    uint8_t b = (color)       & 0xFF;
     uint32_t rgba8888 = r | (g << 8) | (b << 16) | (a << 24);
 
     uint32_t c;

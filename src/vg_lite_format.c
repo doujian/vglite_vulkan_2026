@@ -35,7 +35,7 @@ uint32_t vg_lite_format_stride(vg_lite_buffer_format_t format, uint32_t width)
 VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
 {
     switch (format) {
-    case VG_LITE_RGBA8888: return VK_FORMAT_B8G8R8A8_UNORM;  /* Driver stores B8G8R8A8 as RGBA in memory */
+    case VG_LITE_RGBA8888: return VK_FORMAT_R8G8B8A8_UNORM;
     case VG_LITE_BGRA8888: return VK_FORMAT_B8G8R8A8_UNORM;
     case VG_LITE_RGBX8888: return VK_FORMAT_B8G8R8A8_UNORM;
     case VG_LITE_BGRX8888: return VK_FORMAT_B8G8R8A8_UNORM;

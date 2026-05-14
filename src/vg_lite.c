@@ -40,14 +40,17 @@ static int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags prop
     return -1;
 }
 
-static VkSampler s_sampler = VK_NULL_HANDLE;
+static VkSampler s_sampler_point = VK_NULL_HANDLE;
+static VkSampler s_sampler_linear = VK_NULL_HANDLE;
 
-static VkSampler get_or_create_sampler(void)
+static VkSampler get_or_create_sampler(vg_lite_filter_t filter)
 {
-    if (s_sampler != VK_NULL_HANDLE) return s_sampler;
+    VkSampler *sampler_ptr = (filter == VG_LITE_FILTER_POINT) ? &s_sampler_point : &s_sampler_linear;
+    if (*sampler_ptr != VK_NULL_HANDLE) return *sampler_ptr;
+    
     VkSamplerCreateInfo ci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    ci.magFilter = VK_FILTER_LINEAR;
-    ci.minFilter = VK_FILTER_LINEAR;
+    ci.magFilter = (filter == VG_LITE_FILTER_POINT) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+    ci.minFilter = (filter == VG_LITE_FILTER_POINT) ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
     ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -57,15 +60,19 @@ static VkSampler get_or_create_sampler(void)
     ci.unnormalizedCoordinates = VK_FALSE;
     ci.compareEnable = VK_FALSE;
     ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    vkCreateSampler(g_vk_ctx.device, &ci, NULL, &s_sampler);
-    return s_sampler;
+    vkCreateSampler(g_vk_ctx.device, &ci, NULL, sampler_ptr);
+    return *sampler_ptr;
 }
 
 static void destroy_sampler(void)
 {
-    if (s_sampler != VK_NULL_HANDLE && g_vk_ctx.device) {
-        vkDestroySampler(g_vk_ctx.device, s_sampler, NULL);
-        s_sampler = VK_NULL_HANDLE;
+    if (s_sampler_point != VK_NULL_HANDLE && g_vk_ctx.device) {
+        vkDestroySampler(g_vk_ctx.device, s_sampler_point, NULL);
+        s_sampler_point = VK_NULL_HANDLE;
+    }
+    if (s_sampler_linear != VK_NULL_HANDLE && g_vk_ctx.device) {
+        vkDestroySampler(g_vk_ctx.device, s_sampler_linear, NULL);
+        s_sampler_linear = VK_NULL_HANDLE;
     }
 }
 
@@ -270,10 +277,11 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     clear_att.colorAttachment = 0;
     
-    uint8_t b = (color)       & 0xFF;
-    uint8_t g = (color >> 8)  & 0xFF;
-    uint8_t r = (color >> 16) & 0xFF;
+    /* VGLite color is 0xAARRGGBB: A at bits 24-31, R at bits 16-23, G at bits 8-15, B at bits 0-7 */
     uint8_t a = (color >> 24) & 0xFF;
+    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t g = (color >> 8)  & 0xFF;
+    uint8_t b = (color)       & 0xFF;
     
     if (target->format == VG_LITE_L8) {
         float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
@@ -286,15 +294,13 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
         clear_att.clearValue.color.float32[1] = 0.0f;
         clear_att.clearValue.color.float32[2] = 0.0f;
         clear_att.clearValue.color.float32[3] = 1.0f;
-    } else if (vkfmt == VK_FORMAT_B8G8R8A8_UNORM) {
-        clear_att.clearValue.color.float32[0] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
     } else {
-        clear_att.clearValue.color.float32[0] = (float)b / 255.0f;
+        /* VkClearValue channels are format-independent per Vulkan spec:
+         * [0]=R value, [1]=G value, [2]=B value, [3]=A value
+         * The driver handles format-specific memory layout internally. */
+        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
         clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)r / 255.0f;
+        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
         clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
     }
     printf("vg_lite_clear: color=0x%08x, vkfmt=%d, clear=[%.2f,%.2f,%.2f,%.2f]\n",
@@ -518,7 +524,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
 
-    VkSampler sampler = get_or_create_sampler();
+    VkSampler sampler = get_or_create_sampler(filter);
     VkImageView src_view = src_int->swizzle_view ? src_int->swizzle_view : src_int->view;
     VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo di;

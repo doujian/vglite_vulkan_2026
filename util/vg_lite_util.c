@@ -80,8 +80,6 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
     int is_bgra = (buffer->format == VG_LITE_BGRA8888 ||
                     buffer->format == VG_LITE_BGRX8888 ||
                     buffer->format == VG_LITE_BGR565 ||
-                    buffer->format == VG_LITE_RGBA8888 ||
-                    buffer->format == VG_LITE_RGBX8888 ||
                     buffer->format == VG_LITE_ARGB8888);
     unsigned char *src = (unsigned char *)buffer->memory;
     for (int y = 0; y < buffer->height; y++) {
