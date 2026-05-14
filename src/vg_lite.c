@@ -264,9 +264,9 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     clear_att.colorAttachment = 0;
     
-    uint8_t r = (color)       & 0xFF;
+    uint8_t b = (color)       & 0xFF;
     uint8_t g = (color >> 8)  & 0xFF;
-    uint8_t b = (color >> 16) & 0xFF;
+    uint8_t r = (color >> 16) & 0xFF;
     uint8_t a = (color >> 24) & 0xFF;
     
     if (target->format == VG_LITE_L8) {
@@ -281,14 +281,14 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
         clear_att.clearValue.color.float32[2] = 0.0f;
         clear_att.clearValue.color.float32[3] = 1.0f;
     } else if (vkfmt == VK_FORMAT_B8G8R8A8_UNORM) {
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
+        clear_att.clearValue.color.float32[0] = (float)b / 255.0f;
         clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
+        clear_att.clearValue.color.float32[2] = (float)r / 255.0f;
         clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
     } else {
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
+        clear_att.clearValue.color.float32[0] = (float)b / 255.0f;
         clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
+        clear_att.clearValue.color.float32[2] = (float)r / 255.0f;
         clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
     }
     printf("vg_lite_clear: color=0x%08x, vkfmt=%d, clear=[%.2f,%.2f,%.2f,%.2f]\n",

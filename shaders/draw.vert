@@ -13,11 +13,11 @@ layout(location = 0) out vec4 vert_color;
 
 vec4 unpackColor(uint c)
 {
-    float r = float((c      ) & 0xFFu) / 255.0;
+    float b = float((c      ) & 0xFFu) / 255.0;
     float g = float((c >>  8) & 0xFFu) / 255.0;
-    float b = float((c >> 16) & 0xFFu) / 255.0;
+    float r = float((c >> 16) & 0xFFu) / 255.0;
     float a = float((c >> 24) & 0xFFu) / 255.0;
-    return vec4(r, g, b, a);
+    return vec4(b, g, r, a);
 }
 
 void main()
