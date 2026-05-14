@@ -9,6 +9,20 @@
 #include "spv_vert.h"
 #include "spv_frag.h"
 
+extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *t, vg_lite_path_t *p, 
+                                         vg_lite_fill_t fl, vg_lite_matrix_t *m, 
+                                         vg_lite_blend_t b, vg_lite_color_t c);
+extern void vg_lite_draw_cleanup(void);
+extern void vg_lite_draw_cleanup_pending_buffers(void);
+#include "vg_lite_format.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+#include "spv_vert.h"
+#include "spv_frag.h"
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -68,6 +82,7 @@ vg_lite_error_t vg_lite_init(vg_lite_uint32_t tess_width, vg_lite_uint32_t tess_
 vg_lite_error_t vg_lite_close(void)
 {
     if (!g_initialized) return VG_LITE_SUCCESS;
+    vg_lite_draw_cleanup();
     destroy_sampler();
     vg_lite_vulkan_destroy();
     g_initialized = 0;
@@ -222,6 +237,9 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (internal->depth_stencil_view) vkDestroyImageView(g_vk_ctx.device, internal->depth_stencil_view, NULL);
+    if (internal->depth_stencil_image) vkDestroyImage(g_vk_ctx.device, internal->depth_stencil_image, NULL);
+    if (internal->depth_stencil_memory) vkFreeMemory(g_vk_ctx.device, internal->depth_stencil_memory, NULL);
     if (internal->view) vkDestroyImageView(g_vk_ctx.device, internal->view, NULL);
     if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
@@ -238,46 +256,62 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
 {
     if (!target) return VG_LITE_INVALID_ARGUMENT;
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
-    vg_lite_vulkan_begin_command();
-    vg_lite_vulkan_set_render_target(target);
-
+    
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    
     VkClearAttachment clear_att = {0};
     clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     clear_att.colorAttachment = 0;
-    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-
-    /* For L8/A8 (VK_FORMAT_R8_UNORM), only R channel is stored.
-     * vkClearAttachments uses float32[0]=R regardless of format.
-     * L8: R = luminance = 0.2126*r + 0.7152*g + 0.0722*b
-     * A8: R = alpha = a/255 */
+    
+    uint8_t r = (color)       & 0xFF;
+    uint8_t g = (color >> 8)  & 0xFF;
+    uint8_t b = (color >> 16) & 0xFF;
+    uint8_t a = (color >> 24) & 0xFF;
+    
     if (target->format == VG_LITE_L8) {
-        uint8_t r = color & 0xFF, g = (color >> 8) & 0xFF, b = (color >> 16) & 0xFF;
         float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
         clear_att.clearValue.color.float32[0] = lum / 255.0f;
         clear_att.clearValue.color.float32[1] = 0.0f;
         clear_att.clearValue.color.float32[2] = 0.0f;
         clear_att.clearValue.color.float32[3] = 1.0f;
     } else if (target->format == VG_LITE_A8) {
-        uint8_t a = (color >> 24) & 0xFF;
         clear_att.clearValue.color.float32[0] = (float)a / 255.0f;
         clear_att.clearValue.color.float32[1] = 0.0f;
         clear_att.clearValue.color.float32[2] = 0.0f;
         clear_att.clearValue.color.float32[3] = 1.0f;
+    } else if (vkfmt == VK_FORMAT_B8G8R8A8_UNORM) {
+        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
+        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
+        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
+        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
     } else {
-        vg_lite_color_argb_to_vk(color, vkfmt, &clear_att.clearValue.color);
+        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
+        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
+        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
+        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
     }
+    printf("vg_lite_clear: color=0x%08x, vkfmt=%d, clear=[%.2f,%.2f,%.2f,%.2f]\n",
+           color, vkfmt,
+           clear_att.clearValue.color.float32[0],
+           clear_att.clearValue.color.float32[1],
+           clear_att.clearValue.color.float32[2],
+           clear_att.clearValue.color.float32[3]);
+    
+    vg_lite_vulkan_begin_command();
+    vg_lite_vulkan_set_render_target(target);
 
     VkClearRect clear_rect;
     if (rect) {
         int32_t x = rect->x < 0 ? 0 : rect->x;
         int32_t y = rect->y < 0 ? 0 : rect->y;
-        int32_t r = (rect->x + rect->width) > target->width ? target->width : (rect->x + rect->width);
-        int32_t b = (rect->y + rect->height) > target->height ? target->height : (rect->y + rect->height);
-        if (x >= r || y >= b) return VG_LITE_SUCCESS;
+        int32_t r_bound = (rect->x + rect->width) > target->width ? target->width : (rect->x + rect->width);
+        int32_t b_bound = (rect->y + rect->height) > target->height ? target->height : (rect->y + rect->height);
+        if (x >= r_bound || y >= b_bound) return VG_LITE_SUCCESS;
         clear_rect.rect.offset.x = x;
         clear_rect.rect.offset.y = y;
-        clear_rect.rect.extent.width = r - x;
-        clear_rect.rect.extent.height = b - y;
+        clear_rect.rect.extent.width = r_bound - x;
+        clear_rect.rect.extent.height = b_bound - y;
     } else {
         clear_rect.rect.offset.x = 0;
         clear_rect.rect.offset.y = 0;
@@ -532,6 +566,7 @@ vg_lite_error_t vg_lite_finish(void)
 {
     vg_lite_vulkan_end_render_pass();
     vg_lite_vulkan_submit_command(1);
+    vg_lite_draw_cleanup_pending_buffers();
     return VG_LITE_SUCCESS;
 }
 
@@ -619,7 +654,9 @@ vg_lite_error_t vg_lite_blit2(vg_lite_buffer_t *t, vg_lite_buffer_t *s0, vg_lite
 
 vg_lite_error_t vg_lite_draw(vg_lite_buffer_t *t, vg_lite_path_t *p, vg_lite_fill_t fl,
     vg_lite_matrix_t *m, vg_lite_blend_t b, vg_lite_color_t c)
-{ (void)t;(void)p;(void)fl;(void)m;(void)b;(void)c; return VG_LITE_NOT_SUPPORT; }
+{ 
+    return vg_lite_draw_impl(t, p, fl, m, b, c);
+}
 
 vg_lite_error_t vg_lite_set_color_key(vg_lite_color_key4_t ck) { (void)ck; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_enable_dither(void) { return VG_LITE_NOT_SUPPORT; }

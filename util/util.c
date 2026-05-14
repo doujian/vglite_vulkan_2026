@@ -221,7 +221,14 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
         uint8_t l = *(ptr + y * buffer->stride + x);
         return l | (l << 8) | (l << 16) | (0xFF << 24);
     }
-    case VG_LITE_RGBA8888:
+    case VG_LITE_RGBA8888: {
+        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
+        uint8_t b = p & 0xFF;
+        uint8_t g = (p >> 8) & 0xFF;
+        uint8_t r = (p >> 16) & 0xFF;
+        uint8_t a = (p >> 24) & 0xFF;
+        return r | (g << 8) | (b << 16) | (a << 24);
+    }
     default:
         return *(uint32_t*)(ptr + y * buffer->stride + x * 4);
     }
@@ -446,25 +453,30 @@ void vg_lite_expected_clear(vg_lite_expected_buffer_t *eb,
 {
     if (!eb) return;
 
+    uint8_t r = (color)       & 0xFF;
+    uint8_t g = (color >> 8)  & 0xFF;
+    uint8_t b = (color >> 16) & 0xFF;
+    uint8_t a = (color >> 24) & 0xFF;
+    uint32_t rgba8888 = r | (g << 8) | (b << 16) | (a << 24);
+
     uint32_t c;
     switch (eb->format) {
     case VG_LITE_RGB565:
     case VG_LITE_BGR565:
     case VG_LITE_RGBX8888:
     case VG_LITE_BGRX8888:
-        c = color | 0xFF000000;
+        c = rgba8888 | 0xFF000000;
         break;
     case VG_LITE_A8:
-        c = ((color >> 24) & 0xFF) * 0x01010101u;
+        c = a * 0x01010101u;
         break;
     case VG_LITE_L8: {
-        int r = color & 0xFF, g = (color >> 8) & 0xFF, b = (color >> 16) & 0xFF;
         uint8_t lum = (uint8_t)(0.2126f * r + 0.7152f * g + 0.0722f * b + 0.5f);
         c = lum | (lum << 8) | (lum << 16) | (0xFFu << 24);
         break;
     }
     default:
-        c = color;
+        c = rgba8888;
         break;
     }
 
