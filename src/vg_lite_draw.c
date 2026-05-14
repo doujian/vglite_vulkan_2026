@@ -542,6 +542,14 @@ void vg_lite_draw_cleanup(void)
         vkFreeMemory(g_vk_ctx.device, g_draw_pipeline.cover_vbo_mem, NULL);
         g_draw_pipeline.cover_vbo_mem = VK_NULL_HANDLE;
     }
+    if (g_draw_pipeline.cover_ibo) {
+        vkDestroyBuffer(g_vk_ctx.device, g_draw_pipeline.cover_ibo, NULL);
+        g_draw_pipeline.cover_ibo = VK_NULL_HANDLE;
+    }
+    if (g_draw_pipeline.cover_ibo_mem) {
+        vkFreeMemory(g_vk_ctx.device, g_draw_pipeline.cover_ibo_mem, NULL);
+        g_draw_pipeline.cover_ibo_mem = VK_NULL_HANDLE;
+    }
     if (g_draw_pipeline.pipeline_layout) {
         vkDestroyPipelineLayout(g_vk_ctx.device, g_draw_pipeline.pipeline_layout, NULL);
         g_draw_pipeline.pipeline_layout = VK_NULL_HANDLE;
