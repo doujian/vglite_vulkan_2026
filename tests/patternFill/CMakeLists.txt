@@ -1,0 +1,3 @@
+add_executable(test_patternFill patternFill.c)
+target_link_libraries(test_patternFill vg_lite vg_lite_util)
+target_include_directories(test_patternFill PRIVATE ${CMAKE_SOURCE_DIR}/inc)

@@ -50,3 +50,6 @@ add_executable(test_tiger tiger/tiger.c tiger/tiger_paths.h)
 add_dependencies(test_tiger spirv_compilation)
 
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+
+add_executable(test_patternFill patternFill/patternFill.c)
+add_dependencies(test_patternFill spirv_compilation)
