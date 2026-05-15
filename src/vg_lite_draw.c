@@ -563,3 +563,180 @@ void vg_lite_draw_cleanup(void)
         g_draw_pipeline.frag_shader = VK_NULL_HANDLE;
     }
 }
+
+static VkSampler get_or_create_pattern_sampler(void)
+{
+    static VkSampler s_pattern_sampler = VK_NULL_HANDLE;
+    if (s_pattern_sampler != VK_NULL_HANDLE) return s_pattern_sampler;
+    
+    VkSamplerCreateInfo ci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    ci.magFilter = VK_FILTER_NEAREST;
+    ci.minFilter = VK_FILTER_NEAREST;
+    ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.anisotropyEnable = VK_FALSE;
+    ci.maxAnisotropy = 1.0f;
+    ci.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    ci.unnormalizedCoordinates = VK_FALSE;
+    ci.compareEnable = VK_FALSE;
+    ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    vkCreateSampler(g_vk_ctx.device, &ci, NULL, &s_pattern_sampler);
+    return s_pattern_sampler;
+}
+
+vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
+                                     vg_lite_path_t *path,
+                                     vg_lite_fill_t fill_rule,
+                                     vg_lite_matrix_t *path_matrix,
+                                     vg_lite_buffer_t *pattern_image,
+                                     vg_lite_matrix_t *pattern_matrix,
+                                     vg_lite_blend_t blend,
+                                     vg_lite_pattern_mode_t pattern_mode,
+                                     vg_lite_color_t pattern_color,
+                                     vg_lite_color_t color,
+                                     vg_lite_filter_t filter)
+{
+    (void)fill_rule; (void)color; (void)filter;
+    
+    if (!target || !path || !pattern_image) return VG_LITE_INVALID_ARGUMENT;
+    if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
+    
+    buffer_internal_t *pattern_int = (buffer_internal_t *)pattern_image->handle;
+    if (!pattern_int) return VG_LITE_INVALID_ARGUMENT;
+    
+    VlcPath vlc_path;
+    vlc_path_init(&vlc_path);
+    int cmd_count = vlc_parse_path(path, &vlc_path);
+    if (cmd_count <= 0) {
+        vlc_path_free(&vlc_path);
+        return VG_LITE_INVALID_ARGUMENT;
+    }
+    
+    TessGeometry geom;
+    tess_geometry_init(&geom);
+    int vtx_count = tessellate_path(&vlc_path, &geom);
+    if (vtx_count <= 0 || geom.vertex_count == 0 || geom.index_count == 0) {
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return VG_LITE_SUCCESS;
+    }
+    
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    VkPipeline pipeline = vg_lite_vulkan_get_pattern_pipeline(vkfmt, vg_lite_blend_to_group(blend));
+    if (!pipeline) {
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+    
+    VkBuffer vbo = VK_NULL_HANDLE, ibo = VK_NULL_HANDLE;
+    VkDeviceMemory vbo_mem = VK_NULL_HANDLE, ibo_mem = VK_NULL_HANDLE;
+    create_vertex_buffer(geom.vertex_count, geom.index_count, &vbo, &vbo_mem, &ibo, &ibo_mem);
+    upload_geom(vbo, vbo_mem, ibo, ibo_mem, &geom);
+    
+    vg_lite_error_t err = vg_lite_vulkan_begin_command();
+    if (err != VG_LITE_SUCCESS) {
+        destroy_buffer(vbo, vbo_mem);
+        destroy_buffer(ibo, ibo_mem);
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return err;
+    }
+    
+    buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
+    if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != target_int->image) {
+        err = vg_lite_vulkan_set_render_target(target);
+        if (err != VG_LITE_SUCCESS) {
+            destroy_buffer(vbo, vbo_mem);
+            destroy_buffer(ibo, ibo_mem);
+            tess_geometry_free(&geom);
+            vlc_path_free(&vlc_path);
+            return err;
+        }
+    }
+    
+    VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
+    ds_alloc.descriptorSetCount = 1;
+    ds_alloc.pSetLayouts = &g_vk_ctx.pattern_descriptor_layout;
+    VkDescriptorSet desc_set;
+    if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS) {
+        destroy_buffer(vbo, vbo_mem);
+        destroy_buffer(ibo, ibo_mem);
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+    
+    VkSampler sampler = get_or_create_pattern_sampler();
+    VkImageView pattern_view = pattern_int->swizzle_view ? pattern_int->swizzle_view : pattern_int->view;
+    VkDescriptorImageInfo img_info = {sampler, pattern_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet ws = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    ws.dstSet = desc_set;
+    ws.dstBinding = 0;
+    ws.dstArrayElement = 0;
+    ws.descriptorCount = 1;
+    ws.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ws.pImageInfo = &img_info;
+    vkUpdateDescriptorSets(g_vk_ctx.device, 1, &ws, 0, NULL);
+    
+    float w = (float)target->width;
+    float h = (float)target->height;
+    float path_screen_to_ndc[3][3] = {{2.0f/w, 0, -1.0f}, {0, 2.0f/h, -1.0f}, {0, 0, 1.0f}};
+    float path_combined[3][3] = {0};
+    
+    vg_lite_matrix_t identity = {0};
+    vg_lite_identity(&identity);
+    if (!path_matrix) path_matrix = &identity;
+    
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            for (int k = 0; k < 3; k++)
+                path_combined[i][j] += path_screen_to_ndc[i][k] * path_matrix->m[k][j];
+    
+    if (!pattern_matrix) pattern_matrix = &identity;
+    
+    struct {
+        float path_m[12];
+        float pattern_m[12];
+        int pattern_mode;
+        uint32_t pattern_color;
+        int pattern_width;
+        int pattern_height;
+        int blend_mode;
+    } pc_data = {0};
+    
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
+        pc_data.path_m[j*4+i] = path_combined[i][j];
+        pc_data.pattern_m[j*4+i] = pattern_matrix->m[i][j];
+    }
+    pc_data.pattern_mode = (int)pattern_mode;
+    pc_data.pattern_color = pattern_color;
+    pc_data.pattern_width = pattern_image->width;
+    pc_data.pattern_height = pattern_image->height;
+    pc_data.blend_mode = (int)blend;
+    
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.pattern_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc_data), &pc_data);
+    
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            g_vk_ctx.pattern_pipeline_layout, 0, 1, &desc_set, 0, NULL);
+    
+    VkViewport vp = {0, 0, w, h, 0, 1};
+    VkRect2D scissor = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
+    vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
+    vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, 1, &scissor);
+    
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &offset);
+    vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, ibo, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
+    
+    tess_geometry_free(&geom);
+    vlc_path_free(&vlc_path);
+    add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+    
+    return VG_LITE_SUCCESS;
+}

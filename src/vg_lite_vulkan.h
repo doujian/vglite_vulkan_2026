@@ -74,6 +74,14 @@ typedef struct {
     VkShaderModule vert_shader;
     VkShaderModule frag_shader;
 
+    /* Pattern pipeline for vg_lite_draw_pattern */
+    VkPipelineLayout pattern_pipeline_layout;
+    VkDescriptorSetLayout pattern_descriptor_layout;
+    VkShaderModule pattern_vert_shader;
+    VkShaderModule pattern_frag_shader;
+    pipeline_cache_entry_t pattern_pipeline_cache[MAX_PIPELINE_CACHE];
+    int pattern_pipeline_cache_count;
+
     VkDebugUtilsMessengerEXT debug_messenger;
 } vk_context_t;
 
@@ -90,6 +98,7 @@ vg_lite_error_t vg_lite_vulkan_submit_command(int wait);
 
 int vg_lite_blend_to_group(vg_lite_blend_t blend);
 VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group);
+VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_destroy_pipelines(void);
 
 VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format);
