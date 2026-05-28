@@ -53,3 +53,6 @@ file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_CURRENT_BINARY_DI
 
 add_executable(test_patternFill patternFill/patternFill.c)
 add_dependencies(test_patternFill spirv_compilation)
+
+add_executable(test_imgA8 imgA8/imgA8.c)
+add_dependencies(test_imgA8 spirv_compilation)
