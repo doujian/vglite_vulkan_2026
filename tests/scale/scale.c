@@ -60,7 +60,7 @@ static vg_lite_error_t blitOperation(vg_lite_buffer_t *src, vg_lite_buffer_t *ds
     {
         vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst->width, dst->height, dst->format);
         vg_lite_expected_clear(eb, NULL, 0xFF000000);
-        vg_lite_expected_blit(eb, src, &matrix, 1, VG_LITE_FILTER_BI_LINEAR);
+        vg_lite_expected_blit(eb, src, &matrix, 1, VG_LITE_FILTER_BI_LINEAR, 0, 0, 0);
         int fail = vg_lite_expected_verify(eb, dst, 8);
         vg_lite_expected_destroy(eb);
         if (fail == 0) g_golden_pass++;

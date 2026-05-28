@@ -168,9 +168,9 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
     }
     case VG_LITE_BGR565: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        uint8_t b = (p >> 11) & 0x1F;
+        uint8_t r = (p >> 11) & 0x1F;
         uint8_t g = (p >> 5) & 0x3F;
-        uint8_t r = p & 0x1F;
+        uint8_t b = p & 0x1F;
         return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
     }
     case VG_LITE_RGBA4444: {
@@ -327,8 +327,8 @@ static void vulkan_nearest_sample(vg_lite_buffer_t *src, float sx, float sy,
                                    int *sr, int *sg, int *sb, int *sa)
 {
     int w = (int)src->width, h = (int)src->height;
-    int ix = (int)floorf(sx + 0.5f);
-    int iy = (int)floorf(sy + 0.5f);
+    int ix = (int)floorf(sx);
+    int iy = (int)floorf(sy);
     if (ix < 0) ix = 0; else if (ix >= w) ix = w - 1;
     if (iy < 0) iy = 0; else if (iy >= h) iy = h - 1;
     unpack_rgba(vg_lite_read_pixel(src, ix, iy), sr, sg, sb, sa);
@@ -336,9 +336,12 @@ static void vulkan_nearest_sample(vg_lite_buffer_t *src, float sx, float sy,
 
 static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
                                              vg_lite_float_t inv[3][3],
+                                             vg_lite_float_t fwd[3][3],
+                                             int dst_w, int dst_h,
                                              int x, int y,
                                              uint32_t dst_px,
-                                             int blend_mode, int is_bilinear)
+                                             int blend_mode, int is_bilinear,
+                                             int image_mode, int flags, uint32_t color)
 {
     float sx, sy;
     int has_src = transform_point(inv, (float)x + 0.5f, (float)y + 0.5f, &sx, &sy);
@@ -360,6 +363,31 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
         vulkan_linear_sample(src, sx, sy, &sr, &sg, &sb, &sa);
     else
         vulkan_nearest_sample(src, sx, sy, &sr, &sg, &sb, &sa);
+
+    /* Apply image_mode transformations matching shader behavior */
+    int flag_a8 = (flags & 8);  /* FLAG_SOURCE_A8 */
+    int im_multiply = (image_mode == 0x1F01);  /* VG_LITE_MULTIPLY_IMAGE_MODE */
+
+    if (flag_a8) {
+        /* A8 source: use only alpha channel, RGB = 0 */
+        sr = 0; sg = 0; sb = 0;
+    }
+
+    if (im_multiply) {
+        /* MULTIPLY: multiply color with source alpha (shader: mix.rgb * src.a, mix.a * src.a) */
+        int cr = (color >> 0) & 0xFF;
+        int cg = (color >> 8) & 0xFF;
+        int cb = (color >> 16) & 0xFF;
+        int ca = (color >> 24) & 0xFF;
+        sr = (sr * cr + 127) / 255;
+        sg = (sa * cg + 127) / 255;  /* For A8: use sa, not sg */
+        sb = (sb * cb + 127) / 255;
+        sa = (sa * ca + 127) / 255;
+        if (flag_a8) {
+            /* For A8+MULTIPLY: shader uses mix.rgb * src.a, so G = alpha * color.g */
+            sg = (sa * cg + 127) / 255;
+        }
+    }
 
     int dr, dg, db, da;
     unpack_rgba(dst_px, &dr, &dg, &db, &da);
@@ -467,11 +495,11 @@ void vg_lite_expected_clear(vg_lite_expected_buffer_t *eb,
 {
     if (!eb) return;
 
-    /* VGLite color is 0xAARRGGBB: A at bits 24-31, R at bits 16-23, G at bits 8-15, B at bits 0-7 */
+    /* VGLite color is 0xAABBGGRR: A at bits 24-31, B at bits 16-23, G at bits 8-15, R at bits 0-7 */
     uint8_t a = (color >> 24) & 0xFF;
-    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t b = (color >> 16) & 0xFF;
     uint8_t g = (color >> 8)  & 0xFF;
-    uint8_t b = (color)       & 0xFF;
+    uint8_t r = (color)       & 0xFF;
     uint32_t rgba8888 = r | (g << 8) | (b << 16) | (a << 24);
 
     uint32_t c;
@@ -514,7 +542,8 @@ void vg_lite_expected_clear(vg_lite_expected_buffer_t *eb,
 void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
                             vg_lite_buffer_t *src,
                             vg_lite_matrix_t *matrix,
-                            int blend_mode, int filter)
+                            int blend_mode, int filter,
+                            int image_mode, int flags, uint32_t color)
 {
     if (!eb || !src) return;
     vg_lite_float_t inv[3][3];
@@ -526,7 +555,8 @@ void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
         for (int x = 0; x < eb->width; x++) {
             uint32_t dst_px = eb->pixels[y * eb->width + x];
             eb->pixels[y * eb->width + x] = compute_expected_blit_pixel(
-                src, inv, x, y, dst_px, blend_mode, is_bilinear);
+                src, inv, matrix->m, eb->width, eb->height, x, y, dst_px, blend_mode, is_bilinear,
+                image_mode, flags, color);
         }
     }
 }

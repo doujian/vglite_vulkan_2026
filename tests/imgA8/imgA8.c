@@ -49,7 +49,7 @@ static int test_raster_stride;
                                          TEST_RASTER_COLOUR_CHANNELS)
 #define TEST_RASTER_BUF_SIZEW           (TEST_RASTER_BUF_SIZE >> 2)
 
-static uint32_t test_a8_raster[TEST_RASTER_BUF_SIZEW] = {
+static volatile uint32_t test_a8_raster[TEST_RASTER_BUF_SIZEW] = {
   0x00000000,0x00000000,0x00000000,0x00000000,0x00000000, /* 1 */
   0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,
   0x00000000,0x00000000,0x00000000,0x00000000,0x00000000,
@@ -665,12 +665,13 @@ static vg_lite_error_t init_offscreenBuf()
 {
     vg_lite_error_t error = VG_LITE_SUCCESS;
     vg_lite_buffer_t *vg_buffer  = &offscreenBuf;
-    vg_buffer->width     = test_raster_stride;
+    vg_buffer->width     = TEST_RASTER_WIDTH;  /* Actual data width in pixels */
     vg_buffer->height    = TEST_RASTER_HEIGHT;
     vg_buffer->format    = VG_LITE_A8;
     vg_buffer->image_mode = VG_LITE_MULTIPLY_IMAGE_MODE;
     vg_buffer->transparency_mode = VG_LITE_IMAGE_TRANSPARENT;
     CHECK_ERROR(vg_lite_allocate(vg_buffer));
+    /* stride is now computed by vg_lite_allocate (aligned to 16 for A8) */
 
 ErrorHandler:
     return error;
@@ -697,18 +698,19 @@ static vg_lite_error_t render()
     unsigned char * ptr;
     int i;
 
-    buffer.format = VG_LITE_RGB565; 
+    buffer.format = VG_LITE_RGBA8888; 
     buffer.width = ALIGMENT(fb_width,64);
     buffer.height = fb_height;
     ptr = offscreenBuf.memory;
 
-    //Setup A8 surface
-    memset(offscreenBuf.memory,0,test_raster_stride*TEST_RASTER_HEIGHT);
+    //Setup A8 surface - use actual stride from buffer (VkImage rowPitch)
+    memset(offscreenBuf.memory, 0, offscreenBuf.stride * offscreenBuf.height);
     for(i = 0; i < TEST_RASTER_HEIGHT; i++)
     {
-        memcpy(ptr,&test_a8_raster[i*TEST_RASTER_OFFSET], TEST_RASTER_HEIGHT);
-        ptr += test_raster_stride;
+        memcpy(ptr, &test_a8_raster[i*TEST_RASTER_OFFSET], TEST_RASTER_WIDTH);
+        ptr += offscreenBuf.stride;  // Use actual stride, not test_raster_stride
     }
+    CHECK_ERROR(vg_lite_finish());
     CHECK_ERROR(vg_lite_allocate(&buffer));
     //Clear surface with red
     CHECK_ERROR(vg_lite_clear( &buffer, NULL, 0xFF0000FF));
@@ -739,7 +741,8 @@ int main(int argc, const char * argv[])
     {
         vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buffer.width, buffer.height, buffer.format);
         vg_lite_expected_clear(eb, NULL, 0xFF0000FF);
-        vg_lite_expected_blit(eb, &offscreenBuf, &matrix, VG_LITE_BLEND_SRC_OVER, VG_LITE_FILTER_POINT);
+        vg_lite_expected_blit(eb, &offscreenBuf, &matrix, VG_LITE_BLEND_SRC_OVER, VG_LITE_FILTER_POINT,
+                            VG_LITE_MULTIPLY_IMAGE_MODE, 8, 0xFF00FF00);
         fail += vg_lite_expected_verify(eb, &buffer, 12);
         vg_lite_expected_destroy(eb);
     }

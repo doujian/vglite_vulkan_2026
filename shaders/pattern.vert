@@ -13,6 +13,8 @@ layout(push_constant) uniform PatternPushConstants {
     mat3  pattern_matrix;
     int   pattern_mode;
     uint  pattern_color;
+    int   target_width;
+    int   target_height;
     int   pattern_width;
     int   pattern_height;
     int   blend_mode;
@@ -41,17 +43,14 @@ vec4 unpackColorARGB(uint c)
 
 void main()
 {
-    /* Transform path vertex position to screen space */
     vec3 transformed = pc.path_matrix * vec3(in_pos, 1.0);
     gl_Position = vec4(transformed.xy, 0.0, 1.0);
     
-    /* Screen position in normalized [0,1] range for pattern matrix */
-    screen_pos = transformed.xy;
+    vec2 screen_pos_norm = (transformed.xy + vec2(1.0)) * 0.5;
+    vec2 screen_pos_pixel = screen_pos_norm * vec2(pc.target_width, pc.target_height);
     
-    /* Apply pattern matrix to get pattern UV coordinates */
-    vec3 pattern_coords = pc.pattern_matrix * vec3(screen_pos, 1.0);
+    vec3 pattern_coords = pc.pattern_matrix * vec3(screen_pos_pixel, 1.0);
     pattern_uv = pattern_coords.xy / pattern_coords.z;
     
-    /* Unpack pattern_color for COLOR mode fallback */
     vert_color = unpackColorARGB(pc.pattern_color);
 }

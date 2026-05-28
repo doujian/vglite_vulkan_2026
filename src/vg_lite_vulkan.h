@@ -73,6 +73,10 @@ typedef struct {
     VkDescriptorSetLayout blit_descriptor_layout;
     VkShaderModule vert_shader;
     VkShaderModule frag_shader;
+    /* SSBO for blit shader parameters */
+    VkBuffer blit_ssbo_buffer;
+    VkDeviceMemory blit_ssbo_memory;
+    void *blit_ssbo_mapped;
 
     /* Pattern pipeline for vg_lite_draw_pattern */
     VkPipelineLayout pattern_pipeline_layout;

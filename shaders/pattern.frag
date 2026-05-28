@@ -74,11 +74,5 @@ void main()
     /* Sample pattern texture */
     vec4 pattern_color = texture(pattern_texture, final_uv);
     
-    /* Apply blend mode (currently only NONE and SRC_OVER supported) */
-    if (pc.blend_mode == BLEND_NONE) {
-        out_color = pattern_color;
-    } else {
-        /* Default: just output pattern color */
-        out_color = pattern_color;
-    }
+    out_color = pattern_color;
 }

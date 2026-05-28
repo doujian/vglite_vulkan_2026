@@ -1,18 +1,19 @@
 #version 450
 
-/* Push constants: mat3 matrix(144B) + int blend_mode(4B) + uint color(4B) + int image_mode(4B) + int filter_mode(4B) + int flags(4B) */
-layout(push_constant) uniform PushConstants {
+/* SSBO: mat3 matrix(48B) + int blend_mode(4B) + uint color(4B) + int image_mode(4B) + int filter_mode(4B) + int flags(4B) = 68B total */
+layout(std430, set = 0, binding = 2) readonly buffer BlitParams {
     mat3  matrix;
     int   blend_mode;
     uint  color;
     int   image_mode;
     int   filter_mode;
     int   flags;
-} pc;
+} params;
 
 #define FLAG_OUTPUT_L8       1
 #define FLAG_OUTPUT_A8       2
 #define FLAG_NATIVE_BLEND    4
+#define FLAG_SOURCE_A8       8
 
 layout(set = 0, binding = 0) uniform sampler2D src_texture;
 layout(set = 0, binding = 1) uniform sampler2D dst_texture;
@@ -56,16 +57,34 @@ layout(location = 0) out vec4 out_color;
 
 vec4 apply_image_mode(vec4 src, uint mix_color)
 {
-    float mr = float((mix_color >> 16) & 0xFFu) / 255.0;
+    /* VGLite color is ABGR: A at bits 24-31, B at bits 16-23, G at bits 8-15, R at bits 0-7 */
+    float mr = float((mix_color      ) & 0xFFu) / 255.0;
     float mg = float((mix_color >>  8) & 0xFFu) / 255.0;
-    float mb = float((mix_color      ) & 0xFFu) / 255.0;
+    float mb = float((mix_color >> 16) & 0xFFu) / 255.0;
     float ma = float((mix_color >> 24) & 0xFFu) / 255.0;
     vec4 mix = vec4(mr, mg, mb, ma);
 
-    if (pc.image_mode == IMAGE_MODE_MULTIPLY) {
+    if (params.image_mode == IMAGE_MODE_MULTIPLY) {
+        /* A8 source: swizzled to (0,0,0,alpha), multiply uses alpha * color */
+        int flags_debug = params.flags;
+        if ((flags_debug & FLAG_SOURCE_A8) != 0) {
+            return vec4(mix.rgb * src.a, mix.a * src.a);
+        }
+        /* Debug: if flags=8 but FLAG_SOURCE_A8 not detected, output blue */
+        if (flags_debug == 8) {
+            return vec4(0.0, 0.0, 1.0, 1.0);  /* Blue = flags is 8 but bitwise check failed */
+        }
         return vec4(src.rgb * mix.rgb, src.a * mix.a);
     }
-    if (pc.image_mode == IMAGE_MODE_STENCIL) {
+    /* Debug: check if entering wrong image_mode */
+    if (params.image_mode == 0x1F01) {
+        return vec4(1.0, 0.0, 1.0, 1.0);  /* Magenta = image_mode correct but not in MULTIPLY block */
+    }
+    if (params.image_mode == 7937) {
+        return vec4(0.5, 0.0, 1.0, 1.0);  /* Purple = image_mode as decimal */
+    }
+    return vec4(0.0, 1.0, 0.0, 1.0);  /* Green = completely wrong image_mode */
+    if (params.image_mode == IMAGE_MODE_STENCIL) {
         return vec4(mix.rgb, src.a * mix.a);
     }
     /* IMAGE_MODE_NORMAL (0x1F00) or default: pass through */
@@ -79,10 +98,10 @@ vec4 blend_non_premul(vec4 S, vec4 D)
     vec3  s  = S.rgb;
     vec3  d  = D.rgb;
 
-    switch (pc.blend_mode) {
+    switch (params.blend_mode) {
     case BLEND_NONE:
-        /* RGB: S, A: Sa */
-        return vec4(s, Sa);
+        /* RGB: S + D*(1 - Sa), A: Sa + Da*(1 - Sa) - like SRC_OVER */
+        return vec4(s + d * (1.0 - Sa), Sa + Da * (1.0 - Sa));
 
     case BLEND_SRC_OVER:
         /* RGB: S + D*(1 - Sa), A: Sa + Da*(1 - Sa) */
@@ -167,7 +186,7 @@ vec4 blend_premul(vec4 S, vec4 D)
     float Sa = S.a;
     float Da = D.a;
 
-    switch (pc.blend_mode) {
+    switch (params.blend_mode) {
     case OPENVG_BLEND_SRC:
         /* RGB: SP / Sa, A: Sa */
         return vec4(Sa > 0.0 ? SP / Sa : vec3(0.0), Sa);
@@ -244,7 +263,10 @@ vec4 blend_premul(vec4 S, vec4 D)
 
 void main()
 {
-    vec3 src_coords = pc.matrix * vec3(frag_pos, 1.0);
+    /* params.matrix is already the inverse transform computed by vg_lite_blit:
+     * shader_mat = Scale(1/src_w, 1/src_h) * inv(M) * Scale(dst_w, dst_h)
+     * This maps frag_pos [0,1] -> src_uv [0,1] directly */
+    vec3 src_coords = params.matrix * vec3(frag_pos, 1.0);
     vec2 src_uv;
     if (abs(src_coords.z - 1.0) < 0.001) {
         src_uv = src_coords.xy;
@@ -252,7 +274,7 @@ void main()
         src_uv = src_coords.xy / src_coords.z;
     }
 
-    bool native_blend = (pc.flags & FLAG_NATIVE_BLEND) != 0;
+    bool native_blend = (params.flags & FLAG_NATIVE_BLEND) != 0;
 
     if (src_uv.x < -0.001 || src_uv.x > 1.001 || src_uv.y < -0.001 || src_uv.y > 1.001) {
         if (native_blend) {
@@ -263,18 +285,23 @@ void main()
         out_color = dst;
         return;
     }
+    /* Clamp to edge like CPU expected buffer calculation */
+    if (src_uv.x < 0.0) src_uv.x = 0.0;
+    else if (src_uv.x > 1.0) src_uv.x = 1.0;
+    if (src_uv.y < 0.0) src_uv.y = 0.0;
+    else if (src_uv.y > 1.0) src_uv.y = 1.0;
 
     vec4 src = texture(src_texture, src_uv);
-    src = apply_image_mode(src, pc.color);
+    src = apply_image_mode(src, params.color);
 
     if (native_blend) {
-        if (pc.blend_mode == BLEND_NORMAL_LVGL) {
+        if (params.blend_mode == BLEND_NORMAL_LVGL) {
             src = vec4(src.rgb * src.a, src.a);
         }
-        if ((pc.flags & FLAG_OUTPUT_L8) != 0) {
+        if ((params.flags & FLAG_OUTPUT_L8) != 0) {
             float lum = 0.2126 * src.r + 0.7152 * src.g + 0.0722 * src.b;
             out_color = vec4(lum, 0.0, 0.0, src.a);
-        } else if ((pc.flags & FLAG_OUTPUT_A8) != 0) {
+        } else if ((params.flags & FLAG_OUTPUT_A8) != 0) {
             out_color = vec4(src.a, 0.0, 0.0, src.a);
         } else {
             out_color = src;
@@ -284,17 +311,17 @@ void main()
 
     vec4 dst = texture(dst_texture, frag_pos);
     vec4 result;
-    if (pc.blend_mode >= OPENVG_BLEND_SRC) {
+    if (params.blend_mode >= OPENVG_BLEND_SRC) {
         result = blend_premul(src, dst);
     } else {
         result = blend_non_premul(src, dst);
     }
     result = clamp(result, 0.0, 1.0);
 
-    if ((pc.flags & FLAG_OUTPUT_L8) != 0) {
+    if ((params.flags & FLAG_OUTPUT_L8) != 0) {
         float lum = 0.2126 * result.r + 0.7152 * result.g + 0.0722 * result.b;
         out_color = vec4(lum, 0.0, 0.0, 1.0);
-    } else if ((pc.flags & FLAG_OUTPUT_A8) != 0) {
+    } else if ((params.flags & FLAG_OUTPUT_A8) != 0) {
         out_color = vec4(result.a, 0.0, 0.0, 1.0);
     } else {
         out_color = result;

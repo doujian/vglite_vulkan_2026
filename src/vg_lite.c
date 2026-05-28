@@ -14,14 +14,6 @@ extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *t, vg_lite_path_t *p,
                                          vg_lite_blend_t b, vg_lite_color_t c);
 extern void vg_lite_draw_cleanup(void);
 extern void vg_lite_draw_cleanup_pending_buffers(void);
-#include "vg_lite_format.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-
-#include "spv_vert.h"
-#include "spv_frag.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -202,6 +194,12 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
+        VkResult res = vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view);
+    } else if (buffer->format == VG_LITE_RGB565 || buffer->format == VG_LITE_BGR565) {
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_R;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_G;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_B;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
         vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view);
     }
     internal->render_pass = VK_NULL_HANDLE;
@@ -277,11 +275,11 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     clear_att.colorAttachment = 0;
     
-    /* VGLite color is 0xAARRGGBB: A at bits 24-31, R at bits 16-23, G at bits 8-15, B at bits 0-7 */
+    /* VGLite color is 0xAABBGGRR: A at bits 24-31, B at bits 16-23, G at bits 8-15, R at bits 0-7 */
     uint8_t a = (color >> 24) & 0xFF;
-    uint8_t r = (color >> 16) & 0xFF;
+    uint8_t b = (color >> 16) & 0xFF;
     uint8_t g = (color >> 8)  & 0xFF;
-    uint8_t b = (color)       & 0xFF;
+    uint8_t r = (color)       & 0xFF;
     
     if (target->format == VG_LITE_L8) {
         float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
@@ -303,13 +301,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
         clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
         clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
     }
-    printf("vg_lite_clear: color=0x%08x, vkfmt=%d, clear=[%.2f,%.2f,%.2f,%.2f]\n",
-           color, vkfmt,
-           clear_att.clearValue.color.float32[0],
-           clear_att.clearValue.color.float32[1],
-           clear_att.clearValue.color.float32[2],
-           clear_att.clearValue.color.float32[3]);
-    
+
     vg_lite_vulkan_begin_command();
     vg_lite_vulkan_set_render_target(target);
 
@@ -364,6 +356,22 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vg_lite_vulkan_begin_command();
     vg_lite_vulkan_end_render_pass();
 
+    /* Transition source image to SHADER_READ for texture sampling.
+       Source may have been written by CPU (HOST_WRITE) or previous GPU ops. */
+    VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    src_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    src_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    src_bar.image = src_int->image;
+    src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    src_bar.subresourceRange.levelCount = 1;
+    src_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+        0, NULL, 0, NULL, 1, &src_bar);
+
     /* Compute shader matrix: maps normalized frag_pos [0,1] -> source UV [0,1]
        VGLite matrix M: dst_pixel = M * src_pixel
        Need: src_uv = inv(M) * (frag_pos * dst_size) / src_size
@@ -409,11 +417,10 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++) {
             shader_mat[i][j] = 0;
-            for (int k = 0; k < 3; k++)
-                shader_mat[i][j] += s_inv[i][k] * temp[k][j];
-        }
+for (int k = 0; k < 3; k++)
+            shader_mat[i][j] += s_inv[i][k] * temp[k][j];
+    }
 
-    /* Temp image to hold copy of target (shader-blend only, native-blend reads dst directly) */
     VkImage tmp_image = VK_NULL_HANDLE;
     VkDeviceMemory tmp_memory = VK_NULL_HANDLE;
     VkImageView tmp_view = VK_NULL_HANDLE;
@@ -533,28 +540,37 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     } else {
         di = (VkDescriptorImageInfo){sampler, tmp_view, VK_IMAGE_LAYOUT_GENERAL};
     }
-    VkWriteDescriptorSet ws[2] = {
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
-    };
-    vkUpdateDescriptorSets(g_vk_ctx.device, 2, ws, 0, NULL);
-
-    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        g_vk_ctx.blit_pipeline_layout, 0, 1, &desc_set, 0, NULL);
-
-    /* Push constants — mat3 has vec4 column alignment in GLSL (16 bytes per column) */
-    struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; } pc;
-    memset(&pc, 0, sizeof(pc));
-    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) pc.m[j*4+i] = shader_mat[i][j];
+    
+    struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; int pad[3]; } pc = {0};
+    /* GLSL mat3 is stored as 3 columns of vec3: [col0_row0, col0_row1, col0_row2, col1_row0, col1_row1, col1_row2, col2_row0, col2_row1, col2_row2]
+     * We need shader_mat transposed: shader_mat[row][col] -> GLSL needs mat[col][row]
+     * Store with stride 4 so GLSL reads column values with gap between columns */
+    for (int col = 0; col < 3; col++) {
+        for (int row = 0; row < 3; row++) {
+            pc.m[col * 4 + row] = shader_mat[row][col];
+        }
+    }
     pc.blend = (int)blend; pc.color = color;
-    pc.im_mode = (int)VG_LITE_NORMAL_IMAGE_MODE; pc.filt = (int)filter;
+    pc.im_mode = (int)source->image_mode; pc.filt = (int)filter;
     pc.flags = 0;
     if (target->format == VG_LITE_L8)  pc.flags |= 1;
     if (target->format == VG_LITE_A8)  pc.flags |= 2;
     if (native_blend)                   pc.flags |= 4;
-    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.blit_pipeline_layout,
-        VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc), &pc);
+    if (source->format == VG_LITE_A8)  pc.flags |= 8;
+
+    memcpy(g_vk_ctx.blit_ssbo_mapped, &pc, sizeof(pc));
+    
+    VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};
+    VkWriteDescriptorSet ws[3] = {
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &ssbo_info, NULL},
+    };
+    vkUpdateDescriptorSets(g_vk_ctx.device, 3, ws, 0, NULL);
+
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        g_vk_ctx.blit_pipeline_layout, 0, 1, &desc_set, 0, NULL);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     VkRect2D sc = {{0,0}, {target->width, target->height}};

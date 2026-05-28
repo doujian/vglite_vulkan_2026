@@ -55,7 +55,7 @@ int main(int argc, char *argv[])
     {
         vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst.width, dst.height, dst.format);
         vg_lite_expected_clear(eb, NULL, 0xFFFF0000);
-        vg_lite_expected_blit(eb, &src, &matrix, 0, 0);
+        vg_lite_expected_blit(eb, &src, &matrix, 0, 0, 0, 0, 0);
         g_golden_fail += vg_lite_expected_verify(eb, &dst, 1);
         vg_lite_expected_destroy(eb);
         g_golden_pass = (g_golden_fail == 0) ? 1 : 0;

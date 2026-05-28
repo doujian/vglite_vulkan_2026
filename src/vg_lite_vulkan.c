@@ -39,6 +39,17 @@ static void destroy_debug_messenger(VkInstance inst, VkDebugUtilsMessengerEXT me
     if (fn) fn(inst, messenger, NULL);
 }
 
+static int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
+{
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
+        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & props))
+            return i;
+    }
+    return -1;
+}
+
 vg_lite_error_t vg_lite_vulkan_init(void)
 {
     VkResult res;
@@ -133,14 +144,38 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     vkCreateFence(g_vk_ctx.device, &fence_ci, NULL, &g_vk_ctx.fence);
 
-    VkDescriptorPoolSize ds_pool_sizes[] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 } };
+    VkDescriptorPoolSize ds_pool_sizes[] = { 
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 }
+    };
     VkDescriptorPoolCreateInfo ds_pool_ci = {0};
     ds_pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     ds_pool_ci.maxSets = 64;
-    ds_pool_ci.poolSizeCount = 1;
+    ds_pool_ci.poolSizeCount = 2;
     ds_pool_ci.pPoolSizes = ds_pool_sizes;
     ds_pool_ci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     vkCreateDescriptorPool(g_vk_ctx.device, &ds_pool_ci, NULL, &g_vk_ctx.descriptor_pool);
+
+    VkBufferCreateInfo ssbo_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    ssbo_ci.size = 80;
+    ssbo_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    ssbo_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vkCreateBuffer(g_vk_ctx.device, &ssbo_ci, NULL, &g_vk_ctx.blit_ssbo_buffer);
+
+    VkMemoryRequirements ssbo_req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, &ssbo_req);
+    VkMemoryAllocateInfo ssbo_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ssbo_alloc.allocationSize = ssbo_req.size;
+    int32_t ssbo_mem_type = find_memory_type(ssbo_req.memoryTypeBits, 
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (ssbo_mem_type < 0) {
+        vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, NULL);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+    ssbo_alloc.memoryTypeIndex = (uint32_t)ssbo_mem_type;
+    vkAllocateMemory(g_vk_ctx.device, &ssbo_alloc, NULL, &g_vk_ctx.blit_ssbo_memory);
+    vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, g_vk_ctx.blit_ssbo_memory, 0);
+    vkMapMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.blit_ssbo_mapped);
 
     return VG_LITE_SUCCESS;
 }
@@ -642,18 +677,14 @@ static VkPipeline create_blit_pipeline(VkFormat format, int blend_group)
     }
 
     if (!g_vk_ctx.blit_pipeline_layout) {
-        VkPushConstantRange pc_range = {0};
-        pc_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_VERTEX_BIT;
-        pc_range.offset = 0;
-        pc_range.size = 68;
-
-        VkDescriptorSetLayoutBinding bindings[2] = {
+        VkDescriptorSetLayoutBinding bindings[3] = {
             {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
             {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+            {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
         };
         VkDescriptorSetLayoutCreateInfo ds_ci = {0};
         ds_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ds_ci.bindingCount = 2;
+        ds_ci.bindingCount = 3;
         ds_ci.pBindings = bindings;
         vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.blit_descriptor_layout);
 
@@ -661,8 +692,8 @@ static VkPipeline create_blit_pipeline(VkFormat format, int blend_group)
         pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pl_ci.setLayoutCount = 1;
         pl_ci.pSetLayouts = &g_vk_ctx.blit_descriptor_layout;
-        pl_ci.pushConstantRangeCount = 1;
-        pl_ci.pPushConstantRanges = &pc_range;
+        pl_ci.pushConstantRangeCount = 0;
+        pl_ci.pPushConstantRanges = NULL;
         vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.blit_pipeline_layout);
     }
 
@@ -742,6 +773,14 @@ void vg_lite_vulkan_destroy_pipelines(void)
     if (g_vk_ctx.blit_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.blit_descriptor_layout, NULL); g_vk_ctx.blit_descriptor_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.vert_shader, NULL); g_vk_ctx.vert_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.frag_shader, NULL); g_vk_ctx.frag_shader = VK_NULL_HANDLE; }
+    if (g_vk_ctx.blit_ssbo_buffer) {
+        vkUnmapMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_memory);
+        vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, NULL);
+        vkFreeMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_memory, NULL);
+        g_vk_ctx.blit_ssbo_buffer = VK_NULL_HANDLE;
+        g_vk_ctx.blit_ssbo_memory = VK_NULL_HANDLE;
+        g_vk_ctx.blit_ssbo_mapped = NULL;
+    }
 
     for (int i = 0; i < g_vk_ctx.pattern_pipeline_cache_count; i++) {
         if (g_vk_ctx.pattern_pipeline_cache[i].pipeline)
@@ -765,7 +804,7 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
         VkPushConstantRange pc_range = {0};
         pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pc_range.offset = 0;
-        pc_range.size = 116;
+        pc_range.size = 124;
 
         VkDescriptorSetLayoutBinding binding = {0};
         binding.binding = 0;

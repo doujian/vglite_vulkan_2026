@@ -697,11 +697,49 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     
     if (!pattern_matrix) pattern_matrix = &identity;
     
+    /* Compute inverse of pattern_matrix, then normalize by pattern dimensions.
+     * This gives a matrix that transforms screen pixel coords to normalized UV [0,1].
+     * (Following reference implementation in vg_lite_path.c lines 3355-3379) */
+    float pattern_inv[3][3] = {0};
+    float m[3][3];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) m[i][j] = pattern_matrix->m[i][j];
+    
+    float det = m[0][0]*(m[1][1]*m[2][2] - m[1][2]*m[2][1])
+              - m[0][1]*(m[1][0]*m[2][2] - m[1][2]*m[2][0])
+              + m[0][2]*(m[1][0]*m[2][1] - m[1][1]*m[2][0]);
+    
+    if (fabsf(det) < 1e-6f) {
+        pattern_inv[0][0] = 1.0f / pattern_image->width;
+        pattern_inv[1][1] = 1.0f / pattern_image->height;
+    } else {
+        float idet = 1.0f / det;
+        pattern_inv[0][0] = (m[1][1]*m[2][2] - m[1][2]*m[2][1]) * idet;
+        pattern_inv[0][1] = (m[0][2]*m[2][1] - m[0][1]*m[2][2]) * idet;
+        pattern_inv[0][2] = (m[0][1]*m[1][2] - m[0][2]*m[1][1]) * idet;
+        pattern_inv[1][0] = (m[1][2]*m[2][0] - m[1][0]*m[2][2]) * idet;
+        pattern_inv[1][1] = (m[0][0]*m[2][2] - m[0][2]*m[2][0]) * idet;
+        pattern_inv[1][2] = (m[0][2]*m[1][0] - m[0][0]*m[1][2]) * idet;
+        pattern_inv[2][0] = (m[1][0]*m[2][1] - m[1][1]*m[2][0]) * idet;
+        pattern_inv[2][1] = (m[0][1]*m[2][0] - m[0][0]*m[2][1]) * idet;
+        pattern_inv[2][2] = (m[0][0]*m[1][1] - m[0][1]*m[1][0]) * idet;
+        
+        /* Normalize by pattern dimensions (convert pixels to normalized UV)
+         * Row 0 (u) divided by width, Row 1 (v) divided by height */
+        pattern_inv[0][0] /= pattern_image->width;
+        pattern_inv[0][1] /= pattern_image->width;
+        pattern_inv[0][2] /= pattern_image->width;
+        pattern_inv[1][0] /= pattern_image->height;
+        pattern_inv[1][1] /= pattern_image->height;
+        pattern_inv[1][2] /= pattern_image->height;
+    }
+    
     struct {
         float path_m[12];
         float pattern_m[12];
         int pattern_mode;
         uint32_t pattern_color;
+        int target_width;
+        int target_height;
         int pattern_width;
         int pattern_height;
         int blend_mode;
@@ -709,10 +747,27 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
         pc_data.path_m[j*4+i] = path_combined[i][j];
-        pc_data.pattern_m[j*4+i] = pattern_matrix->m[i][j];
+        pc_data.pattern_m[j*4+i] = pattern_inv[i][j];  /* Use normalized inverse */
     }
-    pc_data.pattern_mode = (int)pattern_mode;
+    /* Convert vg_lite pattern mode to shader internal mode:
+     * VG_LITE_PATTERN_COLOR   = 0x1D00 -> shader mode 0
+     * VG_LITE_PATTERN_PAD     = 0x1D01 -> shader mode 1
+     * VG_LITE_PATTERN_REPEAT  = 0x1D02 -> shader mode 2
+     * VG_LITE_PATTERN_REFLECT = 0x1D03 -> shader mode 3
+     */
+    int shader_pattern_mode = 0;
+    switch (pattern_mode) {
+        case VG_LITE_PATTERN_COLOR:   shader_pattern_mode = 0; break;
+        case VG_LITE_PATTERN_PAD:     shader_pattern_mode = 1; break;
+        case VG_LITE_PATTERN_REPEAT:  shader_pattern_mode = 2; break;
+        case VG_LITE_PATTERN_REFLECT: shader_pattern_mode = 3; break;
+        default: shader_pattern_mode = 0; break;
+    }
+    
+    pc_data.pattern_mode = shader_pattern_mode;
     pc_data.pattern_color = pattern_color;
+    pc_data.target_width = target->width;
+    pc_data.target_height = target->height;
     pc_data.pattern_width = pattern_image->width;
     pc_data.pattern_height = pattern_image->height;
     pc_data.blend_mode = (int)blend;
