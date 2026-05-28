@@ -56,3 +56,6 @@ add_dependencies(test_patternFill spirv_compilation)
 
 add_executable(test_imgA8 imgA8/imgA8.c)
 add_dependencies(test_imgA8 spirv_compilation)
+
+add_executable(test_imgIndex imgIndex/imgIndex.c)
+add_dependencies(test_imgIndex spirv_compilation)

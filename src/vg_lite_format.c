@@ -16,7 +16,7 @@ uint32_t vg_lite_format_bpp(vg_lite_buffer_format_t format)
     case VG_LITE_BGRA5551: case VG_LITE_RGBA5551:
     case VG_LITE_ARGB1555: case VG_LITE_ABGR1555:
         return 16;
-    case VG_LITE_A8: case VG_LITE_L8:
+    case VG_LITE_A8: case VG_LITE_L8: case VG_LITE_INDEX_8:
         return 8;
     case VG_LITE_A4:
         return 4;
@@ -43,6 +43,7 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     case VG_LITE_BGR565:   return VK_FORMAT_B5G6R5_UNORM_PACK16;
     case VG_LITE_A8:       return VK_FORMAT_R8_UNORM;
     case VG_LITE_L8:       return VK_FORMAT_R8_UNORM;
+    case VG_LITE_INDEX_8:  return VK_FORMAT_R8_UNORM;
     case VG_LITE_ARGB8888: return VK_FORMAT_B8G8R8A8_UNORM;
     case VG_LITE_ABGR8888: return VK_FORMAT_R8G8B8A8_UNORM;
     case VG_LITE_RGBA4444: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;

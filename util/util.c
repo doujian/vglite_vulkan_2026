@@ -217,6 +217,10 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
         uint8_t a = *(ptr + y * buffer->stride + x);
         return a | (a << 8) | (a << 16) | (a << 24);
     }
+    case VG_LITE_INDEX_8: {
+        uint8_t idx = *(ptr + y * buffer->stride + x);
+        return idx;  /* Return index value only, CLUT lookup happens later */
+    }
     case VG_LITE_L8: {
         uint8_t l = *(ptr + y * buffer->stride + x);
         return l | (l << 8) | (l << 16) | (0xFF << 24);
@@ -341,7 +345,8 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
                                              int x, int y,
                                              uint32_t dst_px,
                                              int blend_mode, int is_bilinear,
-                                             int image_mode, int flags, uint32_t color)
+                                             int image_mode, int flags, uint32_t color,
+                                             uint32_t *clut)
 {
     float sx, sy;
     int has_src = transform_point(inv, (float)x + 0.5f, (float)y + 0.5f, &sx, &sy);
@@ -364,9 +369,19 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
     else
         vulkan_nearest_sample(src, sx, sy, &sr, &sg, &sb, &sa);
 
-    /* Apply image_mode transformations matching shader behavior */
-    int flag_a8 = (flags & 8);  /* FLAG_SOURCE_A8 */
-    int im_multiply = (image_mode == 0x1F01);  /* VG_LITE_MULTIPLY_IMAGE_MODE */
+    int flag_index8 = (flags & 16);
+
+    if (flag_index8 && clut) {
+        int idx = sr;
+        uint32_t abgr = clut[idx];
+        sb = (abgr >> 16) & 0xFF;
+        sg = (abgr >>  8) & 0xFF;
+        sr = (abgr >>  0) & 0xFF;
+        sa = (abgr >> 24) & 0xFF;
+    }
+
+    int flag_a8 = (flags & 8);
+    int im_multiply = (image_mode == 0x1F01);
 
     if (flag_a8) {
         /* A8 source: use only alpha channel, RGB = 0 */
@@ -543,7 +558,8 @@ void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
                             vg_lite_buffer_t *src,
                             vg_lite_matrix_t *matrix,
                             int blend_mode, int filter,
-                            int image_mode, int flags, uint32_t color)
+                            int image_mode, int flags, uint32_t color,
+                            uint32_t *clut)
 {
     if (!eb || !src) return;
     vg_lite_float_t inv[3][3];
@@ -556,7 +572,7 @@ void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
             uint32_t dst_px = eb->pixels[y * eb->width + x];
             eb->pixels[y * eb->width + x] = compute_expected_blit_pixel(
                 src, inv, matrix->m, eb->width, eb->height, x, y, dst_px, blend_mode, is_bilinear,
-                image_mode, flags, color);
+                image_mode, flags, color, clut);
         }
     }
 }

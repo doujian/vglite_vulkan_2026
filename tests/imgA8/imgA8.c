@@ -718,6 +718,9 @@ static vg_lite_error_t render()
     vg_lite_identity(&matrix);
     vg_lite_scale(4, 4, &matrix);
     vg_lite_translate(0, 0, &matrix);
+    
+    /* Set MULTIPLY image mode for A8 source */
+    offscreenBuf.image_mode = VG_LITE_MULTIPLY_IMAGE_MODE;
 
     CHECK_ERROR(vg_lite_blit( &buffer, &offscreenBuf, &matrix, blend, 0xFF00FF00, VG_LITE_FILTER_POINT));
     CHECK_ERROR(vg_lite_finish());
@@ -742,7 +745,7 @@ int main(int argc, const char * argv[])
         vg_lite_expected_buffer_t *eb = vg_lite_expected_create(buffer.width, buffer.height, buffer.format);
         vg_lite_expected_clear(eb, NULL, 0xFF0000FF);
         vg_lite_expected_blit(eb, &offscreenBuf, &matrix, VG_LITE_BLEND_SRC_OVER, VG_LITE_FILTER_POINT,
-                            VG_LITE_MULTIPLY_IMAGE_MODE, 8, 0xFF00FF00);
+                            VG_LITE_MULTIPLY_IMAGE_MODE, 8, 0xFF00FF00, NULL);
         fail += vg_lite_expected_verify(eb, &buffer, 12);
         vg_lite_expected_destroy(eb);
     }

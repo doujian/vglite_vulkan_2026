@@ -233,6 +233,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     buffer->handle = internal;
     buffer->memory = (uint8_t *)mapped + layout.offset;
     buffer->address = 0;
+    buffer->image_mode = VG_LITE_NORMAL_IMAGE_MODE;  /* Initialize to default */
 
     internal->mapped_base = mapped;
     return VG_LITE_SUCCESS;
@@ -552,21 +553,24 @@ for (int k = 0; k < 3; k++)
     }
     pc.blend = (int)blend; pc.color = color;
     pc.im_mode = (int)source->image_mode; pc.filt = (int)filter;
-    pc.flags = 0;
+pc.flags = 0;
     if (target->format == VG_LITE_L8)  pc.flags |= 1;
     if (target->format == VG_LITE_A8)  pc.flags |= 2;
     if (native_blend)                   pc.flags |= 4;
     if (source->format == VG_LITE_A8)  pc.flags |= 8;
-
+    if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
+    
     memcpy(g_vk_ctx.blit_ssbo_mapped, &pc, sizeof(pc));
     
     VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};
-    VkWriteDescriptorSet ws[3] = {
+    VkDescriptorBufferInfo clut_info = {g_vk_ctx.clut_buffer, 0, 256 * 4};
+    VkWriteDescriptorSet ws[4] = {
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
         {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &ssbo_info, NULL},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &clut_info, NULL},
     };
-    vkUpdateDescriptorSets(g_vk_ctx.device, 3, ws, 0, NULL);
+    vkUpdateDescriptorSets(g_vk_ctx.device, 4, ws, 0, NULL);
 
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -691,7 +695,19 @@ vg_lite_error_t vg_lite_enable_dither(void) { return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_disable_dither(void) { return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_source_global_alpha(vg_lite_global_alpha_t m, vg_lite_uint8_t v) { (void)m;(void)v; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_dest_global_alpha(vg_lite_global_alpha_t m, vg_lite_uint8_t v) { (void)m;(void)v; return VG_LITE_NOT_SUPPORT; }
-vg_lite_error_t vg_lite_set_CLUT(vg_lite_uint32_t c, vg_lite_uint32_t *cl) { (void)c;(void)cl; return VG_LITE_NOT_SUPPORT; }
+vg_lite_error_t vg_lite_set_CLUT(vg_lite_uint32_t c, vg_lite_uint32_t *cl)
+{
+    extern vk_context_t g_vk_ctx;
+    
+    if (c != 256) return VG_LITE_INVALID_ARGUMENT;
+    if (!g_vk_ctx.clut_mapped) return VG_LITE_NO_CONTEXT;
+    if (!cl) return VG_LITE_INVALID_ARGUMENT;
+    
+    uint32_t *dst = (uint32_t *)g_vk_ctx.clut_mapped;
+    memcpy(dst, cl, 256 * 4);
+    
+    return VG_LITE_SUCCESS;
+}
 vg_lite_error_t vg_lite_gaussian_filter(vg_lite_float_t w0, vg_lite_float_t w1, vg_lite_float_t w2) { (void)w0;(void)w1;(void)w2; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_upload_buffer(vg_lite_buffer_t *b, vg_lite_uint8_t *d[3], vg_lite_uint32_t s[3]) { (void)b;(void)d;(void)s; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_map(vg_lite_buffer_t *b, vg_lite_map_flag_t f, int32_t fd) { (void)b;(void)f;(void)fd; return VG_LITE_NOT_SUPPORT; }

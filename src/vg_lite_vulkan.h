@@ -87,6 +87,10 @@ typedef struct {
     int pattern_pipeline_cache_count;
 
     VkDebugUtilsMessengerEXT debug_messenger;
+    
+    VkBuffer clut_buffer;
+    VkDeviceMemory clut_memory;
+    void *clut_mapped;
 } vk_context_t;
 
 extern vk_context_t g_vk_ctx;

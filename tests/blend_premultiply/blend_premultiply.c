@@ -66,7 +66,7 @@ int main(int argc, const char *argv[])
     {
         vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst.width, dst.height, dst.format);
         vg_lite_expected_copy(eb, &dst_orig);
-        vg_lite_expected_blit(eb, &src, &matrix, 11, 0, 0, 0, 0);
+        vg_lite_expected_blit(eb, &src, &matrix, 11, 0, 0, 0, 0, NULL);
         fail = vg_lite_expected_verify(eb, &dst, 12);
         vg_lite_expected_destroy(eb);
         if (fail == 0) printf("Blend premultiply OK\n");

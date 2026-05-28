@@ -196,7 +196,7 @@ static vg_lite_error_t SFT_Blit_001(void)
                 int tol = get_tolerance(dst_buf.format, VG_LITE_BLEND_NONE);
                 vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_clear(eb, NULL, cc);
-                vg_lite_expected_blit(eb, &src_buf, &identity_matrix, 0, filter, 0, 0, 0);
+                vg_lite_expected_blit(eb, &src_buf, &identity_matrix, 0, filter, 0, 0, 0, NULL);
                 total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                 vg_lite_expected_destroy(eb);
             }
@@ -265,7 +265,7 @@ static vg_lite_error_t SFT_Blit_002(void)
                 int tol = get_tolerance(dst_buf.format, VG_LITE_BLEND_NONE) + 4;
                 vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_clear(eb, NULL, cc);
-                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0);
+                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0, NULL);
                 total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                 vg_lite_expected_destroy(eb);
             }
@@ -333,7 +333,7 @@ static vg_lite_error_t SFT_Blit_003(void)
                 int tol = get_tolerance(dst_buf.format, VG_LITE_BLEND_NONE) + 4;
                 vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_clear(eb, NULL, cc);
-                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0);
+                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0, NULL);
                 total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                 vg_lite_expected_destroy(eb);
             }
@@ -398,7 +398,7 @@ static vg_lite_error_t SFT_Blit_004(void)
                 int tol = get_tolerance(dst_buf.format, VG_LITE_BLEND_NONE);
                 vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_clear(eb, NULL, cc);
-                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0);
+                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0, NULL);
                 total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                 vg_lite_expected_destroy(eb);
             }
@@ -476,7 +476,7 @@ static vg_lite_error_t SFT_Blit_005(void)
                 int tol = get_tolerance(dst_buf.format, VG_LITE_BLEND_NONE) + 2;
                 vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_clear(eb, NULL, cc);
-                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0);
+                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0, NULL);
                 total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                 vg_lite_expected_destroy(eb);
             }
@@ -565,7 +565,7 @@ static vg_lite_error_t SFT_Blit_006(void)
                 int tol = get_tolerance(dst_buf.format, VG_LITE_BLEND_NONE) + 2;
                 vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_clear(eb, NULL, cc);
-                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0);
+                vg_lite_expected_blit(eb, &src_buf, &matrix, 0, filter, 0, 0, 0, NULL);
                 total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                 vg_lite_expected_destroy(eb);
             }
@@ -626,7 +626,7 @@ static vg_lite_error_t SFT_Blit_007(void)
             int tol = get_tolerance(dstbuffer.format, blend_mode[i]);
             vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dstbuffer.width, dstbuffer.height, dstbuffer.format);
             vg_lite_expected_copy(eb, &tempBuffer);
-            vg_lite_expected_blit(eb, &srcbuffer, &identity_matrix, blend_mode[i], filter, 0, 0, 0);
+            vg_lite_expected_blit(eb, &srcbuffer, &identity_matrix, blend_mode[i], filter, 0, 0, 0, NULL);
             total_fail += vg_lite_expected_verify(eb, &dstbuffer, tol);
             vg_lite_expected_destroy(eb);
         } else {
@@ -694,7 +694,7 @@ static vg_lite_error_t SFT_Blit_008(void)
                     int tol = get_tolerance(dstbuffer.format, blend_mode[k]);
                     vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dstbuffer.width, dstbuffer.height, dstbuffer.format);
                     vg_lite_expected_copy(eb, &tempBuffer);
-                    vg_lite_expected_blit(eb, &srcbuffer, &identity_matrix, blend_mode[k], filter, 0, 0, 0);
+                    vg_lite_expected_blit(eb, &srcbuffer, &identity_matrix, blend_mode[k], filter, 0, 0, 0, NULL);
                     int iter_fail = vg_lite_expected_verify(eb, &dstbuffer, tol);
                     if (iter_fail > 0) printf("    src=%d dst=%d blend=%d tol=%d: %d failures\n", formats[i], formats[j], blend_mode[k], tol, iter_fail);
                     total_fail += iter_fail;
@@ -768,7 +768,7 @@ static vg_lite_error_t SFT_Blit_009(void)
                 int tol = get_tolerance(dst_buf.format, blend_mode[j]);
                 vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_copy(eb, &tempBuffer);
-                vg_lite_expected_blit(eb, &src_buf, &identity_matrix, blend_mode[j], filter, 0, 0, 0);
+                vg_lite_expected_blit(eb, &src_buf, &identity_matrix, blend_mode[j], filter, 0, 0, 0, NULL);
                 total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                 vg_lite_expected_destroy(eb);
             } else {
@@ -839,7 +839,7 @@ static vg_lite_error_t SFT_Blit_010(void)
                     int tol = get_tolerance(dst_buf.format, blend_mode[k]);
                     vg_lite_expected_buffer_t *eb = vg_lite_expected_create(dst_buf.width, dst_buf.height, dst_buf.format);
                     vg_lite_expected_copy(eb, &tempBuffer);
-                    vg_lite_expected_blit(eb, &src_buf, &identity_matrix, blend_mode[k], filter, 0, 0, 0);
+                    vg_lite_expected_blit(eb, &src_buf, &identity_matrix, blend_mode[k], filter, 0, 0, 0, NULL);
                     total_fail += vg_lite_expected_verify(eb, &dst_buf, tol);
                     vg_lite_expected_destroy(eb);
                 } else {

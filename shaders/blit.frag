@@ -14,6 +14,11 @@ layout(std430, set = 0, binding = 2) readonly buffer BlitParams {
 #define FLAG_OUTPUT_A8       2
 #define FLAG_NATIVE_BLEND    4
 #define FLAG_SOURCE_A8       8
+#define FLAG_SOURCE_INDEX8   16
+
+layout(std430, set = 0, binding = 3) readonly buffer CLUT {
+    uint colors[256];
+} clut;
 
 layout(set = 0, binding = 0) uniform sampler2D src_texture;
 layout(set = 0, binding = 1) uniform sampler2D dst_texture;
@@ -66,28 +71,14 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
 
     if (params.image_mode == IMAGE_MODE_MULTIPLY) {
         /* A8 source: swizzled to (0,0,0,alpha), multiply uses alpha * color */
-        int flags_debug = params.flags;
-        if ((flags_debug & FLAG_SOURCE_A8) != 0) {
+        if ((params.flags & FLAG_SOURCE_A8) != 0) {
             return vec4(mix.rgb * src.a, mix.a * src.a);
-        }
-        /* Debug: if flags=8 but FLAG_SOURCE_A8 not detected, output blue */
-        if (flags_debug == 8) {
-            return vec4(0.0, 0.0, 1.0, 1.0);  /* Blue = flags is 8 but bitwise check failed */
         }
         return vec4(src.rgb * mix.rgb, src.a * mix.a);
     }
-    /* Debug: check if entering wrong image_mode */
-    if (params.image_mode == 0x1F01) {
-        return vec4(1.0, 0.0, 1.0, 1.0);  /* Magenta = image_mode correct but not in MULTIPLY block */
-    }
-    if (params.image_mode == 7937) {
-        return vec4(0.5, 0.0, 1.0, 1.0);  /* Purple = image_mode as decimal */
-    }
-    return vec4(0.0, 1.0, 0.0, 1.0);  /* Green = completely wrong image_mode */
     if (params.image_mode == IMAGE_MODE_STENCIL) {
         return vec4(mix.rgb, src.a * mix.a);
     }
-    /* IMAGE_MODE_NORMAL (0x1F00) or default: pass through */
     return src;
 }
 
@@ -292,6 +283,21 @@ void main()
     else if (src_uv.y > 1.0) src_uv.y = 1.0;
 
     vec4 src = texture(src_texture, src_uv);
+    
+    if ((params.flags & FLAG_SOURCE_INDEX8) != 0) {
+        float index_f = src.r * 255.0;
+        uint index = uint(round(index_f));
+        uint abgr = clut.colors[index];
+        float a = float((abgr >> 24) & 0xFFu) / 255.0;
+        float b = float((abgr >> 16) & 0xFFu) / 255.0;
+        float g = float((abgr >>  8) & 0xFFu) / 255.0;
+        float r = float((abgr      ) & 0xFFu) / 255.0;
+        src = vec4(r, g, b, a);
+    }
+    else if (params.flags == 16) {
+        src = vec4(1.0, 0.0, 0.0, 1.0);
+    }
+    
     src = apply_image_mode(src, params.color);
 
     if (native_blend) {

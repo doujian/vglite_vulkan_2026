@@ -60,7 +60,8 @@ void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
                             vg_lite_buffer_t *src,
                             vg_lite_matrix_t *matrix,
                             int blend_mode, int filter,
-                            int image_mode, int flags, uint32_t color);
+                            int image_mode, int flags, uint32_t color,
+                            uint32_t *clut);
 void vg_lite_expected_copy(vg_lite_expected_buffer_t *eb, vg_lite_buffer_t *buf);
 int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
                               vg_lite_buffer_t *actual,
