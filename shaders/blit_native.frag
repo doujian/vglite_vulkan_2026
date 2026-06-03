@@ -9,8 +9,6 @@ layout(std430, set = 0, binding = 1) readonly buffer BlitParams {
     int   flags;
 } params;
 
-#define FLAG_OUTPUT_L8       1
-#define FLAG_OUTPUT_A8       2
 #define FLAG_SOURCE_A8       8
 
 layout(set = 0, binding = 0) uniform sampler2D src_texture;
@@ -65,12 +63,5 @@ void main()
 
     src = apply_image_mode(src, params.color);
 
-    if ((params.flags & FLAG_OUTPUT_L8) != 0) {
-        float lum = 0.2126 * src.r + 0.7152 * src.g + 0.0722 * src.b;
-        out_color = vec4(lum, 0.0, 0.0, src.a);
-    } else if ((params.flags & FLAG_OUTPUT_A8) != 0) {
-        out_color = vec4(src.a, 0.0, 0.0, src.a);
-    } else {
-        out_color = src;
-    }
+    out_color = src;
 }
