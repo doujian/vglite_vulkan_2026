@@ -5,7 +5,11 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
 )
 
-link_libraries(vg_lite vg_lite_util stb m)
+if(MSVC)
+    link_libraries(vg_lite vg_lite_util stb)
+else()
+    link_libraries(vg_lite vg_lite_util stb m)
+endif()
 
 add_executable(test_clear clear/clear.c)
 add_dependencies(test_clear spirv_compilation)
@@ -59,3 +63,6 @@ add_dependencies(test_imgA8 spirv_compilation)
 
 add_executable(test_imgIndex imgIndex/imgIndex.c)
 add_dependencies(test_imgIndex spirv_compilation)
+
+add_executable(test_draw_image draw_image/draw_image.c)
+add_dependencies(test_draw_image spirv_compilation)

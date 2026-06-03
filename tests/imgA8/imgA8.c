@@ -8,17 +8,6 @@
 
 #define DEFAULT_SIZE   400.0f;
 #define __func__ __FUNCTION__
-char *error_type[] = 
-{
-    "VG_LITE_SUCCESS",
-    "VG_LITE_INVALID_ARGUMENT",
-    "VG_LITE_OUT_OF_MEMORY",
-    "VG_LITE_NO_CONTEXT",      
-    "VG_LITE_TIMEOUT",
-    "VG_LITE_OUT_OF_RESOURCES",
-    "VG_LITE_GENERIC_IO",
-    "VG_LITE_NOT_SUPPORT",
-};
 #define IS_ERROR(status)         (status > 0)
 #define CHECK_ERROR(Function) \
     error = Function; \

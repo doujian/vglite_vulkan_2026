@@ -5,7 +5,12 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Compiler flags
-add_compile_options(-Wall -Wextra -Wno-unused-parameter -fPIC)
+if(MSVC)
+    add_compile_options(/W3)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+else()
+    add_compile_options(-Wall -Wextra -Wno-unused-parameter -fPIC)
+endif()
 
 # Find Vulkan
 find_package(Vulkan REQUIRED)

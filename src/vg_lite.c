@@ -348,11 +348,15 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
        (BGRA8888). For L8/A8/RGB565 targets, the GPU blends on 4 channels but only
        stores R (L8/A8) or packs to 16-bit (RGB565), losing data in the process.
        Fall back to shader-blend for non-BGRA8888 targets. */
-    if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888)
+    if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565)
         blend_group = BG_SHADER;
     int native_blend = (blend_group != BG_SHADER);
 
-    VkPipeline pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
+    VkPipeline pipeline;
+    if (native_blend)
+        pipeline = vg_lite_vulkan_get_pipeline_no_msaa(vkfmt, blend_group);
+    else
+        pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
     vg_lite_vulkan_begin_command();
     vg_lite_vulkan_end_render_pass();
@@ -521,7 +525,10 @@ for (int k = 0; k < 3; k++)
     }
 
     /* Begin render pass */
-    vg_lite_vulkan_set_render_target(target);
+    if (native_blend)
+        vg_lite_vulkan_set_render_target_no_msaa(target);
+    else
+        vg_lite_vulkan_set_render_target(target);
 
     /* Descriptor set */
     VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};

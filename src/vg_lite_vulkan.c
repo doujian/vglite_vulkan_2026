@@ -68,11 +68,30 @@ vg_lite_error_t vg_lite_vulkan_init(void)
         free(layers);
     }
 
-    const char *extensions[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
+    const char *wanted_extensions[] = { VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_HEADLESS_SURFACE_EXTENSION_NAME, VK_EXT_DEBUG_UTILS_EXTENSION_NAME };
+    int ext_count = 0;
+    const char *enabled_extensions[3];
+
+    {
+        uint32_t avail_count = 0;
+        vkEnumerateInstanceExtensionProperties(NULL, &avail_count, NULL);
+        VkExtensionProperties *avail_exts = malloc(avail_count * sizeof(VkExtensionProperties));
+        vkEnumerateInstanceExtensionProperties(NULL, &avail_count, avail_exts);
+        for (int w = 0; w < 3; w++) {
+            for (uint32_t a = 0; a < avail_count; a++) {
+                if (strcmp(wanted_extensions[w], avail_exts[a].extensionName) == 0) {
+                    enabled_extensions[ext_count++] = wanted_extensions[w];
+                    break;
+                }
+            }
+        }
+        free(avail_exts);
+    }
+
     VkInstanceCreateInfo inst_ci = {0};
     inst_ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    inst_ci.enabledExtensionCount = 3;
-    inst_ci.ppEnabledExtensionNames = extensions;
+    inst_ci.enabledExtensionCount = ext_count;
+    inst_ci.ppEnabledExtensionNames = enabled_extensions;
 
     VkDebugUtilsMessengerCreateInfoEXT debug_ci = {0};
     if (enable_validation) {
@@ -248,6 +267,10 @@ vg_lite_error_t vg_lite_vulkan_submit_command(int wait)
         vkDestroyFramebuffer(g_vk_ctx.device, g_vk_ctx.pending_fb[i], NULL);
     }
     g_vk_ctx.pending_fb_count = 0;
+    for (int i = 0; i < g_vk_ctx.pending_rp_count; i++) {
+        vkDestroyRenderPass(g_vk_ctx.device, g_vk_ctx.pending_rp[i], NULL);
+    }
+    g_vk_ctx.pending_rp_count = 0;
     return VG_LITE_SUCCESS;
 }
 
@@ -631,6 +654,8 @@ static VkShaderModule create_shader_module(const uint32_t *code, size_t size)
 int vg_lite_blend_to_group(vg_lite_blend_t blend)
 {
     switch (blend) {
+    case VG_LITE_BLEND_NONE:
+        return BG_NONE;
     case VG_LITE_BLEND_SRC_OVER:
     case VG_LITE_BLEND_NORMAL_LVGL:
         return BG_SRC_OVER;
@@ -652,6 +677,8 @@ static void get_blend_attachment_state(int blend_group, VkPipelineColorBlendAtta
                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
     switch (blend_group) {
+    case BG_NONE:
+        break;
     case BG_SRC_OVER:
         cba->blendEnable = VK_TRUE;
         cba->colorBlendOp = VK_BLEND_OP_ADD;
@@ -785,6 +812,194 @@ VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group)
         g_vk_ctx.pipeline_cache_count++;
     }
     return pipeline;
+}
+
+static VkRenderPass create_render_pass_no_msaa(VkFormat format)
+{
+    VkAttachmentDescription attachment = {0};
+    attachment.format = format;
+    attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachment.initialLayout = VK_IMAGE_LAYOUT_GENERAL;
+    attachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription sub = {0};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &color_ref;
+
+    VkRenderPassCreateInfo ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    ci.attachmentCount = 1;
+    ci.pAttachments = &attachment;
+    ci.subpassCount = 1;
+    ci.pSubpasses = &sub;
+
+    VkRenderPass rp;
+    if (vkCreateRenderPass(g_vk_ctx.device, &ci, NULL, &rp) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    return rp;
+}
+
+static VkPipeline create_blit_pipeline_no_msaa(VkFormat format, int blend_group)
+{
+    extern const uint32_t g_vert_spv_data[];
+    extern const uint32_t g_frag_spv_data[];
+    extern const uint32_t g_vert_spv_size;
+    extern const uint32_t g_frag_spv_size;
+    if (!g_vk_ctx.vert_shader) {
+        g_vk_ctx.vert_shader = create_shader_module(g_vert_spv_data, (size_t)g_vert_spv_size);
+        g_vk_ctx.frag_shader = create_shader_module(g_frag_spv_data, (size_t)g_frag_spv_size);
+    }
+    if (!g_vk_ctx.blit_pipeline_layout) {
+        VkDescriptorSetLayoutBinding bindings[4] = {
+            {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+            {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+            {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+            {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        };
+        VkDescriptorSetLayoutCreateInfo ds_ci = {0};
+        ds_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        ds_ci.bindingCount = 4;
+        ds_ci.pBindings = bindings;
+        vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.blit_descriptor_layout);
+
+        VkPipelineLayoutCreateInfo pl_ci = {0};
+        pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pl_ci.setLayoutCount = 1;
+        pl_ci.pSetLayouts = &g_vk_ctx.blit_descriptor_layout;
+        vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.blit_pipeline_layout);
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.vert_shader, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_vk_ctx.frag_shader, "main", NULL},
+    };
+    VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineColorBlendAttachmentState cba;
+    get_blend_attachment_state(blend_group, &cba);
+    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+    VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+
+    VkRenderPass rp = create_render_pass_no_msaa(format);
+
+    VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vs.viewportCount = 1;
+    vs.scissorCount = 1;
+
+    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dyn_ci = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dyn_ci.dynamicStateCount = 2; dyn_ci.pDynamicStates = dyn_states;
+
+    VkGraphicsPipelineCreateInfo gp_ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp_ci.stageCount = 2; gp_ci.pStages = stages;
+    gp_ci.pVertexInputState = &vi; gp_ci.pInputAssemblyState = &ia;
+    gp_ci.pViewportState = &vs;
+    gp_ci.pRasterizationState = &rs; gp_ci.pMultisampleState = &ms;
+    gp_ci.pColorBlendState = &cb; gp_ci.pDepthStencilState = &ds; gp_ci.pDynamicState = &dyn_ci;
+    gp_ci.layout = g_vk_ctx.blit_pipeline_layout;
+    gp_ci.renderPass = rp; gp_ci.subpass = 0;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline);
+    vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
+    return pipeline;
+}
+
+VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group)
+{
+    for (int i = 0; i < g_vk_ctx.pipeline_cache_count; i++) {
+        if (g_vk_ctx.pipeline_cache[i].format == format &&
+            g_vk_ctx.pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.pipeline_cache[i].no_msaa)
+            return g_vk_ctx.pipeline_cache[i].pipeline;
+    }
+
+    VkPipeline pipeline = create_blit_pipeline_no_msaa(format, blend_group);
+    if (pipeline && g_vk_ctx.pipeline_cache_count < MAX_PIPELINE_CACHE) {
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].pipeline = pipeline;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].format = format;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].no_msaa = 1;
+        g_vk_ctx.pipeline_cache_count++;
+    }
+    return pipeline;
+}
+
+vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target)
+{
+    if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+
+    if (g_vk_ctx.current_fb) { vg_lite_vulkan_end_render_pass(); }
+
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    VkRenderPass rp = create_render_pass_no_msaa(vkfmt);
+    if (!rp) return VG_LITE_OUT_OF_MEMORY;
+
+    VkImageView fb_view = internal->view;
+    VkFramebufferCreateInfo fb_ci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+    fb_ci.renderPass = rp;
+    fb_ci.attachmentCount = 1;
+    fb_ci.pAttachments = &fb_view;
+    fb_ci.width = target->width;
+    fb_ci.height = target->height;
+    fb_ci.layers = 1;
+    VkFramebuffer fb;
+    if (vkCreateFramebuffer(g_vk_ctx.device, &fb_ci, NULL, &fb) != VK_SUCCESS) {
+        vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+
+    g_vk_ctx.current_fb = fb;
+    g_vk_ctx.current_fb_image = internal->image;
+    g_vk_ctx.current_fb_view = internal->view;
+    g_vk_ctx.current_fb_width = target->width;
+    g_vk_ctx.current_fb_height = target->height;
+
+    {
+        VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_HOST_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.image = internal->image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            0, 0, NULL, 0, NULL, 1, &barrier);
+    }
+
+    VkRenderPassBeginInfo rpbi = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+    rpbi.renderPass = rp;
+    rpbi.framebuffer = fb;
+    rpbi.renderArea.extent.width = target->width;
+    rpbi.renderArea.extent.height = target->height;
+    rpbi.clearValueCount = 0;
+
+    vkCmdBeginRenderPass(g_vk_ctx.cmd_buf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
+    if (g_vk_ctx.pending_rp_count < MAX_PENDING_FB)
+        g_vk_ctx.pending_rp[g_vk_ctx.pending_rp_count++] = rp;
+    else
+        vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
+    return VG_LITE_SUCCESS;
 }
 
 void vg_lite_vulkan_destroy_pipelines(void)

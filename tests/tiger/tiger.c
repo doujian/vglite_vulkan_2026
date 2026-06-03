@@ -5,7 +5,6 @@
 #include "vg_lite_util.h"
 #include "tiger_paths.h"
 
-#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 #define TIGER_WIDTH  640

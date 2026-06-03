@@ -102,9 +102,15 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
             } else if (bpp == 16) {
                 si += x * 2;
                 uint16_t p = *(uint16_t*)(src + si);
-                rgba[di+0] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
-                rgba[di+1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
-                rgba[di+2] = (unsigned char)((p & 0x1F) * 255 / 31);
+                if (is_bgra) {
+                    rgba[di+0] = (unsigned char)((p & 0x1F) * 255 / 31);
+                    rgba[di+1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
+                    rgba[di+2] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
+                } else {
+                    rgba[di+0] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
+                    rgba[di+1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
+                    rgba[di+2] = (unsigned char)((p & 0x1F) * 255 / 31);
+                }
                 rgba[di+3] = 255;
             } else {
                 si += x;

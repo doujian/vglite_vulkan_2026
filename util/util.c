@@ -126,7 +126,7 @@ uint32_t pack_pixel(vg_lite_buffer_format_t format, uint32_t r, uint32_t g, uint
     case VG_LITE_RGB565:
         return ((r & 0xf8) >> 3) | ((g & 0xfc) << 3) | ((b & 0xf8) << 8);
     case VG_LITE_BGR565:
-        return ((b & 0xf8) >> 3) | ((g & 0xfc) << 3) | ((r & 0xf8) << 8);
+        return ((b & 0xf8) << 8) | ((g & 0xfc) << 3) | (r >> 3);
     case VG_LITE_RGBA4444:
         return ((r & 0xf0) >> 4) | (g & 0xf0) | ((b & 0xf0) << 4) | ((a & 0xf0) << 8);
     case VG_LITE_BGRA4444:
@@ -168,10 +168,10 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
     }
     case VG_LITE_BGR565: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        uint8_t r = (p >> 11) & 0x1F;
-        uint8_t g = (p >> 5) & 0x3F;
-        uint8_t b = p & 0x1F;
-        return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
+        uint8_t b5 = (p >> 11) & 0x1F;
+        uint8_t g6 = (p >> 5) & 0x3F;
+        uint8_t r5 = p & 0x1F;
+        return ((r5 << 3) | (r5 >> 2)) | (((g6 << 2) | (g6 >> 4)) << 8) | (((b5 << 3) | (b5 >> 2)) << 16) | (0xFF << 24);
     }
     case VG_LITE_RGBA4444: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
@@ -389,17 +389,15 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
     }
 
     if (im_multiply) {
-        /* MULTIPLY: multiply color with source alpha (shader: mix.rgb * src.a, mix.a * src.a) */
         int cr = (color >> 0) & 0xFF;
         int cg = (color >> 8) & 0xFF;
         int cb = (color >> 16) & 0xFF;
         int ca = (color >> 24) & 0xFF;
         sr = (sr * cr + 127) / 255;
-        sg = (sa * cg + 127) / 255;  /* For A8: use sa, not sg */
         sb = (sb * cb + 127) / 255;
         sa = (sa * ca + 127) / 255;
+        sg = (sg * cg + 127) / 255;
         if (flag_a8) {
-            /* For A8+MULTIPLY: shader uses mix.rgb * src.a, so G = alpha * color.g */
             sg = (sa * cg + 127) / 255;
         }
     }

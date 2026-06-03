@@ -9,7 +9,8 @@
 #define BG_DST_OVER   2
 #define BG_ADDITIVE   3
 #define BG_SUBTRACT   4
-#define BG_COUNT      5
+#define BG_NONE       5
+#define BG_COUNT      6
 
 #define MAX_PIPELINE_CACHE 64
 
@@ -38,6 +39,7 @@ typedef struct {
     VkPipeline pipeline;
     VkFormat format;
     int blend_group;
+    int no_msaa;
 } pipeline_cache_entry_t;
 
 typedef struct {
@@ -61,6 +63,8 @@ typedef struct {
     #define MAX_PENDING_FB 32
     VkFramebuffer pending_fb[MAX_PENDING_FB];
     int pending_fb_count;
+    VkRenderPass pending_rp[MAX_PENDING_FB];
+    int pending_rp_count;
 
     VkCommandBuffer cmd_buf;
     int cmd_buf_recording;
@@ -106,6 +110,8 @@ vg_lite_error_t vg_lite_vulkan_submit_command(int wait);
 
 int vg_lite_blend_to_group(vg_lite_blend_t blend);
 VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group);
+VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group);
+vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_destroy_pipelines(void);
 
