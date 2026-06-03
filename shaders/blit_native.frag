@@ -9,8 +9,6 @@ layout(std430, set = 0, binding = 1) readonly buffer BlitParams {
     int   flags;
 } params;
 
-#define FLAG_SOURCE_A8       8
-
 layout(set = 0, binding = 0) uniform sampler2D src_texture;
 
 layout(location = 0) in  vec2 frag_pos;
@@ -29,9 +27,6 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
     vec4 mix = vec4(mr, mg, mb, ma);
 
     if (params.image_mode == IMAGE_MODE_MULTIPLY) {
-        if ((params.flags & FLAG_SOURCE_A8) != 0) {
-            return vec4(mix.rgb * src.a, mix.a * src.a);
-        }
         return vec4(src.rgb * mix.rgb, src.a * mix.a);
     }
     if (params.image_mode == IMAGE_MODE_STENCIL) {
