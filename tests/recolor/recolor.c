@@ -24,7 +24,7 @@ void cleanup(void)
     vg_lite_close();
 }
 
-static int run_test(vg_lite_buffer_format_t dst_format, vg_lite_color_t recolor_color)
+static int run_test(const char *name, vg_lite_buffer_format_t dst_format, vg_lite_color_t recolor_color)
 {
     vg_lite_error_t error = VG_LITE_SUCCESS;
     vg_lite_filter_t filter = VG_LITE_FILTER_POINT;
@@ -64,6 +64,9 @@ static int run_test(vg_lite_buffer_format_t dst_format, vg_lite_color_t recolor_
     image.image_mode = VG_LITE_RECOLOR_MODE;
     CHECK_ERROR(vg_lite_blit(fb, &image, &matrix, VG_LITE_BLEND_NONE, recolor_color, filter));
     CHECK_ERROR(vg_lite_finish());
+    char png_name[128];
+    snprintf(png_name, sizeof(png_name), "recolor_%s.png", name);
+    vg_lite_save_png(png_name, fb);
 
     {
         vg_lite_expected_buffer_t *eb = vg_lite_expected_create(fb->width, fb->height, fb->format);
@@ -110,7 +113,7 @@ int main(int argc, char *argv[])
 
     for (int i = 0; i < num_cases; i++) {
         printf("[%02d] %s color=0x%08X ", i, cases[i].name, cases[i].color);
-        int rc = run_test(cases[i].format, cases[i].color);
+        int rc = run_test(cases[i].name, cases[i].format, cases[i].color);
         if (rc == 0) {
             printf("PASS\n");
             total_pass++;
