@@ -66,3 +66,6 @@ add_dependencies(test_imgIndex spirv_compilation)
 
 add_executable(test_draw_image draw_image/draw_image.c)
 add_dependencies(test_draw_image spirv_compilation)
+
+add_executable(test_recolor recolor/recolor.c)
+add_dependencies(test_recolor spirv_compilation)

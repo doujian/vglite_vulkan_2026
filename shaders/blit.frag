@@ -59,6 +59,7 @@ layout(location = 0) out vec4 out_color;
 #define IMAGE_MODE_NORMAL   0x1F00
 #define IMAGE_MODE_MULTIPLY 0x1F01
 #define IMAGE_MODE_STENCIL  0x1F02
+#define IMAGE_MODE_RECOLOR  0x1F04
 
 vec4 apply_image_mode(vec4 src, uint mix_color)
 {
@@ -78,6 +79,9 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
     }
     if (params.image_mode == IMAGE_MODE_STENCIL) {
         return vec4(mix.rgb, src.a * mix.a);
+    }
+    if (params.image_mode == IMAGE_MODE_RECOLOR) {
+        return vec4(mix.rgb * src.a, src.a);
     }
     return src;
 }

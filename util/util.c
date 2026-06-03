@@ -355,7 +355,7 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
     float sw = (float)src->width, sh = (float)src->height;
     float src_uv_x = sx / sw, src_uv_y = sy / sh;
     if (src_uv_x < -0.001f || src_uv_x > 1.001f || src_uv_y < -0.001f || src_uv_y > 1.001f)
-        return dst_px;
+        return 0;
     if (src_uv_x < 0.0f) src_uv_x = 0.0f;
     else if (src_uv_x > 1.0f) src_uv_x = 1.0f;
     if (src_uv_y < 0.0f) src_uv_y = 0.0f;
@@ -382,9 +382,9 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
 
     int flag_a8 = (flags & 8);
     int im_multiply = (image_mode == 0x1F01);
+    int im_recolor = (image_mode == 0x1F04);
 
     if (flag_a8) {
-        /* A8 source: use only alpha channel, RGB = 0 */
         sr = 0; sg = 0; sb = 0;
     }
 
@@ -400,6 +400,15 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
         if (flag_a8) {
             sg = (sa * cg + 127) / 255;
         }
+    }
+
+    if (im_recolor) {
+        int cr = (color >> 0) & 0xFF;
+        int cg = (color >> 8) & 0xFF;
+        int cb = (color >> 16) & 0xFF;
+        sr = (cr * sa + 127) / 255;
+        sg = (cg * sa + 127) / 255;
+        sb = (cb * sa + 127) / 255;
     }
 
     int dr, dg, db, da;
