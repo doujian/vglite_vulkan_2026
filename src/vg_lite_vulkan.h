@@ -77,6 +77,10 @@ typedef struct {
     VkDescriptorSetLayout blit_descriptor_layout;
     VkShaderModule vert_shader;
     VkShaderModule frag_shader;
+    /* Native blend pipeline (2-binding: sampler + SSBO) */
+    VkPipelineLayout native_pipeline_layout;
+    VkDescriptorSetLayout native_descriptor_layout;
+    VkShaderModule native_frag_shader;
     /* SSBO for blit shader parameters */
     VkBuffer blit_ssbo_buffer;
     VkDeviceMemory blit_ssbo_memory;

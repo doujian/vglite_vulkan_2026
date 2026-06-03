@@ -849,36 +849,36 @@ static VkRenderPass create_render_pass_no_msaa(VkFormat format)
 static VkPipeline create_blit_pipeline_no_msaa(VkFormat format, int blend_group)
 {
     extern const uint32_t g_vert_spv_data[];
-    extern const uint32_t g_frag_spv_data[];
     extern const uint32_t g_vert_spv_size;
-    extern const uint32_t g_frag_spv_size;
+    extern const uint32_t g_native_frag_spv_data[];
+    extern const uint32_t g_native_frag_spv_size;
     if (!g_vk_ctx.vert_shader) {
         g_vk_ctx.vert_shader = create_shader_module(g_vert_spv_data, (size_t)g_vert_spv_size);
-        g_vk_ctx.frag_shader = create_shader_module(g_frag_spv_data, (size_t)g_frag_spv_size);
     }
-    if (!g_vk_ctx.blit_pipeline_layout) {
-        VkDescriptorSetLayoutBinding bindings[4] = {
+    if (!g_vk_ctx.native_frag_shader) {
+        g_vk_ctx.native_frag_shader = create_shader_module(g_native_frag_spv_data, (size_t)g_native_frag_spv_size);
+    }
+    if (!g_vk_ctx.native_pipeline_layout) {
+        VkDescriptorSetLayoutBinding bindings[2] = {
             {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-            {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-            {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-            {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+            {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
         };
         VkDescriptorSetLayoutCreateInfo ds_ci = {0};
         ds_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ds_ci.bindingCount = 4;
+        ds_ci.bindingCount = 2;
         ds_ci.pBindings = bindings;
-        vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.blit_descriptor_layout);
+        vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.native_descriptor_layout);
 
         VkPipelineLayoutCreateInfo pl_ci = {0};
         pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pl_ci.setLayoutCount = 1;
-        pl_ci.pSetLayouts = &g_vk_ctx.blit_descriptor_layout;
-        vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.blit_pipeline_layout);
+        pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
+        vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.native_pipeline_layout);
     }
 
     VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.vert_shader, "main", NULL},
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_vk_ctx.frag_shader, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_vk_ctx.native_frag_shader, "main", NULL},
     };
     VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -911,7 +911,7 @@ static VkPipeline create_blit_pipeline_no_msaa(VkFormat format, int blend_group)
     gp_ci.pViewportState = &vs;
     gp_ci.pRasterizationState = &rs; gp_ci.pMultisampleState = &ms;
     gp_ci.pColorBlendState = &cb; gp_ci.pDepthStencilState = &ds; gp_ci.pDynamicState = &dyn_ci;
-    gp_ci.layout = g_vk_ctx.blit_pipeline_layout;
+    gp_ci.layout = g_vk_ctx.native_pipeline_layout;
     gp_ci.renderPass = rp; gp_ci.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -1013,6 +1013,9 @@ void vg_lite_vulkan_destroy_pipelines(void)
     if (g_vk_ctx.blit_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.blit_descriptor_layout, NULL); g_vk_ctx.blit_descriptor_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.vert_shader, NULL); g_vk_ctx.vert_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.frag_shader, NULL); g_vk_ctx.frag_shader = VK_NULL_HANDLE; }
+    if (g_vk_ctx.native_frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.native_frag_shader, NULL); g_vk_ctx.native_frag_shader = VK_NULL_HANDLE; }
+    if (g_vk_ctx.native_pipeline_layout) { vkDestroyPipelineLayout(g_vk_ctx.device, g_vk_ctx.native_pipeline_layout, NULL); g_vk_ctx.native_pipeline_layout = VK_NULL_HANDLE; }
+    if (g_vk_ctx.native_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.native_descriptor_layout, NULL); g_vk_ctx.native_descriptor_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.blit_ssbo_buffer) {
         vkUnmapMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_memory);
         vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, NULL);

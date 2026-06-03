@@ -8,6 +8,7 @@
 
 #include "spv_vert.h"
 #include "spv_frag.h"
+#include "spv_native_frag.h"
 
 extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *t, vg_lite_path_t *p, 
                                          vg_lite_fill_t fl, vg_lite_matrix_t *m, 
@@ -534,7 +535,7 @@ for (int k = 0; k < 3; k++)
     VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
     ds_alloc.descriptorSetCount = 1;
-    ds_alloc.pSetLayouts = &g_vk_ctx.blit_descriptor_layout;
+    ds_alloc.pSetLayouts = native_blend ? &g_vk_ctx.native_descriptor_layout : &g_vk_ctx.blit_descriptor_layout;
     VkDescriptorSet desc_set;
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
@@ -550,9 +551,6 @@ for (int k = 0; k < 3; k++)
     }
     
     struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; int pad[3]; } pc = {0};
-    /* GLSL mat3 is stored as 3 columns of vec3: [col0_row0, col0_row1, col0_row2, col1_row0, col1_row1, col1_row2, col2_row0, col2_row1, col2_row2]
-     * We need shader_mat transposed: shader_mat[row][col] -> GLSL needs mat[col][row]
-     * Store with stride 4 so GLSL reads column values with gap between columns */
     for (int col = 0; col < 3; col++) {
         for (int row = 0; row < 3; row++) {
             pc.m[col * 4 + row] = shader_mat[row][col];
@@ -560,10 +558,9 @@ for (int k = 0; k < 3; k++)
     }
     pc.blend = (int)blend; pc.color = color;
     pc.im_mode = (int)source->image_mode; pc.filt = (int)filter;
-pc.flags = 0;
+    pc.flags = 0;
     if (target->format == VG_LITE_L8)  pc.flags |= 1;
     if (target->format == VG_LITE_A8)  pc.flags |= 2;
-    if (native_blend)                   pc.flags |= 4;
     if (source->format == VG_LITE_A8)  pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
@@ -571,17 +568,27 @@ pc.flags = 0;
     
     VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};
     VkDescriptorBufferInfo clut_info = {g_vk_ctx.clut_buffer, 0, 256 * 4};
-    VkWriteDescriptorSet ws[4] = {
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &ssbo_info, NULL},
-        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &clut_info, NULL},
-    };
-    vkUpdateDescriptorSets(g_vk_ctx.device, 4, ws, 0, NULL);
+
+    if (native_blend) {
+        VkWriteDescriptorSet ws[2] = {
+            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
+            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &ssbo_info, NULL},
+        };
+        vkUpdateDescriptorSets(g_vk_ctx.device, 2, ws, 0, NULL);
+    } else {
+        VkWriteDescriptorSet ws[4] = {
+            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
+            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
+            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &ssbo_info, NULL},
+            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &clut_info, NULL},
+        };
+        vkUpdateDescriptorSets(g_vk_ctx.device, 4, ws, 0, NULL);
+    }
 
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        g_vk_ctx.blit_pipeline_layout, 0, 1, &desc_set, 0, NULL);
+        native_blend ? g_vk_ctx.native_pipeline_layout : g_vk_ctx.blit_pipeline_layout,
+        0, 1, &desc_set, 0, NULL);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     VkRect2D sc = {{0,0}, {target->width, target->height}};
