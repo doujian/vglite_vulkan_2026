@@ -1,6 +1,7 @@
 #include "vg_lite.h"
 #include "vg_lite_util.h"
 #include "util.h"
+#include "vg_lite_format.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,20 +100,6 @@ void SaveBMP_SFT(char * name, vg_lite_buffer_t *buffer, BOOL save)
     {
         BMP_File_Name(name, new_name);
         vg_lite_save_png(new_name, buffer);
-    }
-}
-
-uint32_t get_bpp(vg_lite_buffer_format_t format)
-{
-    switch (format) {
-    case VG_LITE_RGBA8888: case VG_LITE_BGRA8888: case VG_LITE_RGBX8888:
-    case VG_LITE_BGRX8888: case VG_LITE_ARGB8888: case VG_LITE_ABGR8888:
-        return 32;
-    case VG_LITE_RGB565: case VG_LITE_BGR565:
-    case VG_LITE_RGBA4444: case VG_LITE_BGRA4444:
-        return 16;
-    case VG_LITE_A8: case VG_LITE_L8: return 8;
-    default: return 32;
     }
 }
 
@@ -647,7 +634,7 @@ static void *gen_checker(vg_lite_buffer_format_t format, uint32_t width, uint32_
 {
     int checker = 20;
     int color0[4], color1[4];
-    int bpp = get_bpp(format);
+    int bpp = vg_lite_format_bpp(format);
     uint32_t *pdata32;
     uint16_t *pdata16;
     uint8_t  *pdata8;
@@ -697,7 +684,7 @@ static void *gen_gradient(vg_lite_buffer_format_t format, uint32_t width, uint32
     uint16_t *pdata16;
     uint8_t  *pdata8;
     void     *pdata;
-    int bpp = get_bpp(format);
+    int bpp = vg_lite_format_bpp(format);
 
     pdata = malloc((size_t)(bpp / 8) * width * height);
     pdata32 = (uint32_t *)pdata;
@@ -746,7 +733,7 @@ static void *gen_solid(vg_lite_buffer_format_t format, uint32_t width, uint32_t 
     uint8_t  *pdata8;
     uint32_t *pdata32;
     uint16_t *pdata16;
-    uint32_t bpp = get_bpp(format);
+    uint32_t bpp = vg_lite_format_bpp(format);
     int i, j;
 
     r = (uint32_t)Random_r(0, 255);
@@ -786,7 +773,7 @@ void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32
 int gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
 {
     vg_lite_error_t error;
-    uint32_t bpp = get_bpp(format);
+    uint32_t bpp = vg_lite_format_bpp(format);
     void *data;
 
     memset(buf, 0, sizeof(*buf));

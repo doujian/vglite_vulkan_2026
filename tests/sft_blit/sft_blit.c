@@ -5,6 +5,7 @@
 #include "vg_lite.h"
 #include "vg_lite_util.h"
 #include "util.h"
+#include "vg_lite_format.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,7 +45,7 @@ static vg_lite_matrix_t identity_matrix;
 static int get_tolerance(vg_lite_buffer_format_t format, vg_lite_blend_t blend)
 {
     int tol = 0;
-    uint32_t bpp = get_bpp(format);
+    uint32_t bpp = vg_lite_format_bpp(format);
     if (bpp >= 32) tol = 0;
     else if (bpp >= 16) tol = 12;
     else tol = 8;

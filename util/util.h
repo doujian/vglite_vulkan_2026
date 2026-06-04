@@ -15,7 +15,6 @@ unsigned long int Random_i(unsigned long int, unsigned long int);
 void        random_srand(unsigned int seed);
 vg_lite_color_t GenColor_r(void);
 
-uint32_t get_bpp(vg_lite_buffer_format_t format);
 uint32_t pack_pixel(vg_lite_buffer_format_t format, uint32_t r, uint32_t g, uint32_t b, uint32_t a);
 void unpack_rgba(uint32_t pixel, int *r, int *g, int *b, int *a);
 
