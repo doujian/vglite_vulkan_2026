@@ -6,6 +6,7 @@
 #include <string.h>
 #include <math.h>
 
+#include "vg_lite_math.h"
 #include "spv_vert.h"
 #include "spv_frag.h"
 #include "spv_native_frag.h"
@@ -372,24 +373,9 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
        Need: src_uv = inv(M) * (frag_pos * dst_size) / src_size
        Combined: shader_mat = Scale(1/src_w, 1/src_h) * inv(M) * Scale(dst_w, dst_h) */
     vg_lite_matrix_t M = *matrix;
-    float det00 = M.m[1][1]*M.m[2][2] - M.m[2][1]*M.m[1][2];
-    float det01 = M.m[2][0]*M.m[1][2] - M.m[1][0]*M.m[2][2];
-    float det02 = M.m[1][0]*M.m[2][1] - M.m[2][0]*M.m[1][1];
-    float det = M.m[0][0]*det00 + M.m[0][1]*det01 + M.m[0][2]*det02;
-    if (fabsf(det) < 1e-7f) det = 1e-7f;
-    float inv_det = 1.0f / det;
-
     vg_lite_matrix_t inv;
     memset(&inv, 0, sizeof(inv));
-    inv.m[0][0] = inv_det * det00;
-    inv.m[0][1] = inv_det * (M.m[2][1]*M.m[0][2] - M.m[0][1]*M.m[2][2]);
-    inv.m[0][2] = inv_det * (M.m[0][1]*M.m[1][2] - M.m[1][1]*M.m[0][2]);
-    inv.m[1][0] = inv_det * det01;
-    inv.m[1][1] = inv_det * (M.m[0][0]*M.m[2][2] - M.m[2][0]*M.m[0][2]);
-    inv.m[1][2] = inv_det * (M.m[1][0]*M.m[0][2] - M.m[0][0]*M.m[1][2]);
-    inv.m[2][0] = inv_det * det02;
-    inv.m[2][1] = inv_det * (M.m[2][0]*M.m[0][1] - M.m[0][0]*M.m[2][1]);
-    inv.m[2][2] = inv_det * (M.m[0][0]*M.m[1][1] - M.m[1][0]*M.m[0][1]);
+    mat3_inverse(M.m, inv.m);
 
     float sw = (float)source->width, sh = (float)source->height;
     float dw = (float)target->width, dh = (float)target->height;
@@ -400,21 +386,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     float d_scl[3][3] = {{dw, 0, 0}, {0, dh, 0}, {0, 0, 1}};
     float temp[3][3], shader_mat[3][3];
 
-    /* temp = inv(M) * Scale(dw, dh) */
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            temp[i][j] = 0;
-            for (int k = 0; k < 3; k++)
-                temp[i][j] += inv.m[i][k] * d_scl[k][j];
-        }
-
-    /* shader_mat = Scale(1/sw, 1/sh) * temp */
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++) {
-            shader_mat[i][j] = 0;
-for (int k = 0; k < 3; k++)
-            shader_mat[i][j] += s_inv[i][k] * temp[k][j];
-    }
+    mat3_multiply(inv.m, d_scl, temp);
+    mat3_multiply(s_inv, temp, shader_mat);
 
     VkImage tmp_image = VK_NULL_HANDLE;
     VkDeviceMemory tmp_memory = VK_NULL_HANDLE;

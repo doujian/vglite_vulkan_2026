@@ -1,5 +1,6 @@
 #include "vg_lite_vulkan.h"
 #include "vg_lite_format.h"
+#include "vg_lite_math.h"
 #include "vlc_parser.h"
 #include "tessellator.h"
 #include "draw_vert_spv.h"
@@ -408,10 +409,7 @@ struct {
     float combined[3][3] = {0};
     
     if (matrix) {
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 3; j++)
-                for (int k = 0; k < 3; k++)
-                    combined[i][j] += screen_to_ndc[i][k] * matrix->m[k][j];
+        mat3_multiply(screen_to_ndc, matrix->m, combined);
         
         for (int col = 0; col < 3; col++) {
             pc_data.m0[col] = combined[0][col];
@@ -679,10 +677,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     vg_lite_identity(&identity);
     if (!path_matrix) path_matrix = &identity;
     
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            for (int k = 0; k < 3; k++)
-                path_combined[i][j] += path_screen_to_ndc[i][k] * path_matrix->m[k][j];
+    mat3_multiply(path_screen_to_ndc, path_matrix->m, path_combined);
     
     if (!pattern_matrix) pattern_matrix = &identity;
     
@@ -693,27 +688,10 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     float m[3][3];
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) m[i][j] = pattern_matrix->m[i][j];
     
-    float det = m[0][0]*(m[1][1]*m[2][2] - m[1][2]*m[2][1])
-              - m[0][1]*(m[1][0]*m[2][2] - m[1][2]*m[2][0])
-              + m[0][2]*(m[1][0]*m[2][1] - m[1][1]*m[2][0]);
-    
-    if (fabsf(det) < 1e-6f) {
+    if (!mat3_inverse(m, pattern_inv)) {
         pattern_inv[0][0] = 1.0f / pattern_image->width;
         pattern_inv[1][1] = 1.0f / pattern_image->height;
     } else {
-        float idet = 1.0f / det;
-        pattern_inv[0][0] = (m[1][1]*m[2][2] - m[1][2]*m[2][1]) * idet;
-        pattern_inv[0][1] = (m[0][2]*m[2][1] - m[0][1]*m[2][2]) * idet;
-        pattern_inv[0][2] = (m[0][1]*m[1][2] - m[0][2]*m[1][1]) * idet;
-        pattern_inv[1][0] = (m[1][2]*m[2][0] - m[1][0]*m[2][2]) * idet;
-        pattern_inv[1][1] = (m[0][0]*m[2][2] - m[0][2]*m[2][0]) * idet;
-        pattern_inv[1][2] = (m[0][2]*m[1][0] - m[0][0]*m[1][2]) * idet;
-        pattern_inv[2][0] = (m[1][0]*m[2][1] - m[1][1]*m[2][0]) * idet;
-        pattern_inv[2][1] = (m[0][1]*m[2][0] - m[0][0]*m[2][1]) * idet;
-        pattern_inv[2][2] = (m[0][0]*m[1][1] - m[0][1]*m[1][0]) * idet;
-        
-        /* Normalize by pattern dimensions (convert pixels to normalized UV)
-         * Row 0 (u) divided by width, Row 1 (v) divided by height */
         pattern_inv[0][0] /= pattern_image->width;
         pattern_inv[0][1] /= pattern_image->width;
         pattern_inv[0][2] /= pattern_image->width;

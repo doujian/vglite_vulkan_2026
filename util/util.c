@@ -2,6 +2,7 @@
 #include "vg_lite_util.h"
 #include "util.h"
 #include "vg_lite_format.h"
+#include "vg_lite_math.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -253,25 +254,6 @@ void unpack_rgba(uint32_t pixel, int *r, int *g, int *b, int *a)
     *a = (pixel >> 24) & 0xFF;
 }
 
-static int mat3_inverse(vg_lite_float_t m[3][3], vg_lite_float_t inv[3][3])
-{
-    float det = m[0][0]*(m[1][1]*m[2][2] - m[1][2]*m[2][1])
-              - m[0][1]*(m[1][0]*m[2][2] - m[1][2]*m[2][0])
-              + m[0][2]*(m[1][0]*m[2][1] - m[1][1]*m[2][0]);
-    if (fabsf(det) < 1e-6f) return 0;
-
-    float idet = 1.0f / det;
-    inv[0][0] = (m[1][1]*m[2][2] - m[1][2]*m[2][1]) * idet;
-    inv[0][1] = (m[0][2]*m[2][1] - m[0][1]*m[2][2]) * idet;
-    inv[0][2] = (m[0][1]*m[1][2] - m[0][2]*m[1][1]) * idet;
-    inv[1][0] = (m[1][2]*m[2][0] - m[1][0]*m[2][2]) * idet;
-    inv[1][1] = (m[0][0]*m[2][2] - m[0][2]*m[2][0]) * idet;
-    inv[1][2] = (m[0][2]*m[1][0] - m[0][0]*m[1][2]) * idet;
-    inv[2][0] = (m[1][0]*m[2][1] - m[1][1]*m[2][0]) * idet;
-    inv[2][1] = (m[0][1]*m[2][0] - m[0][0]*m[2][1]) * idet;
-    inv[2][2] = (m[0][0]*m[1][1] - m[0][1]*m[1][0]) * idet;
-    return 1;
-}
 
 static int transform_point(vg_lite_float_t inv[3][3], float dx, float dy, float *sx, float *sy)
 {
