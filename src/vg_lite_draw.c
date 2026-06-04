@@ -35,17 +35,6 @@ typedef struct {
 
 static draw_pipeline_t g_draw_pipeline = {0};
 
-static int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties mem_props;
-    vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & props) == props)
-            return (int32_t)i;
-    }
-    return -1;
-}
-
 static VkShaderModule create_shader_module(const uint8_t* code, size_t size)
 {
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};

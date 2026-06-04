@@ -39,13 +39,13 @@ static void destroy_debug_messenger(VkInstance inst, VkDebugUtilsMessengerEXT me
     if (fn) fn(inst, messenger, NULL);
 }
 
-static int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
+int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
 {
     VkPhysicalDeviceMemoryProperties mem_props;
     vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
     for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & props))
-            return i;
+        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & props) == props)
+            return (int32_t)i;
     }
     return -1;
 }

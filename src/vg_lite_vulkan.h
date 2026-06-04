@@ -103,6 +103,8 @@ typedef struct {
 
 extern vk_context_t g_vk_ctx;
 
+int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props);
+
 vg_lite_error_t vg_lite_vulkan_init(void);
 vg_lite_error_t vg_lite_vulkan_destroy(void);
 

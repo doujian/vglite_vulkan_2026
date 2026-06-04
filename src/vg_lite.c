@@ -22,17 +22,6 @@ extern void vg_lite_draw_cleanup_pending_buffers(void);
 
 static int g_initialized = 0;
 
-static int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties mem_props;
-    vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
-    for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
-        if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & props) == props)
-            return (int32_t)i;
-    }
-    return -1;
-}
-
 static VkSampler s_sampler_point = VK_NULL_HANDLE;
 static VkSampler s_sampler_linear = VK_NULL_HANDLE;
 
