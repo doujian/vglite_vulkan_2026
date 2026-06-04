@@ -320,80 +320,30 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     return VG_LITE_SUCCESS;
 }
 
-vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
-                             vg_lite_buffer_t *source,
-                             vg_lite_matrix_t *matrix,
-                             vg_lite_blend_t blend,
-                             vg_lite_color_t color,
-                             vg_lite_filter_t filter)
+static void compute_blit_shader_matrix(vg_lite_matrix_t *matrix,
+    int src_w, int src_h, int dst_w, int dst_h,
+    float shader_mat[3][3])
 {
-    if (!target || !source) return VG_LITE_INVALID_ARGUMENT;
-    if (!g_initialized) return VG_LITE_NO_CONTEXT;
-
-    buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
-    buffer_internal_t *src_int = (buffer_internal_t *)source->handle;
-    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-
-    int blend_group = vg_lite_blend_to_group(blend);
-    /* Native blend only works correctly when the framebuffer stores all 4 channels
-       (BGRA8888). For L8/A8/RGB565 targets, the GPU blends on 4 channels but only
-       stores R (L8/A8) or packs to 16-bit (RGB565), losing data in the process.
-       Fall back to shader-blend for non-BGRA8888 targets. */
-    if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565)
-        blend_group = BG_SHADER;
-    int native_blend = (blend_group != BG_SHADER);
-
-    VkPipeline pipeline;
-    if (native_blend)
-        pipeline = vg_lite_vulkan_get_pipeline_no_msaa(vkfmt, blend_group);
-    else
-        pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
-    if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
-    vg_lite_vulkan_begin_command();
-    vg_lite_vulkan_end_render_pass();
-
-    /* Transition source image to SHADER_READ for texture sampling.
-       Source may have been written by CPU (HOST_WRITE) or previous GPU ops. */
-    VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
-    src_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    src_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    src_bar.image = src_int->image;
-    src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    src_bar.subresourceRange.levelCount = 1;
-    src_bar.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-        0, NULL, 0, NULL, 1, &src_bar);
-
-    /* Compute shader matrix: maps normalized frag_pos [0,1] -> source UV [0,1]
-       VGLite matrix M: dst_pixel = M * src_pixel
-       Need: src_uv = inv(M) * (frag_pos * dst_size) / src_size
-       Combined: shader_mat = Scale(1/src_w, 1/src_h) * inv(M) * Scale(dst_w, dst_h) */
-    vg_lite_matrix_t M = *matrix;
     vg_lite_matrix_t inv;
     memset(&inv, 0, sizeof(inv));
-    mat3_inverse(M.m, inv.m);
+    mat3_inverse(matrix->m, inv.m);
 
-    float sw = (float)source->width, sh = (float)source->height;
-    float dw = (float)target->width, dh = (float)target->height;
-
-    /* Compute shader_mat = Scale(1/sw, 1/sh) * inv(M) * Scale(dw, dh)
-       via two matrix multiplications */
-    float s_inv[3][3] = {{1.0f/sw, 0, 0}, {0, 1.0f/sh, 0}, {0, 0, 1}};
-    float d_scl[3][3] = {{dw, 0, 0}, {0, dh, 0}, {0, 0, 1}};
-    float temp[3][3], shader_mat[3][3];
+    float s_inv[3][3] = {{1.0f/src_w, 0, 0}, {0, 1.0f/src_h, 0}, {0, 0, 1}};
+    float d_scl[3][3] = {{(float)dst_w, 0, 0}, {0, (float)dst_h, 0}, {0, 0, 1}};
+    float temp[3][3];
 
     mat3_multiply(inv.m, d_scl, temp);
     mat3_multiply(s_inv, temp, shader_mat);
+}
 
+static vg_lite_error_t create_temp_copy_image(VkFormat vkfmt,
+    vg_lite_buffer_t *target, buffer_internal_t *target_int,
+    VkImage *out_image, VkDeviceMemory *out_memory, VkImageView *out_view)
+{
     VkImage tmp_image = VK_NULL_HANDLE;
     VkDeviceMemory tmp_memory = VK_NULL_HANDLE;
     VkImageView tmp_view = VK_NULL_HANDLE;
 
-    if (!native_blend) {
     VkImageCreateInfo tmp_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     tmp_ci.imageType = VK_IMAGE_TYPE_2D;
     tmp_ci.format = vkfmt;
@@ -452,7 +402,6 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         return VG_LITE_OUT_OF_MEMORY;
     }
 
-    /* Transition tmp to GENERAL (LINEAR tiling must use GENERAL layout) */
     VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -464,7 +413,6 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vkCmdPipelineBarrier(g_vk_ctx.cmd_buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
 
-    /* Copy target -> tmp */
     VkImageCopy cp = {0};
     cp.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     cp.srcSubresource.layerCount = 1;
@@ -477,7 +425,6 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         target_int->image, VK_IMAGE_LAYOUT_GENERAL,
         tmp_image, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
 
-    /* Transition tmp to shader read (still GENERAL for LINEAR tiling) */
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -485,15 +432,72 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     barrier.image = tmp_image;
     vkCmdPipelineBarrier(g_vk_ctx.cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+
+    *out_image = tmp_image;
+    *out_memory = tmp_memory;
+    *out_view = tmp_view;
+    return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
+                             vg_lite_buffer_t *source,
+                             vg_lite_matrix_t *matrix,
+                             vg_lite_blend_t blend,
+                             vg_lite_color_t color,
+                             vg_lite_filter_t filter)
+{
+    if (!target || !source) return VG_LITE_INVALID_ARGUMENT;
+    if (!g_initialized) return VG_LITE_NO_CONTEXT;
+
+    buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
+    buffer_internal_t *src_int = (buffer_internal_t *)source->handle;
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+
+    int blend_group = vg_lite_blend_to_group(blend);
+    if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565)
+        blend_group = BG_SHADER;
+    int native_blend = (blend_group != BG_SHADER);
+
+    VkPipeline pipeline;
+    if (native_blend)
+        pipeline = vg_lite_vulkan_get_pipeline_no_msaa(vkfmt, blend_group);
+    else
+        pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
+    if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
+    vg_lite_vulkan_begin_command();
+    vg_lite_vulkan_end_render_pass();
+
+    VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    src_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    src_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    src_bar.image = src_int->image;
+    src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    src_bar.subresourceRange.levelCount = 1;
+    src_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+        0, NULL, 0, NULL, 1, &src_bar);
+
+    float shader_mat[3][3];
+    compute_blit_shader_matrix(matrix, source->width, source->height, target->width, target->height, shader_mat);
+
+    VkImage tmp_image = VK_NULL_HANDLE;
+    VkDeviceMemory tmp_memory = VK_NULL_HANDLE;
+    VkImageView tmp_view = VK_NULL_HANDLE;
+
+    if (!native_blend) {
+        vg_lite_error_t err = create_temp_copy_image(vkfmt, target, target_int, &tmp_image, &tmp_memory, &tmp_view);
+        if (err != VG_LITE_SUCCESS) return err;
     }
 
-    /* Begin render pass */
     if (native_blend)
         vg_lite_vulkan_set_render_target_no_msaa(target);
     else
         vg_lite_vulkan_set_render_target(target);
 
-    /* Descriptor set */
     VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
     ds_alloc.descriptorSetCount = 1;
@@ -559,7 +563,6 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
     vg_lite_vulkan_end_render_pass();
 
-    /* Cleanup temp resources after submit */
     vg_lite_vulkan_submit_command(1);
     VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &desc_set));
     if (!native_blend) {
@@ -606,10 +609,7 @@ vg_lite_error_t vg_lite_translate(vg_lite_float_t x, vg_lite_float_t y, vg_lite_
     t.m[0][2] = x;
     t.m[1][2] = y;
     vg_lite_matrix_t result = {0};
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            for (int k = 0; k < 3; k++)
-                result.m[i][j] += matrix->m[i][k] * t.m[k][j];
+    mat3_multiply(matrix->m, t.m, result.m);
     *matrix = result;
     return VG_LITE_SUCCESS;
 }
@@ -622,10 +622,7 @@ vg_lite_error_t vg_lite_scale(vg_lite_float_t sx, vg_lite_float_t sy, vg_lite_ma
     t.m[0][0] = sx;
     t.m[1][1] = sy;
     vg_lite_matrix_t result = {0};
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            for (int k = 0; k < 3; k++)
-                result.m[i][j] += matrix->m[i][k] * t.m[k][j];
+    mat3_multiply(matrix->m, t.m, result.m);
     *matrix = result;
     matrix->scaleX = sx;
     matrix->scaleY = sy;
@@ -642,10 +639,7 @@ vg_lite_error_t vg_lite_rotate(vg_lite_float_t degrees, vg_lite_matrix_t *matrix
     t.m[0][0] = c;  t.m[0][1] = -s;
     t.m[1][0] = s;  t.m[1][1] = c;
     vg_lite_matrix_t result = {0};
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            for (int k = 0; k < 3; k++)
-                result.m[i][j] += matrix->m[i][k] * t.m[k][j];
+    mat3_multiply(matrix->m, t.m, result.m);
     *matrix = result;
     matrix->angle = degrees;
     return VG_LITE_SUCCESS;
