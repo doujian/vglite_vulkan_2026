@@ -43,7 +43,7 @@ static VkSampler get_or_create_sampler(vg_lite_filter_t filter)
     ci.unnormalizedCoordinates = VK_FALSE;
     ci.compareEnable = VK_FALSE;
     ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    vkCreateSampler(g_vk_ctx.device, &ci, NULL, sampler_ptr);
+    VK_CHECK(vkCreateSampler(g_vk_ctx.device, &ci, NULL, sampler_ptr));
     return *sampler_ptr;
 }
 
@@ -161,7 +161,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
         free(internal); return VG_LITE_OUT_OF_MEMORY;
     }
-    vkBindImageMemory(g_vk_ctx.device, internal->image, internal->memory, 0);
+    VK_CHECK(vkBindImageMemory(g_vk_ctx.device, internal->image, internal->memory, 0));
 
     VkImageViewCreateInfo view_ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view_ci.image = internal->image;
@@ -171,7 +171,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     view_ci.subresourceRange.levelCount = 1;
     view_ci.subresourceRange.layerCount = 1;
 
-    vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->view);
+    VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->view));
     internal->swizzle_view = VK_NULL_HANDLE;
 
     if (buffer->format == VG_LITE_L8) {
@@ -179,19 +179,19 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.g = VK_COMPONENT_SWIZZLE_R;
         view_ci.components.b = VK_COMPONENT_SWIZZLE_R;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
-        vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view);
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     } else if (buffer->format == VG_LITE_A8) {
         view_ci.components.r = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
-        VkResult res = vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view);
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     } else if (buffer->format == VG_LITE_RGB565 || buffer->format == VG_LITE_BGR565) {
         view_ci.components.r = VK_COMPONENT_SWIZZLE_R;
         view_ci.components.g = VK_COMPONENT_SWIZZLE_G;
         view_ci.components.b = VK_COMPONENT_SWIZZLE_B;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
-        vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view);
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     }
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
@@ -204,7 +204,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     buffer->stride = layout.rowPitch;
 
     void *mapped = NULL;
-    vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped);
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
 
     /* Transition image from UNDEFINED to GENERAL layout */
     vg_lite_vulkan_begin_command();
@@ -424,7 +424,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
         return VG_LITE_OUT_OF_MEMORY;
     }
-    vkBindImageMemory(g_vk_ctx.device, tmp_image, tmp_memory, 0);
+    VK_CHECK(vkBindImageMemory(g_vk_ctx.device, tmp_image, tmp_memory, 0));
 
     VkImageViewCreateInfo tmpv_ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     tmpv_ci.image = tmp_image;
@@ -561,7 +561,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
     /* Cleanup temp resources after submit */
     vg_lite_vulkan_submit_command(1);
-    vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &desc_set);
+    VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &desc_set));
     if (!native_blend) {
         vkDestroyImageView(g_vk_ctx.device, tmp_view, NULL);
         vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);

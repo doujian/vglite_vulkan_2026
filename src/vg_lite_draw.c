@@ -65,7 +65,7 @@ static void init_draw_pipeline(VkFormat format)
     VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pl_ci.pushConstantRangeCount = 1;
     pl_ci.pPushConstantRanges = &pc_range;
-    vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_draw_pipeline.pipeline_layout);
+    VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_draw_pipeline.pipeline_layout));
     
     VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_draw_pipeline.vert_shader, "main", NULL},
@@ -134,7 +134,7 @@ static void init_draw_pipeline(VkFormat format)
     gp_ci.renderPass = rp;
     gp_ci.subpass = 0;
     
-    vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_draw_pipeline.fill_pipeline);
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_draw_pipeline.fill_pipeline));
     
     VkPipelineDepthStencilStateCreateInfo stencil_ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     stencil_ds.depthTestEnable = VK_FALSE;
@@ -164,8 +164,7 @@ static void init_draw_pipeline(VkFormat format)
     
     gp_ci.pColorBlendState = &stencil_cb;
     gp_ci.pDepthStencilState = &stencil_ds;
-    VkResult stencil_res = vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_draw_pipeline.stencil_pipeline);
-    printf("Stencil pipeline creation result: %d\n", stencil_res);
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_draw_pipeline.stencil_pipeline));
     
     VkPipelineDepthStencilStateCreateInfo cover_ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     cover_ds.depthTestEnable = VK_FALSE;
@@ -192,8 +191,7 @@ static void init_draw_pipeline(VkFormat format)
     gp_ci.pInputAssemblyState = &cover_ia;
     gp_ci.pColorBlendState = &cb;
     gp_ci.pDepthStencilState = &cover_ds;
-    VkResult cover_res = vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_draw_pipeline.cover_pipeline);
-    printf("Cover pipeline creation result: %d\n", cover_res);
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_draw_pipeline.cover_pipeline));
     
     gp_ci.pInputAssemblyState = &ia;
     
@@ -202,7 +200,7 @@ static void init_draw_pipeline(VkFormat format)
     VkBufferCreateInfo cover_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     cover_ci.size = 256;
     cover_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    vkCreateBuffer(g_vk_ctx.device, &cover_ci, NULL, &g_draw_pipeline.cover_vbo);
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &cover_ci, NULL, &g_draw_pipeline.cover_vbo));
     
     VkMemoryRequirements cover_req;
     vkGetBufferMemoryRequirements(g_vk_ctx.device, g_draw_pipeline.cover_vbo, &cover_req);
@@ -211,30 +209,25 @@ static void init_draw_pipeline(VkFormat format)
     VkMemoryAllocateInfo cover_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     cover_alloc.allocationSize = cover_req.size;
     cover_alloc.memoryTypeIndex = (uint32_t)find_memory_type(cover_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkResult alloc_result = vkAllocateMemory(g_vk_ctx.device, &cover_alloc, NULL, &g_draw_pipeline.cover_vbo_mem);
-    printf("Cover VBO memory allocation result: %d\n", alloc_result);
-    if (alloc_result != VK_SUCCESS) {
-        printf("Cover VBO allocation FAILED!\n");
-        return;
-    }
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &cover_alloc, NULL, &g_draw_pipeline.cover_vbo_mem));
     vkBindBufferMemory(g_vk_ctx.device, g_draw_pipeline.cover_vbo, g_draw_pipeline.cover_vbo_mem, 0);
     
     VkBufferCreateInfo cover_ibo_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     cover_ibo_ci.size = 6 * sizeof(uint32_t);
     cover_ibo_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    vkCreateBuffer(g_vk_ctx.device, &cover_ibo_ci, NULL, &g_draw_pipeline.cover_ibo);
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &cover_ibo_ci, NULL, &g_draw_pipeline.cover_ibo));
     
     VkMemoryRequirements cover_ibo_req;
     vkGetBufferMemoryRequirements(g_vk_ctx.device, g_draw_pipeline.cover_ibo, &cover_ibo_req);
     VkMemoryAllocateInfo cover_ibo_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     cover_ibo_alloc.allocationSize = cover_ibo_req.size;
     cover_ibo_alloc.memoryTypeIndex = (uint32_t)find_memory_type(cover_ibo_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    vkAllocateMemory(g_vk_ctx.device, &cover_ibo_alloc, NULL, &g_draw_pipeline.cover_ibo_mem);
-    vkBindBufferMemory(g_vk_ctx.device, g_draw_pipeline.cover_ibo, g_draw_pipeline.cover_ibo_mem, 0);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &cover_ibo_alloc, NULL, &g_draw_pipeline.cover_ibo_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_draw_pipeline.cover_ibo, g_draw_pipeline.cover_ibo_mem, 0));
     
     uint32_t cover_indices[6] = {0, 1, 2, 0, 2, 3};
     void* ibo_ptr;
-    vkMapMemory(g_vk_ctx.device, g_draw_pipeline.cover_ibo_mem, 0, 6 * sizeof(uint32_t), 0, &ibo_ptr);
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, g_draw_pipeline.cover_ibo_mem, 0, 6 * sizeof(uint32_t), 0, &ibo_ptr));
     memcpy(ibo_ptr, cover_indices, 6 * sizeof(uint32_t));
     vkUnmapMemory(g_vk_ctx.device, g_draw_pipeline.cover_ibo_mem);
     
@@ -257,43 +250,43 @@ static void create_vertex_buffer(int vertex_count, int index_count, VkBuffer* vb
     VkBufferCreateInfo vbo_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     vbo_ci.size = vertex_count * sizeof(float) * 2;
     vbo_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    vkCreateBuffer(g_vk_ctx.device, &vbo_ci, NULL, vbo);
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &vbo_ci, NULL, vbo));
     
     VkMemoryRequirements vbo_req;
     vkGetBufferMemoryRequirements(g_vk_ctx.device, *vbo, &vbo_req);
     VkMemoryAllocateInfo vbo_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     vbo_alloc.allocationSize = vbo_req.size;
     vbo_alloc.memoryTypeIndex = (uint32_t)find_memory_type(vbo_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    vkAllocateMemory(g_vk_ctx.device, &vbo_alloc, NULL, vbo_mem);
-    vkBindBufferMemory(g_vk_ctx.device, *vbo, *vbo_mem, 0);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &vbo_alloc, NULL, vbo_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, *vbo, *vbo_mem, 0));
     
     if (index_count == 0) return;
     
     VkBufferCreateInfo ibo_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     ibo_ci.size = index_count * sizeof(uint32_t);
     ibo_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    vkCreateBuffer(g_vk_ctx.device, &ibo_ci, NULL, ibo);
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &ibo_ci, NULL, ibo));
     
     VkMemoryRequirements ibo_req;
     vkGetBufferMemoryRequirements(g_vk_ctx.device, *ibo, &ibo_req);
     VkMemoryAllocateInfo ibo_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     ibo_alloc.allocationSize = ibo_req.size;
     ibo_alloc.memoryTypeIndex = (uint32_t)find_memory_type(ibo_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    vkAllocateMemory(g_vk_ctx.device, &ibo_alloc, NULL, ibo_mem);
-    vkBindBufferMemory(g_vk_ctx.device, *ibo, *ibo_mem, 0);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &ibo_alloc, NULL, ibo_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, *ibo, *ibo_mem, 0));
 }
 
 static void upload_geom(VkBuffer vbo, VkDeviceMemory vbo_mem, VkBuffer ibo, VkDeviceMemory ibo_mem, TessGeometry* geom)
 {
     void* ptr;
-    vkMapMemory(g_vk_ctx.device, vbo_mem, 0, geom->vertex_count * sizeof(float) * 2, 0, &ptr);
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, vbo_mem, 0, geom->vertex_count * sizeof(float) * 2, 0, &ptr));
     for (int i = 0; i < geom->vertex_count; i++) {
         ((float*)ptr)[i*2] = geom->vertices[i].x;
         ((float*)ptr)[i*2+1] = geom->vertices[i].y;
     }
     vkUnmapMemory(g_vk_ctx.device, vbo_mem);
     
-    vkMapMemory(g_vk_ctx.device, ibo_mem, 0, geom->index_count * sizeof(uint32_t), 0, &ptr);
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, ibo_mem, 0, geom->index_count * sizeof(uint32_t), 0, &ptr));
     memcpy(ptr, geom->indices, geom->index_count * sizeof(uint32_t));
     vkUnmapMemory(g_vk_ctx.device, ibo_mem);
 }
@@ -568,7 +561,7 @@ static VkSampler get_or_create_pattern_sampler(void)
     ci.unnormalizedCoordinates = VK_FALSE;
     ci.compareEnable = VK_FALSE;
     ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    vkCreateSampler(g_vk_ctx.device, &ci, NULL, &s_pattern_sampler);
+    VK_CHECK(vkCreateSampler(g_vk_ctx.device, &ci, NULL, &s_pattern_sampler));
     return s_pattern_sampler;
 }
 

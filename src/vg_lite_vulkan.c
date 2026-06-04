@@ -58,10 +58,10 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     const char *validation_layers[] = { "VK_LAYER_KHRONOS_validation" };
     int enable_validation = 0;
     uint32_t layer_count = 0;
-    vkEnumerateInstanceLayerProperties(&layer_count, NULL);
+    VK_CHECK(vkEnumerateInstanceLayerProperties(&layer_count, NULL));
     if (layer_count > 0) {
         VkLayerProperties *layers = malloc(layer_count * sizeof(VkLayerProperties));
-        vkEnumerateInstanceLayerProperties(&layer_count, layers);
+        VK_CHECK(vkEnumerateInstanceLayerProperties(&layer_count, layers));
         for (uint32_t i = 0; i < layer_count; i++) {
             if (strcmp(layers[i].layerName, validation_layers[0]) == 0) { enable_validation = 1; break; }
         }
@@ -74,9 +74,9 @@ vg_lite_error_t vg_lite_vulkan_init(void)
 
     {
         uint32_t avail_count = 0;
-        vkEnumerateInstanceExtensionProperties(NULL, &avail_count, NULL);
+        VK_CHECK(vkEnumerateInstanceExtensionProperties(NULL, &avail_count, NULL));
         VkExtensionProperties *avail_exts = malloc(avail_count * sizeof(VkExtensionProperties));
-        vkEnumerateInstanceExtensionProperties(NULL, &avail_count, avail_exts);
+        VK_CHECK(vkEnumerateInstanceExtensionProperties(NULL, &avail_count, avail_exts));
         for (int w = 0; w < 3; w++) {
             for (uint32_t a = 0; a < avail_count; a++) {
                 if (strcmp(wanted_extensions[w], avail_exts[a].extensionName) == 0) {
@@ -109,10 +109,10 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     if (enable_validation) create_debug_messenger(g_vk_ctx.instance, &g_vk_ctx.debug_messenger);
 
     uint32_t gpu_count = 0;
-    vkEnumeratePhysicalDevices(g_vk_ctx.instance, &gpu_count, NULL);
+    VK_CHECK(vkEnumeratePhysicalDevices(g_vk_ctx.instance, &gpu_count, NULL));
     if (gpu_count == 0) return VG_LITE_NO_CONTEXT;
     VkPhysicalDevice *gpus = malloc(gpu_count * sizeof(VkPhysicalDevice));
-    vkEnumeratePhysicalDevices(g_vk_ctx.instance, &gpu_count, gpus);
+    VK_CHECK(vkEnumeratePhysicalDevices(g_vk_ctx.instance, &gpu_count, gpus));
     g_vk_ctx.physical_device = gpus[0];
     free(gpus);
 
@@ -149,19 +149,19 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_ci.queueFamilyIndex = g_vk_ctx.queue_family_index;
     pool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    vkCreateCommandPool(g_vk_ctx.device, &pool_ci, NULL, &g_vk_ctx.command_pool);
+    VK_CHECK(vkCreateCommandPool(g_vk_ctx.device, &pool_ci, NULL, &g_vk_ctx.command_pool));
 
     VkCommandBufferAllocateInfo cmd_ai = {0};
     cmd_ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cmd_ai.commandPool = g_vk_ctx.command_pool;
     cmd_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmd_ai.commandBufferCount = 1;
-    vkAllocateCommandBuffers(g_vk_ctx.device, &cmd_ai, &g_vk_ctx.cmd_buf);
+    VK_CHECK(vkAllocateCommandBuffers(g_vk_ctx.device, &cmd_ai, &g_vk_ctx.cmd_buf));
 
     VkFenceCreateInfo fence_ci = {0};
     fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    vkCreateFence(g_vk_ctx.device, &fence_ci, NULL, &g_vk_ctx.fence);
+    VK_CHECK(vkCreateFence(g_vk_ctx.device, &fence_ci, NULL, &g_vk_ctx.fence));
 
     VkDescriptorPoolSize ds_pool_sizes[] = { 
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 },
@@ -173,13 +173,13 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     ds_pool_ci.poolSizeCount = 2;
     ds_pool_ci.pPoolSizes = ds_pool_sizes;
     ds_pool_ci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    vkCreateDescriptorPool(g_vk_ctx.device, &ds_pool_ci, NULL, &g_vk_ctx.descriptor_pool);
+    VK_CHECK(vkCreateDescriptorPool(g_vk_ctx.device, &ds_pool_ci, NULL, &g_vk_ctx.descriptor_pool));
 
     VkBufferCreateInfo ssbo_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     ssbo_ci.size = 80;
     ssbo_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     ssbo_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vkCreateBuffer(g_vk_ctx.device, &ssbo_ci, NULL, &g_vk_ctx.blit_ssbo_buffer);
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &ssbo_ci, NULL, &g_vk_ctx.blit_ssbo_buffer));
 
     VkMemoryRequirements ssbo_req;
     vkGetBufferMemoryRequirements(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, &ssbo_req);
@@ -192,15 +192,15 @@ vg_lite_error_t vg_lite_vulkan_init(void)
         return VG_LITE_OUT_OF_MEMORY;
     }
     ssbo_alloc.memoryTypeIndex = (uint32_t)ssbo_mem_type;
-    vkAllocateMemory(g_vk_ctx.device, &ssbo_alloc, NULL, &g_vk_ctx.blit_ssbo_memory);
-    vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, g_vk_ctx.blit_ssbo_memory, 0);
-    vkMapMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.blit_ssbo_mapped);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &ssbo_alloc, NULL, &g_vk_ctx.blit_ssbo_memory));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_buffer, g_vk_ctx.blit_ssbo_memory, 0));
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, g_vk_ctx.blit_ssbo_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.blit_ssbo_mapped));
 
     VkBufferCreateInfo clut_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     clut_ci.size = 256 * 4;
     clut_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     clut_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    vkCreateBuffer(g_vk_ctx.device, &clut_ci, NULL, &g_vk_ctx.clut_buffer);
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &clut_ci, NULL, &g_vk_ctx.clut_buffer));
 
     VkMemoryRequirements clut_req;
     vkGetBufferMemoryRequirements(g_vk_ctx.device, g_vk_ctx.clut_buffer, &clut_req);
@@ -213,9 +213,9 @@ vg_lite_error_t vg_lite_vulkan_init(void)
         return VG_LITE_OUT_OF_MEMORY;
     }
     clut_alloc.memoryTypeIndex = (uint32_t)clut_mem_type;
-    vkAllocateMemory(g_vk_ctx.device, &clut_alloc, NULL, &g_vk_ctx.clut_memory);
-    vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.clut_buffer, g_vk_ctx.clut_memory, 0);
-    vkMapMemory(g_vk_ctx.device, g_vk_ctx.clut_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.clut_mapped);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &clut_alloc, NULL, &g_vk_ctx.clut_memory));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.clut_buffer, g_vk_ctx.clut_memory, 0));
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, g_vk_ctx.clut_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.clut_mapped));
 
     return VG_LITE_SUCCESS;
 }
@@ -223,7 +223,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
 vg_lite_error_t vg_lite_vulkan_destroy(void)
 {
     if (!g_vk_ctx.device) return VG_LITE_SUCCESS;
-    vkDeviceWaitIdle(g_vk_ctx.device);
+    VK_CHECK(vkDeviceWaitIdle(g_vk_ctx.device));
     vg_lite_vulkan_destroy_pipelines();
     if (g_vk_ctx.clut_mapped) { vkUnmapMemory(g_vk_ctx.device, g_vk_ctx.clut_memory); g_vk_ctx.clut_mapped = NULL; }
     if (g_vk_ctx.clut_buffer) { vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.clut_buffer, NULL); g_vk_ctx.clut_buffer = VK_NULL_HANDLE; }
@@ -241,11 +241,11 @@ vg_lite_error_t vg_lite_vulkan_destroy(void)
 vg_lite_error_t vg_lite_vulkan_begin_command(void)
 {
     if (g_vk_ctx.cmd_buf_recording) return VG_LITE_SUCCESS;
-    if (g_vk_ctx.cmd_buf_submitted) { vkResetCommandBuffer(g_vk_ctx.cmd_buf, 0); g_vk_ctx.cmd_buf_submitted = 0; }
+    if (g_vk_ctx.cmd_buf_submitted) { VK_CHECK(vkResetCommandBuffer(g_vk_ctx.cmd_buf, 0)); g_vk_ctx.cmd_buf_submitted = 0; }
     VkCommandBufferBeginInfo bi = {0};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(g_vk_ctx.cmd_buf, &bi);
+    VK_CHECK(vkBeginCommandBuffer(g_vk_ctx.cmd_buf, &bi));
     g_vk_ctx.cmd_buf_recording = 1;
     return VG_LITE_SUCCESS;
 }
@@ -253,16 +253,16 @@ vg_lite_error_t vg_lite_vulkan_begin_command(void)
 vg_lite_error_t vg_lite_vulkan_submit_command(int wait)
 {
     if (!g_vk_ctx.cmd_buf_recording) return VG_LITE_SUCCESS;
-    vkEndCommandBuffer(g_vk_ctx.cmd_buf);
+    VK_CHECK(vkEndCommandBuffer(g_vk_ctx.cmd_buf));
     g_vk_ctx.cmd_buf_recording = 0;
     VkSubmitInfo si = {0};
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &g_vk_ctx.cmd_buf;
-    vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence);
-    vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence);
+    VK_CHECK(vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence));
+    VK_CHECK(vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence));
     g_vk_ctx.cmd_buf_submitted = 1;
-    if (wait) vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX);
+    if (wait) VK_CHECK(vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX));
     for (int i = 0; i < g_vk_ctx.pending_fb_count; i++) {
         vkDestroyFramebuffer(g_vk_ctx.device, g_vk_ctx.pending_fb[i], NULL);
     }
@@ -362,7 +362,7 @@ static int create_attachment(
     alloc_ci.memoryTypeIndex = (uint32_t)mem_type;
     if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, out_memory) != VK_SUCCESS)
         return -1;
-    vkBindImageMemory(g_vk_ctx.device, *out_image, *out_memory, 0);
+    VK_CHECK(vkBindImageMemory(g_vk_ctx.device, *out_image, *out_memory, 0));
 
     VkImageViewCreateInfo view_ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view_ci.image = *out_image;
@@ -626,11 +626,11 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             VkDescriptorSetLayoutCreateInfo ds_ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             ds_ci.bindingCount = 2;
             ds_ci.pBindings = bindings;
-            vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.native_descriptor_layout);
+            VK_CHECK(vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.native_descriptor_layout));
             VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
-            vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.native_pipeline_layout);
+            VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.native_pipeline_layout));
         }
     } else {
         if (!g_vk_ctx.vert_shader) {
@@ -651,11 +651,11 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             VkDescriptorSetLayoutCreateInfo ds_ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
             ds_ci.bindingCount = 4;
             ds_ci.pBindings = bindings;
-            vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.blit_descriptor_layout);
+            VK_CHECK(vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.blit_descriptor_layout));
             VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &g_vk_ctx.blit_descriptor_layout;
-            vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.blit_pipeline_layout);
+            VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.blit_pipeline_layout));
         }
     }
 
@@ -703,7 +703,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     gp_ci.renderPass = rp; gp_ci.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline);
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline));
     vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
     return pipeline;
 }
@@ -908,7 +908,7 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
         ds_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         ds_ci.bindingCount = 1;
         ds_ci.pBindings = &binding;
-        vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.pattern_descriptor_layout);
+        VK_CHECK(vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.pattern_descriptor_layout));
 
         VkPipelineLayoutCreateInfo pl_ci = {0};
         pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -916,7 +916,7 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
         pl_ci.pSetLayouts = &g_vk_ctx.pattern_descriptor_layout;
         pl_ci.pushConstantRangeCount = 1;
         pl_ci.pPushConstantRanges = &pc_range;
-        vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.pattern_pipeline_layout);
+        VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.pattern_pipeline_layout));
     }
 
     VkPipelineShaderStageCreateInfo stages[2] = {
@@ -990,7 +990,7 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
     gp_ci.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
-    vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline);
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline));
     vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
     return pipeline;
 }

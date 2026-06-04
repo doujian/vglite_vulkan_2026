@@ -3,6 +3,14 @@
 
 #include <vulkan/vulkan.h>
 #include "vg_lite.h"
+#include <stdio.h>
+
+#define VK_CHECK(call) do { \
+    VkResult _r = (call); \
+    if (_r != VK_SUCCESS) { \
+        fprintf(stderr, "Vulkan error %d at %s:%d: %s\n", _r, __FILE__, __LINE__, #call); \
+    } \
+} while (0)
 
 #define BG_SHADER     0
 #define BG_SRC_OVER   1
