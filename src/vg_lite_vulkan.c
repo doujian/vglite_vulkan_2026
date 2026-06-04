@@ -330,6 +330,67 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
     return rp;
 }
 
+static int create_attachment(
+    VkImage *out_image, VkDeviceMemory *out_memory, VkImageView *out_view,
+    uint32_t width, uint32_t height,
+    VkFormat format, VkSampleCountFlagBits samples,
+    VkImageUsageFlags usage, VkImageAspectFlags aspect,
+    VkAccessFlags dst_access, VkPipelineStageFlags dst_stage,
+    VkImageLayout new_layout)
+{
+    VkImageCreateInfo img_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    img_ci.imageType = VK_IMAGE_TYPE_2D;
+    img_ci.format = format;
+    img_ci.extent.width = width;
+    img_ci.extent.height = height;
+    img_ci.extent.depth = 1;
+    img_ci.mipLevels = 1;
+    img_ci.arrayLayers = 1;
+    img_ci.samples = samples;
+    img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    img_ci.usage = usage;
+    img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(g_vk_ctx.device, &img_ci, NULL, out_image) != VK_SUCCESS)
+        return -1;
+
+    VkMemoryRequirements mem_req;
+    vkGetImageMemoryRequirements(g_vk_ctx.device, *out_image, &mem_req);
+    VkMemoryAllocateInfo alloc_ci = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc_ci.allocationSize = mem_req.size;
+    int mem_type = find_memory_type(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mem_type < 0) mem_type = 0;
+    alloc_ci.memoryTypeIndex = (uint32_t)mem_type;
+    if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, out_memory) != VK_SUCCESS)
+        return -1;
+    vkBindImageMemory(g_vk_ctx.device, *out_image, *out_memory, 0);
+
+    VkImageViewCreateInfo view_ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view_ci.image = *out_image;
+    view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_ci.format = format;
+    view_ci.subresourceRange.aspectMask = aspect;
+    view_ci.subresourceRange.levelCount = 1;
+    view_ci.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, out_view) != VK_SUCCESS)
+        return -1;
+
+    VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = dst_access;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = new_layout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = *out_image;
+    barrier.subresourceRange.aspectMask = aspect;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, dst_stage,
+        0, 0, NULL, 0, NULL, 1, &barrier);
+    return 0;
+}
+
 vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
 {
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
@@ -351,209 +412,37 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
         internal->render_pass = vg_lite_vulkan_create_render_pass(vkfmt);
     }
     
-    /* Create MSAA color attachment (4x sample) */
     if (internal->msaa_color_image == VK_NULL_HANDLE) {
-        printf("Creating MSAA color image: %dx%d\n", target->width, target->height);
         VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-        VkImageCreateInfo img_ci = {0};
-        img_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        img_ci.imageType = VK_IMAGE_TYPE_2D;
-        img_ci.format = vkfmt;
-        img_ci.extent.width = target->width;
-        img_ci.extent.height = target->height;
-        img_ci.extent.depth = 1;
-        img_ci.mipLevels = 1;
-        img_ci.arrayLayers = 1;
-        img_ci.samples = VK_SAMPLE_COUNT_4_BIT;
-        img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-        img_ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(g_vk_ctx.device, &img_ci, NULL, &internal->msaa_color_image) != VK_SUCCESS)
+        if (create_attachment(&internal->msaa_color_image, &internal->msaa_color_memory, &internal->msaa_color_view,
+                target->width, target->height, vkfmt, VK_SAMPLE_COUNT_4_BIT,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) < 0)
             return VG_LITE_OUT_OF_MEMORY;
-        
-        VkMemoryRequirements mem_req;
-        vkGetImageMemoryRequirements(g_vk_ctx.device, internal->msaa_color_image, &mem_req);
-        VkMemoryAllocateInfo alloc_ci = {0};
-        alloc_ci.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_ci.allocationSize = mem_req.size;
-        VkPhysicalDeviceMemoryProperties mem_props;
-        vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
-        for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
-            if ((mem_req.memoryTypeBits & (1 << i)) && 
-                (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                alloc_ci.memoryTypeIndex = i; break;
-            }
-        }
-        if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, &internal->msaa_color_memory) != VK_SUCCESS)
-            return VG_LITE_OUT_OF_MEMORY;
-        vkBindImageMemory(g_vk_ctx.device, internal->msaa_color_image, internal->msaa_color_memory, 0);
-        
-        VkImageViewCreateInfo view_ci = {0};
-        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_ci.image = internal->msaa_color_image;
-        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_ci.format = vkfmt;
-        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        view_ci.subresourceRange.baseMipLevel = 0;
-        view_ci.subresourceRange.levelCount = 1;
-        view_ci.subresourceRange.baseArrayLayer = 0;
-        view_ci.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->msaa_color_view) != VK_SUCCESS)
-            return VG_LITE_OUT_OF_MEMORY;
-        
-        VkImageMemoryBarrier color_barrier = {0};
-        color_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        color_barrier.srcAccessMask = 0;
-        color_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        color_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        color_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        color_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        color_barrier.image = internal->msaa_color_image;
-        color_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        color_barrier.subresourceRange.baseMipLevel = 0;
-        color_barrier.subresourceRange.levelCount = 1;
-        color_barrier.subresourceRange.baseArrayLayer = 0;
-        color_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            0, 0, NULL, 0, NULL, 1, &color_barrier);
     }
     
-    /* Create MSAA depth/stencil attachment (4x sample) */
     if (internal->msaa_depth_image == VK_NULL_HANDLE) {
-        printf("Creating MSAA depth/stencil image: %dx%d\n", target->width, target->height);
-        VkImageCreateInfo img_ci = {0};
-        img_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        img_ci.imageType = VK_IMAGE_TYPE_2D;
-        img_ci.format = VK_FORMAT_D24_UNORM_S8_UINT;
-        img_ci.extent.width = target->width;
-        img_ci.extent.height = target->height;
-        img_ci.extent.depth = 1;
-        img_ci.mipLevels = 1;
-        img_ci.arrayLayers = 1;
-        img_ci.samples = VK_SAMPLE_COUNT_4_BIT;
-        img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-        img_ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(g_vk_ctx.device, &img_ci, NULL, &internal->msaa_depth_image) != VK_SUCCESS)
+        if (create_attachment(&internal->msaa_depth_image, &internal->msaa_depth_memory, &internal->msaa_depth_view,
+                target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, VK_SAMPLE_COUNT_4_BIT,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) < 0)
             return VG_LITE_OUT_OF_MEMORY;
-        
-        VkMemoryRequirements mem_req;
-        vkGetImageMemoryRequirements(g_vk_ctx.device, internal->msaa_depth_image, &mem_req);
-        VkMemoryAllocateInfo alloc_ci = {0};
-        alloc_ci.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_ci.allocationSize = mem_req.size;
-        VkPhysicalDeviceMemoryProperties mem_props;
-        vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
-        for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
-            if ((mem_req.memoryTypeBits & (1 << i)) && 
-                (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                alloc_ci.memoryTypeIndex = i; break;
-            }
-        }
-        if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, &internal->msaa_depth_memory) != VK_SUCCESS)
-            return VG_LITE_OUT_OF_MEMORY;
-        vkBindImageMemory(g_vk_ctx.device, internal->msaa_depth_image, internal->msaa_depth_memory, 0);
-        
-        VkImageViewCreateInfo view_ci = {0};
-        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_ci.image = internal->msaa_depth_image;
-        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_ci.format = VK_FORMAT_D24_UNORM_S8_UINT;
-        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        view_ci.subresourceRange.baseMipLevel = 0;
-        view_ci.subresourceRange.levelCount = 1;
-        view_ci.subresourceRange.baseArrayLayer = 0;
-        view_ci.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->msaa_depth_view) != VK_SUCCESS)
-            return VG_LITE_OUT_OF_MEMORY;
-        
-        VkImageMemoryBarrier stencil_barrier = {0};
-        stencil_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        stencil_barrier.srcAccessMask = 0;
-        stencil_barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        stencil_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        stencil_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        stencil_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        stencil_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        stencil_barrier.image = internal->msaa_depth_image;
-        stencil_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        stencil_barrier.subresourceRange.baseMipLevel = 0;
-        stencil_barrier.subresourceRange.levelCount = 1;
-        stencil_barrier.subresourceRange.baseArrayLayer = 0;
-        stencil_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            0, 0, NULL, 0, NULL, 1, &stencil_barrier);
     }
     
     if (internal->depth_stencil_image == VK_NULL_HANDLE) {
-        printf("Creating depth/stencil image: %dx%d\n", target->width, target->height);
-        VkImageCreateInfo img_ci = {0};
-        img_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        img_ci.imageType = VK_IMAGE_TYPE_2D;
-        img_ci.format = VK_FORMAT_D24_UNORM_S8_UINT;
-        img_ci.extent.width = target->width;
-        img_ci.extent.height = target->height;
-        img_ci.extent.depth = 1;
-        img_ci.mipLevels = 1;
-        img_ci.arrayLayers = 1;
-        img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
-        img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-        img_ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (vkCreateImage(g_vk_ctx.device, &img_ci, NULL, &internal->depth_stencil_image) != VK_SUCCESS)
+        if (create_attachment(&internal->depth_stencil_image, &internal->depth_stencil_memory, &internal->depth_stencil_view,
+                target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) < 0)
             return VG_LITE_OUT_OF_MEMORY;
-        
-        VkMemoryRequirements mem_req;
-        vkGetImageMemoryRequirements(g_vk_ctx.device, internal->depth_stencil_image, &mem_req);
-        VkMemoryAllocateInfo alloc_ci = {0};
-        alloc_ci.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-        alloc_ci.allocationSize = mem_req.size;
-        VkPhysicalDeviceMemoryProperties mem_props;
-        vkGetPhysicalDeviceMemoryProperties(g_vk_ctx.physical_device, &mem_props);
-        for (uint32_t i = 0; i < mem_props.memoryTypeCount; i++) {
-            if ((mem_req.memoryTypeBits & (1 << i)) && 
-                (mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
-                alloc_ci.memoryTypeIndex = i; break;
-            }
-        }
-        if (vkAllocateMemory(g_vk_ctx.device, &alloc_ci, NULL, &internal->depth_stencil_memory) != VK_SUCCESS)
-            return VG_LITE_OUT_OF_MEMORY;
-        printf("Depth/stencil memory allocated: size=%zu\n", alloc_ci.allocationSize);
-        vkBindImageMemory(g_vk_ctx.device, internal->depth_stencil_image, internal->depth_stencil_memory, 0);
-        
-        VkImageViewCreateInfo view_ci = {0};
-        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_ci.image = internal->depth_stencil_image;
-        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_ci.format = VK_FORMAT_D24_UNORM_S8_UINT;
-        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        view_ci.subresourceRange.baseMipLevel = 0;
-        view_ci.subresourceRange.levelCount = 1;
-        view_ci.subresourceRange.baseArrayLayer = 0;
-        view_ci.subresourceRange.layerCount = 1;
-        if (vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->depth_stencil_view) != VK_SUCCESS)
-            return VG_LITE_OUT_OF_MEMORY;
-        
-        VkImageMemoryBarrier stencil_barrier = {0};
-        stencil_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        stencil_barrier.srcAccessMask = 0;
-        stencil_barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        stencil_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        stencil_barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        stencil_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        stencil_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        stencil_barrier.image = internal->depth_stencil_image;
-        stencil_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        stencil_barrier.subresourceRange.baseMipLevel = 0;
-        stencil_barrier.subresourceRange.levelCount = 1;
-        stencil_barrier.subresourceRange.baseArrayLayer = 0;
-        stencil_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-            0, 0, NULL, 0, NULL, 1, &stencil_barrier);
     }
     
     VkImageView fb_views[3] = {internal->msaa_color_view, internal->view, internal->msaa_depth_view};
