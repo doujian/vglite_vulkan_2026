@@ -5,17 +5,9 @@
 #include "vg_lite.h"
 #include "vg_lite_util.h"
 #include "util.h"
+#include "Common.h"
 
 #define DEFAULT_SIZE   400.0f;
-#define __func__ __FUNCTION__
-#define IS_ERROR(status)         (status > 0)
-#define CHECK_ERROR(Function) \
-    error = Function; \
-    if (IS_ERROR(error)) \
-    { \
-        printf("[%s: %d] error type is %s\n", __func__, __LINE__,error_type[error]);\
-        goto ErrorHandler; \
-    }
 static int   fb_width = 400, fb_height = 400;
 
 static vg_lite_buffer_t buffer;

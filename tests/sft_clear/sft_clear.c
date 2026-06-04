@@ -1,17 +1,10 @@
 #include "vg_lite.h"
 #include "vg_lite_util.h"
 #include "util.h"
+#include "Common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define IS_ERROR(status) ((status) > 0)
-#define CHECK_ERROR(Function)              \
-    do {                                   \
-        error = (Function);                \
-        if (IS_ERROR(error))               \
-            goto ErrorHandler;             \
-    } while (0)
 
 #define ALIGN(value, base) (((value) + (base) - 1) & ~((base) - 1))
 

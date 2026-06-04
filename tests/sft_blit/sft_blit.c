@@ -5,14 +5,13 @@
 #include "vg_lite.h"
 #include "vg_lite_util.h"
 #include "util.h"
+#include "Common.h"
 #include "vg_lite_format.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
-#define IS_ERROR(status)    (status > 0)
-#define CHECK_ERROR(Function) { error = Function; if (IS_ERROR(error)) { printf("[%s: %d] error=%d\n", __func__, __LINE__, error); goto ErrorHandler; } }
 #define CHECK_GEN(fn) { int _rc = (fn); if (_rc != 0) { printf("[%s: %d] gen_buffer failed\n", __func__, __LINE__); error = VG_LITE_OUT_OF_MEMORY; goto ErrorHandler; } }
 
 #define ALIGN(value, base)  ((value + base - 1) & ~(base - 1))

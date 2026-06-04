@@ -1,13 +1,12 @@
 #include "vg_lite.h"
 #include "vg_lite_util.h"
 #include "util.h"
+#include "Common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define DEFAULT_SIZE   320.0f;
-#define IS_ERROR(status)    (status > 0)
-#define CHECK_ERROR(Function) { error = Function; if (IS_ERROR(error)) { printf("[%s: %d] error=%d\n", __func__, __LINE__, error); goto ErrorHandler; } }
 
 static int   fb_width = 320, fb_height = 480;
 
