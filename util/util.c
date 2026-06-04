@@ -350,10 +350,18 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
     }
 
     int flag_a8 = (flags & 8);
+    int im_none = (image_mode == 0x1F03);
     int im_multiply = (image_mode == 0x1F01);
     int im_recolor = (image_mode == 0x1F04);
 
-    if (flag_a8) {
+    if (im_none) {
+        sr = (color >> 0) & 0xFF;
+        sg = (color >> 8) & 0xFF;
+        sb = (color >> 16) & 0xFF;
+        sa = (color >> 24) & 0xFF;
+    }
+
+    if (flag_a8 && !im_none) {
         sr = 0; sg = 0; sb = 0;
     }
 

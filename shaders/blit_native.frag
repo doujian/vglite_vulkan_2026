@@ -17,6 +17,7 @@ layout(location = 0) out vec4 out_color;
 #define IMAGE_MODE_NORMAL   0x1F00
 #define IMAGE_MODE_MULTIPLY 0x1F01
 #define IMAGE_MODE_STENCIL  0x1F02
+#define IMAGE_MODE_NONE     0x1F03
 #define IMAGE_MODE_RECOLOR  0x1F04
 
 vec4 apply_image_mode(vec4 src, uint mix_color)
@@ -27,6 +28,9 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
     float ma = float((mix_color >> 24) & 0xFFu) / 255.0;
     vec4 mix = vec4(mr, mg, mb, ma);
 
+    if (params.image_mode == IMAGE_MODE_NONE) {
+        return mix;
+    }
     if (params.image_mode == IMAGE_MODE_MULTIPLY) {
         return vec4(src.rgb * mix.rgb, src.a * mix.a);
     }
