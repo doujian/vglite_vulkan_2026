@@ -204,8 +204,6 @@ static void init_draw_pipeline(VkFormat format)
     
     VkMemoryRequirements cover_req;
     vkGetBufferMemoryRequirements(g_vk_ctx.device, g_draw_pipeline.cover_vbo, &cover_req);
-    printf("Cover VBO requirements: size=%zu, alignment=%zu, memoryTypeBits=0x%x\n",
-           cover_req.size, cover_req.alignment, cover_req.memoryTypeBits);
     VkMemoryAllocateInfo cover_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     cover_alloc.allocationSize = cover_req.size;
     cover_alloc.memoryTypeIndex = (uint32_t)find_memory_type(cover_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -234,12 +232,10 @@ static void init_draw_pipeline(VkFormat format)
     /* Test: map and write to cover VBO immediately */
     void* test_ptr;
     VkResult map_result = vkMapMemory(g_vk_ctx.device, g_draw_pipeline.cover_vbo_mem, 0, 256, 0, &test_ptr);
-    printf("Cover VBO map result: %d, ptr=%p\n", map_result, test_ptr);
     if (map_result == VK_SUCCESS && test_ptr) {
         float test_data[8] = {-1, -1, 1, -1, 1, 1, -1, 1};
         memcpy(test_ptr, test_data, sizeof(test_data));
         vkUnmapMemory(g_vk_ctx.device, g_draw_pipeline.cover_vbo_mem);
-        printf("Cover VBO initial write successful\n");
     }
 }
 
@@ -410,26 +406,6 @@ struct {
             pc_data.m2[col] = combined[2][col];
         }
         pc_data.m0[3] = 0; pc_data.m1[3] = 0; pc_data.m2[3] = 0;
-        
-        printf("  User matrix: [%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f]\n",
-               matrix->m[0][0], matrix->m[0][1], matrix->m[0][2],
-               matrix->m[1][0], matrix->m[1][1], matrix->m[1][2],
-               matrix->m[2][0], matrix->m[2][1], matrix->m[2][2]);
-        printf("  Combined NDC matrix: [%.4f %.4f %.4f; %.4f %.4f %.4f; %.4f %.4f %.4f]\n",
-               combined[0][0], combined[0][1], combined[0][2],
-               combined[1][0], combined[1][1], combined[1][2],
-               combined[2][0], combined[2][1], combined[2][2]);
-        
-        // Test: transform first vertex through matrix
-        float test_x = geom.vertices[0].x;
-        float test_y = geom.vertices[0].y;
-        float ndc_x = combined[0][0] * test_x + combined[0][1] * test_y + combined[0][2];
-        float ndc_y = combined[1][0] * test_x + combined[1][1] * test_y + combined[1][2];
-        printf("  Tess bbox: [%f %f] to [%f %f], %d vertices\n", geom.bbox_min_x, geom.bbox_min_y, geom.bbox_max_x, geom.bbox_max_y, geom.vertex_count);
-        printf("  First vertex (%.2f, %.2f) -> NDC (%.4f, %.4f)\n", test_x, test_y, ndc_x, ndc_y);
-        float screen_x = (ndc_x + 1.0f) * w / 2.0f;
-        float screen_y = (ndc_y + 1.0f) * h / 2.0f;
-        printf("  Screen pos (Vulkan): (%.2f, %.2f)\n", screen_x, screen_y);
     } else {
         for (int i = 0; i < 3; i++)
             for (int j = 0; j < 3; j++)
@@ -443,13 +419,6 @@ struct {
     }
     pc_data.blend = 0;
     pc_data.color = color;
-    
-    static int color_debug = 0;
-    if (color_debug < 3) {
-        printf("Push constants color: 0x%08x (R=%d G=%d B=%d A=%d)\n", color,
-               color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, (color >> 24) & 0xFF);
-        color_debug++;
-    }
     
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_draw_pipeline.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc_data), &pc_data);
     

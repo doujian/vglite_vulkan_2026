@@ -395,14 +395,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
 {
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    
-    static int rp_debug = 0;
-    if (rp_debug < 3) {
-        printf("set_render_target: current_fb_image=%p, new_image=%p\n", 
-               (void*)g_vk_ctx.current_fb_image, (void*)internal->image);
-        rp_debug++;
-    }
-    
+
     if (g_vk_ctx.current_fb_image == internal->image) return VG_LITE_SUCCESS;
     
     if (g_vk_ctx.current_fb) { vg_lite_vulkan_end_render_pass(); }
@@ -482,24 +475,12 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     rpbi.clearValueCount = 3;
     rpbi.pClearValues = clear_values;
     
-    static int rp_begin_debug = 0;
-    if (rp_begin_debug < 3) {
-        printf("vkCmdBeginRenderPass: fb=%p, renderPass=%p\n", (void*)fb, (void*)internal->render_pass);
-        rp_begin_debug++;
-    }
-    
     vkCmdBeginRenderPass(g_vk_ctx.cmd_buf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     return VG_LITE_SUCCESS;
 }
 
 vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
 {
-    static int rp_end_debug = 0;
-    if (rp_end_debug < 3) {
-        printf("vkCmdEndRenderPass: current_fb=%p\n", (void*)g_vk_ctx.current_fb);
-        rp_end_debug++;
-    }
-    
     if (g_vk_ctx.current_fb) {
         vkCmdEndRenderPass(g_vk_ctx.cmd_buf);
         

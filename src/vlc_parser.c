@@ -158,9 +158,6 @@ int vlc_parse_path(const vg_lite_path_t* vg_path, VlcPath* out_path)
                 vlc_add_command(out_path, cmd);
                 prev_x = x;
                 prev_y = y;
-                if (out_path->cmd_count == 1) {
-                    printf("  VLC_PARSE: first MOVE to (%.2f, %.2f), format=%d\n", x, y, vg_path->format);
-                }
                 break;
             }
             

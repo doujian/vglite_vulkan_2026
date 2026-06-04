@@ -181,15 +181,5 @@ int tessellate_path(const VlcPath* path, TessGeometry* geom)
         }
     }
     
-    if (geom->vertex_count <= 5 && geom->index_count > 0) {
-        printf("Tessellation debug: %d vertices, %d indices\n", geom->vertex_count, geom->index_count);
-        for (int i = 0; i < geom->vertex_count; i++)
-            printf("  V%d: (%.2f, %.2f)\n", i, geom->vertices[i].x, geom->vertices[i].y);
-        printf("  Indices:");
-        for (int i = 0; i < geom->index_count; i++)
-            printf(" %d", geom->indices[i]);
-        printf("\n");
-    }
-    
     return geom->vertex_count;
 }
