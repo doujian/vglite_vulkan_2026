@@ -661,6 +661,8 @@ vg_lite_error_t vg_lite_draw(vg_lite_buffer_t *t, vg_lite_path_t *p, vg_lite_fil
 }
 
 vg_lite_error_t vg_lite_set_color_key(vg_lite_color_key4_t ck) { (void)ck; return VG_LITE_NOT_SUPPORT; }
+
+vg_lite_error_t vg_lite_clear_path(vg_lite_path_t *path) { (void)path; return VG_LITE_SUCCESS; }
 vg_lite_error_t vg_lite_enable_dither(void) { return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_disable_dither(void) { return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_source_global_alpha(vg_lite_global_alpha_t m, vg_lite_uint8_t v) { (void)m;(void)v; return VG_LITE_NOT_SUPPORT; }
