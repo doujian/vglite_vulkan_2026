@@ -69,4 +69,25 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
 void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32_t height);
 int   gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, uint32_t width, uint32_t height);
 
+/* CPU-side gradient draw simulation.
+ * Simulates vg_lite_draw_grad: renders a path filled with a linear gradient
+ * texture, using the same matrix chain and sampling as the GPU pipeline.
+ *
+ * Parameters:
+ *   eb        - expected buffer (CPU-side, same format as GPU target)
+ *   path      - vg_lite_path_t (must use VG_LITE_S8 format)
+ *   fill_rule - VG_LITE_FILL_EVEN_ODD or VG_LITE_FILL_NON_ZERO
+ *   path_matrix - user path transform (e.g. scale/rotate)
+ *   grad_image   - gradient texture (typically 256x1 BGRA8888)
+ *   grad_matrix  - gradient transform matrix
+ *   blend     - blend mode (same enum as vg_lite_blend_t)
+ */
+void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
+                                 vg_lite_path_t *path,
+                                 int fill_rule,
+                                 vg_lite_matrix_t *path_matrix,
+                                 vg_lite_buffer_t *grad_image,
+                                 vg_lite_matrix_t *grad_matrix,
+                                 int blend);
+
 #endif

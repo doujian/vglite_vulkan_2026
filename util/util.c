@@ -179,7 +179,8 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
         return ((r << 4) | (r >> 0)) | (((g << 4) | (g >> 0)) << 8) |
                (((b << 4) | (b >> 0)) << 16) | (((a << 4) | (a >> 0)) << 24);
     }
-    case VG_LITE_BGRA8888: {
+    case VG_LITE_BGRA8888:
+    case VG_LITE_ARGB8888: {
         uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
         uint8_t b = p & 0xFF;
         uint8_t g = (p >> 8) & 0xFF;
@@ -748,6 +749,192 @@ static void *gen_solid(vg_lite_buffer_format_t format, uint32_t width, uint32_t 
         }
     }
     return data;
+}
+
+/* ---- CPU-side gradient draw simulation ---- */
+
+/* Parse S8 path data into vertices (moveto/lineto segments).
+ * Returns vertex count, fills pts[] with x,y pairs.
+ * Format: 2=moveto, 4=lineto, 0=end. Each opcode followed by x,y (int8). */
+static int parse_s8_path(vg_lite_path_t *path, float *pts, int max_pts)
+{
+    int count = 0;
+    int i = 0;
+    char *data = (char *)path->path;
+    int len = (int)path->path_length;
+
+    while (i < len && count < max_pts) {
+        char op = data[i++];
+        if (op == 0) break; /* end */
+        if (op == 2 || op == 4) {
+            /* moveto or lineto: followed by x, y */
+            if (i + 1 >= len) break;
+            pts[count * 2]     = (float)((int8_t)data[i]);
+            pts[count * 2 + 1] = (float)((int8_t)data[i + 1]);
+            i += 2;
+            count++;
+        } else {
+            /* Unknown opcode: skip to next */
+            break;
+        }
+    }
+    return count;
+}
+
+/* Point-in-polygon using even-odd ray casting.
+ * Returns 1 if inside, 0 if outside. */
+static int point_in_polygon_evenodd(float px, float py, float *pts, int n)
+{
+    int inside = 0;
+    for (int i = 0, j = n - 1; i < n; j = i++) {
+        float xi = pts[i * 2], yi = pts[i * 2 + 1];
+        float xj = pts[j * 2], yj = pts[j * 2 + 1];
+        if (((yi > py) != (yj > py)) &&
+            (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+            inside = !inside;
+    }
+    return inside;
+}
+
+/* Transform a point through a 3x3 matrix: out = m * {x, y, 1} */
+static void mat3_transform_point(const float m[3][3], float x, float y,
+                                  float *ox, float *oy)
+{
+    float w = m[2][0] * x + m[2][1] * y + m[2][2];
+    if (fabsf(w) < 1e-6f) w = 1e-6f;
+    *ox = (m[0][0] * x + m[0][1] * y + m[0][2]) / w;
+    *oy = (m[1][0] * x + m[1][1] * y + m[1][2]) / w;
+}
+
+/* Apply blend mode to source (from gradient) and destination pixel. */
+static uint32_t blend_grad_pixel(int sr, int sg, int sb, int sa,
+                                  uint32_t dst_px, int blend_mode)
+{
+    int dr, dg, db, da;
+    unpack_rgba(dst_px, &dr, &dg, &db, &da);
+
+    int or_, og, ob, oa;
+    switch (blend_mode) {
+    case 0: /* NONE */
+        or_ = sr; og = sg; ob = sb; oa = sa;
+        break;
+    case 1: /* SRC_OVER */
+        or_ = sr + (dr * (255 - sa) + 127) / 255;
+        og  = sg + (dg * (255 - sa) + 127) / 255;
+        ob  = sb + (db * (255 - sa) + 127) / 255;
+        oa  = sa + (da * (255 - sa) + 127) / 255;
+        break;
+    default:
+        or_ = sr; og = sg; ob = sb; oa = sa;
+        break;
+    }
+    if (or_ > 255) or_ = 255; if (or_ < 0) or_ = 0;
+    if (og > 255) og = 255;  if (og < 0) og = 0;
+    if (ob > 255) ob = 255;  if (ob < 0) ob = 0;
+    if (oa > 255) oa = 255;  if (oa < 0) oa = 0;
+    return or_ | (og << 8) | (ob << 16) | (oa << 24);
+}
+
+void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
+                                 vg_lite_path_t *path,
+                                 int fill_rule,
+                                 vg_lite_matrix_t *path_matrix,
+                                 vg_lite_buffer_t *grad_image,
+                                 vg_lite_matrix_t *grad_matrix,
+                                 int blend)
+{
+    if (!eb || !path || !grad_image) return;
+
+    /* Parse path vertices in path-local coordinates */
+    float local_pts[64 * 2]; /* max 64 vertices */
+    int vtx_count = parse_s8_path(path, local_pts, 64);
+    if (vtx_count < 3) return; /* need at least a triangle */
+
+    /* Build inverse path matrix: screen_pixel → path_local_coord */
+    float mat_inv[3][3];
+    vg_lite_matrix_t identity = {0};
+    vg_lite_identity(&identity);
+    if (!path_matrix) path_matrix = &identity;
+    if (!mat3_inverse(path_matrix->m, mat_inv)) {
+        mat_inv[0][0] = 1.0f; mat_inv[1][1] = 1.0f; mat_inv[2][2] = 1.0f;
+    }
+
+    /* Build inverse gradient matrix, normalized by texture size */
+    if (!grad_matrix) grad_matrix = &identity;
+    float grad_inv[3][3];
+    float gm[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            gm[i][j] = grad_matrix->m[i][j];
+    if (!mat3_inverse(gm, grad_inv)) {
+        grad_inv[0][0] = 1.0f; grad_inv[1][1] = 1.0f; grad_inv[2][2] = 1.0f;
+    }
+
+    /* grad_norm = grad_inv / {tex_w, tex_h} */
+    float grad_norm[3][3] = {0};
+    grad_norm[0][0] = grad_inv[0][0] / grad_image->width;
+    grad_norm[0][1] = grad_inv[0][1] / grad_image->width;
+    grad_norm[0][2] = grad_inv[0][2] / grad_image->width;
+    grad_norm[1][0] = grad_inv[1][0] / grad_image->height;
+    grad_norm[1][1] = grad_inv[1][1] / grad_image->height;
+    grad_norm[1][2] = grad_inv[1][2] / grad_image->height;
+    grad_norm[2][2] = 1.0f;
+
+    /* combined_pattern = grad_norm * mat_inv */
+    float combined_pattern[3][3];
+    mat3_multiply(grad_norm, mat_inv, combined_pattern);
+
+    /* For each pixel in the expected buffer */
+    for (int y = 0; y < eb->height; y++) {
+        for (int x = 0; x < eb->width; x++) {
+            /* Screen pixel center (x+0.5, y+0.5) */
+            float sx = (float)x + 0.5f;
+            float sy = (float)y + 0.5f;
+
+            /* Transform screen pixel → path-local coords */
+            float px, py;
+            mat3_transform_point(mat_inv, sx, sy, &px, &py);
+
+            /* Point-in-polygon test (even-odd rule) */
+            int inside;
+            if (fill_rule == VG_LITE_FILL_NON_ZERO) {
+                /* For simple paths, non-zero ≈ even-odd */
+                inside = point_in_polygon_evenodd(px, py, local_pts, vtx_count);
+            } else {
+                /* VG_LITE_FILL_EVEN_ODD */
+                inside = point_in_polygon_evenodd(px, py, local_pts, vtx_count);
+            }
+
+            if (!inside) continue;
+
+            /* Compute gradient texture UV: combined_pattern * screen_pixel */
+            float u, v;
+            mat3_transform_point(combined_pattern, sx, sy, &u, &v);
+
+            /* Pattern mode PAD: clamp UV to [0, 1] */
+            if (u < 0.0f) u = 0.0f;
+            if (u > 1.0f) u = 1.0f;
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1.0f) v = 1.0f;
+
+            /* Sample gradient texture with LINEAR filtering.
+             * Vulkan LINEAR: texel center at (i+0.5)/size */
+            float tex_x = u * grad_image->width;
+            float tex_y = v * grad_image->height;
+            int sr, sg, sb, sa;
+            vulkan_linear_sample(grad_image, tex_x, tex_y, &sr, &sg, &sb, &sa);
+
+            /* For RGB565 target: alpha is always 255 */
+            if (eb->format == VG_LITE_RGB565 || eb->format == VG_LITE_BGR565) {
+                sa = 0xFF;
+            }
+
+            /* Apply blend mode */
+            uint32_t dst_px = eb->pixels[y * eb->width + x];
+            eb->pixels[y * eb->width + x] = blend_grad_pixel(
+                sr, sg, sb, sa, dst_px, blend);
+        }
+    }
 }
 
 void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
