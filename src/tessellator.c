@@ -129,6 +129,13 @@ int tessellate_path(const VlcPath* path, TessGeometry* geom)
     for (int i = 0; i < path->cmd_count; i++) {
         const VlcCommand* cmd = &path->cmds[i];
         
+        /* If a draw command arrives without a preceding MOVE, treat (0,0) as the
+         * implicit start point (VGLite convention). */
+        if (first_idx == UINT32_MAX &&
+            (cmd->type == VLC_CMD_LINE || cmd->type == VLC_CMD_CUBIC)) {
+            first_idx = push_vertex(geom, prev_x, prev_y);
+        }
+        
         switch(cmd->type) {
             case VLC_CMD_MOVE: {
                 float x = cmd->pts[0].x;

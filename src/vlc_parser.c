@@ -136,8 +136,14 @@ int vlc_parse_path(const vg_lite_path_t* vg_path, VlcPath* out_path)
         cur += fmt_size; /* Skip opcode */
         
         switch(opcode) {
-            case VLC_OP_END:
+            case VLC_OP_END: {
+                /* END closes any open subpath before finishing tessellation. */
+                VlcCommand cmd;
+                cmd.type = VLC_CMD_CLOSE;
+                cmd.pt_count = 0;
+                vlc_add_command(out_path, cmd);
                 break;
+            }
                 
             case VLC_OP_CLOSE: {
                 VlcCommand cmd;
