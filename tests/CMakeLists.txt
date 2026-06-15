@@ -82,3 +82,6 @@ add_dependencies(test_linearGrad spirv_compilation)
 add_executable(test_gradient Gradient/gradient.c)
 add_dependencies(test_gradient spirv_compilation)
 
+add_executable(test_scissor scissor/scissor.c)
+add_dependencies(test_scissor spirv_compilation)
+
