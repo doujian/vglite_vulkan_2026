@@ -469,6 +469,8 @@ struct {
     return err;
 }
 
+static VkSampler s_pattern_sampler = VK_NULL_HANDLE;
+
 void vg_lite_draw_cleanup(void)
 {
     if (g_draw_pipeline.fill_pipeline) {
@@ -511,11 +513,14 @@ void vg_lite_draw_cleanup(void)
         vkDestroyShaderModule(g_vk_ctx.device, g_draw_pipeline.frag_shader, NULL);
         g_draw_pipeline.frag_shader = VK_NULL_HANDLE;
     }
+    if (s_pattern_sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(g_vk_ctx.device, s_pattern_sampler, NULL);
+        s_pattern_sampler = VK_NULL_HANDLE;
+    }
 }
 
 static VkSampler get_or_create_pattern_sampler(void)
 {
-    static VkSampler s_pattern_sampler = VK_NULL_HANDLE;
     if (s_pattern_sampler != VK_NULL_HANDLE) return s_pattern_sampler;
     
     VkSamplerCreateInfo ci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -723,4 +728,253 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
     
     return VG_LITE_SUCCESS;
+}
+
+static vg_lite_error_t draw_grad_internal(
+    vg_lite_buffer_t *target,
+    vg_lite_path_t *path,
+    vg_lite_fill_t fill_rule,
+    vg_lite_matrix_t *matrix,
+    vg_lite_buffer_t *grad_image,
+    vg_lite_matrix_t *grad_matrix,
+    vg_lite_blend_t blend,
+    int pattern_mode,
+    vg_lite_color_t pattern_color)
+{
+    if (!target || !path || !grad_image) return VG_LITE_INVALID_ARGUMENT;
+    if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
+    (void)pattern_mode;  /* new gradient shader always uses PAD (clamp-to-edge) */
+    (void)pattern_color; /* unused — no COLOR mode in gradient shader */
+
+    buffer_internal_t *grad_int = (buffer_internal_t *)grad_image->handle;
+    if (!grad_int) return VG_LITE_INVALID_ARGUMENT;
+
+    VlcPath vlc_path;
+    vlc_path_init(&vlc_path);
+    int cmd_count = vlc_parse_path(path, &vlc_path);
+    if (cmd_count <= 0) {
+        vlc_path_free(&vlc_path);
+        return VG_LITE_INVALID_ARGUMENT;
+    }
+
+    TessGeometry geom;
+    tess_geometry_init(&geom);
+    int vtx_count = tessellate_path(&vlc_path, &geom);
+    if (vtx_count <= 0 || geom.vertex_count == 0 || geom.index_count == 0) {
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return VG_LITE_SUCCESS;
+    }
+
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    vg_lite_vulkan_init_grad_pipeline(vkfmt);
+
+    VkBuffer vbo = VK_NULL_HANDLE, ibo = VK_NULL_HANDLE;
+    VkDeviceMemory vbo_mem = VK_NULL_HANDLE, ibo_mem = VK_NULL_HANDLE;
+    create_vertex_buffer(geom.vertex_count, geom.index_count, &vbo, &vbo_mem, &ibo, &ibo_mem);
+    upload_geom(vbo, vbo_mem, ibo, ibo_mem, &geom);
+
+    vg_lite_error_t err = vg_lite_vulkan_begin_command();
+    if (err != VG_LITE_SUCCESS) {
+        destroy_buffer(vbo, vbo_mem);
+        destroy_buffer(ibo, ibo_mem);
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return err;
+    }
+
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
+        err = vg_lite_vulkan_set_render_target(target);
+        if (err != VG_LITE_SUCCESS) {
+            destroy_buffer(vbo, vbo_mem);
+            destroy_buffer(ibo, ibo_mem);
+            tess_geometry_free(&geom);
+            vlc_path_free(&vlc_path);
+            return err;
+        }
+    }
+
+    VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
+    VkRect2D scissor = {{0, 0}, {target->width, target->height}};
+    vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
+    vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, 1, &scissor);
+
+    VkClearAttachment clear_att = {0};
+    clear_att.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+    clear_att.clearValue.depthStencil.stencil = 0;
+    VkClearRect clear_rect = {{{0, 0}, {target->width, target->height}}, 0, 1};
+    vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
+
+    float w = (float)target->width;
+    float h = (float)target->height;
+    float screen_to_ndc[3][3] = {{2.0f/w, 0, -1.0f}, {0, 2.0f/h, -1.0f}, {0, 0, 1.0f}};
+    float path_combined[3][3] = {0};
+
+    vg_lite_matrix_t identity = {0};
+    vg_lite_identity(&identity);
+    if (!matrix) matrix = &identity;
+    mat3_multiply(screen_to_ndc, matrix->m, path_combined);
+
+    /* Push constant struct: matches gradient.vert/frag layout.
+     * mat3 stored as 3 vec4 columns (std140), path_m[j*4+i] = path_combined[i][j] */
+    struct {
+        float path_m[12];
+        float grad_m[12];
+        int   target_width;
+        int   target_height;
+        int   grad_width;
+        int   grad_height;
+    } pc_data = {0};
+
+    pc_data.target_width = target->width;
+    pc_data.target_height = target->height;
+    pc_data.grad_width = grad_image->width;
+    pc_data.grad_height = grad_image->height;
+
+    /* Stencil pass push constants: path_matrix = screen_to_ndc * user_matrix */
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            pc_data.path_m[j*4+i] = path_combined[i][j];
+
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.grad_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc_data), &pc_data);
+
+    VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
+    ds_alloc.descriptorSetCount = 1;
+    ds_alloc.pSetLayouts = &g_vk_ctx.grad_descriptor_layout;
+    VkDescriptorSet desc_set;
+    if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS) {
+        destroy_buffer(vbo, vbo_mem);
+        destroy_buffer(ibo, ibo_mem);
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+
+    VkSampler sampler = get_or_create_pattern_sampler();
+    VkImageView grad_view = grad_int->swizzle_view ? grad_int->swizzle_view : grad_int->view;
+    VkDescriptorImageInfo img_info = {sampler, grad_view, VK_IMAGE_LAYOUT_GENERAL};
+
+    VkWriteDescriptorSet ws = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    ws.dstSet = desc_set;
+    ws.dstBinding = 0;
+    ws.dstArrayElement = 0;
+    ws.descriptorCount = 1;
+    ws.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ws.pImageInfo = &img_info;
+    vkUpdateDescriptorSets(g_vk_ctx.device, 1, &ws, 0, NULL);
+
+    vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            g_vk_ctx.grad_pipeline_layout, 0, 1, &desc_set, 0, NULL);
+
+    VkDeviceSize vbo_offset = 0;
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &vbo_offset);
+    vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, ibo, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_ctx.grad_stencil_pipeline);
+    vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
+
+    /* Cover pass: path_matrix = identity, grad_matrix maps screen pixel coords to texture UV.
+     * Chain: screen_pixel -> path_coord (via inverse path_matrix) -> texture UV (via inverse grad_matrix / tex_size) */
+
+    if (!grad_matrix) grad_matrix = &identity;
+
+    float mat_inv[3][3] = {0};
+    if (!mat3_inverse(matrix->m, mat_inv)) {
+        mat_inv[0][0] = 1.0f; mat_inv[1][1] = 1.0f; mat_inv[2][2] = 1.0f;
+    }
+
+    float grad_inv[3][3] = {0};
+    float gm[3][3];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) gm[i][j] = grad_matrix->m[i][j];
+    if (!mat3_inverse(gm, grad_inv)) {
+        grad_inv[0][0] = 1.0f; grad_inv[1][1] = 1.0f; grad_inv[2][2] = 1.0f;
+    }
+
+    float grad_norm[3][3] = {0};
+    grad_norm[0][0] = grad_inv[0][0] / grad_image->width;
+    grad_norm[0][1] = grad_inv[0][1] / grad_image->width;
+    grad_norm[0][2] = grad_inv[0][2] / grad_image->width;
+    grad_norm[1][0] = grad_inv[1][0] / grad_image->height;
+    grad_norm[1][1] = grad_inv[1][1] / grad_image->height;
+    grad_norm[1][2] = grad_inv[1][2] / grad_image->height;
+    grad_norm[2][2] = 1.0f;
+
+    float combined_pattern[3][3] = {0};
+    mat3_multiply(grad_norm, mat_inv, combined_pattern);
+
+    /* Cover pass push constants: path_matrix = identity, grad_matrix = combined_pattern */
+    memset(&pc_data, 0, sizeof(pc_data));
+    pc_data.target_width = target->width;
+    pc_data.target_height = target->height;
+    pc_data.grad_width = grad_image->width;
+    pc_data.grad_height = grad_image->height;
+    pc_data.path_m[0] = 1.0f;  /* identity col0 */
+    pc_data.path_m[5] = 1.0f;  /* identity col1 */
+    pc_data.path_m[10] = 1.0f; /* identity col2 */
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            pc_data.grad_m[j*4+i] = combined_pattern[i][j];
+
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.grad_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc_data), &pc_data);
+
+    VkPipeline cover_pipeline = vg_lite_vulkan_get_grad_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend));
+    if (!cover_pipeline) {
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+
+    VkDeviceSize cover_offset = 0;
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &g_vk_ctx.grad_cover_vbo, &cover_offset);
+    vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, g_vk_ctx.grad_cover_ibo, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, cover_pipeline);
+    vkCmdDrawIndexed(g_vk_ctx.cmd_buf, 6, 1, 0, 0, 0);
+
+    tess_geometry_free(&geom);
+    vlc_path_free(&vlc_path);
+    add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+
+    return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_draw_grad(vg_lite_buffer_t *target,
+                                   vg_lite_path_t *path,
+                                   vg_lite_fill_t fill_rule,
+                                   vg_lite_matrix_t *matrix,
+                                   vg_lite_linear_gradient_t *grad,
+                                   vg_lite_blend_t blend)
+{
+    if (!grad || !grad->image.handle) return VG_LITE_INVALID_ARGUMENT;
+    return draw_grad_internal(target, path, fill_rule, matrix,
+                              &grad->image, &grad->matrix, blend, 1, 0);
+}
+
+vg_lite_error_t vg_lite_draw_radial_grad(vg_lite_buffer_t *target,
+                                          vg_lite_path_t *path,
+                                          vg_lite_fill_t fill_rule,
+                                          vg_lite_matrix_t *matrix,
+                                          vg_lite_radial_gradient_t *grad,
+                                          vg_lite_color_t paint_color,
+                                          vg_lite_blend_t blend,
+                                          vg_lite_filter_t filter)
+{
+    if (!grad || !grad->image.handle) return VG_LITE_INVALID_ARGUMENT;
+    (void)paint_color; (void)filter;
+
+    int shader_mode = 1;
+    switch (grad->spread_mode) {
+        case VG_LITE_GRADIENT_SPREAD_FILL:    shader_mode = 1; break;
+        case VG_LITE_GRADIENT_SPREAD_PAD:     shader_mode = 1; break;
+        case VG_LITE_GRADIENT_SPREAD_REPEAT:  shader_mode = 2; break;
+        case VG_LITE_GRADIENT_SPREAD_REFLECT: shader_mode = 3; break;
+        default: shader_mode = 1; break;
+    }
+    return draw_grad_internal(target, path, fill_rule, matrix,
+                              &grad->image, &grad->matrix, blend, shader_mode, paint_color);
 }

@@ -107,6 +107,19 @@ typedef struct {
     VkBuffer clut_buffer;
     VkDeviceMemory clut_memory;
     void *clut_mapped;
+
+    VkPipelineLayout grad_pipeline_layout;
+    VkDescriptorSetLayout grad_descriptor_layout;
+    VkShaderModule grad_vert_shader;
+    VkShaderModule grad_frag_shader;
+    VkPipeline grad_stencil_pipeline;
+    VkPipeline grad_cover_pipeline;
+    VkBuffer grad_cover_vbo;
+    VkDeviceMemory grad_cover_vbo_mem;
+    VkBuffer grad_cover_ibo;
+    VkDeviceMemory grad_cover_ibo_mem;
+    pipeline_cache_entry_t grad_pipeline_cache[MAX_PIPELINE_CACHE];
+    int grad_pipeline_cache_count;
 } vk_context_t;
 
 extern vk_context_t g_vk_ctx;
@@ -128,6 +141,9 @@ VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group)
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_destroy_pipelines(void);
+
+void vg_lite_vulkan_init_grad_pipeline(VkFormat format);
+VkPipeline vg_lite_vulkan_get_grad_cover_pipeline(VkFormat format, int blend_group);
 
 VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format);
 
