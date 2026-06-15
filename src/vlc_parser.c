@@ -161,6 +161,20 @@ int vlc_parse_path(const vg_lite_path_t* vg_path, VlcPath* out_path)
                 break;
             }
             
+            case VLC_OP_MOVE_REL: {
+                float x = VLC_GET_ARG(cur, 0, vg_path->format, fmt_size);
+                float y = VLC_GET_ARG(cur, 1, vg_path->format, fmt_size);
+                VlcCommand cmd;
+                cmd.type = VLC_CMD_MOVE;
+                cmd.pts[0].x = prev_x + x;
+                cmd.pts[0].y = prev_y + y;
+                cmd.pt_count = 1;
+                vlc_add_command(out_path, cmd);
+                prev_x += x;
+                prev_y += y;
+                break;
+            }
+            
             case VLC_OP_LINE: {
                 float x = VLC_GET_ARG(cur, 0, vg_path->format, fmt_size);
                 float y = VLC_GET_ARG(cur, 1, vg_path->format, fmt_size);
@@ -172,6 +186,20 @@ int vlc_parse_path(const vg_lite_path_t* vg_path, VlcPath* out_path)
                 vlc_add_command(out_path, cmd);
                 prev_x = x;
                 prev_y = y;
+                break;
+            }
+            
+            case VLC_OP_LINE_REL: {
+                float x = VLC_GET_ARG(cur, 0, vg_path->format, fmt_size);
+                float y = VLC_GET_ARG(cur, 1, vg_path->format, fmt_size);
+                VlcCommand cmd;
+                cmd.type = VLC_CMD_LINE;
+                cmd.pts[0].x = prev_x + x;
+                cmd.pts[0].y = prev_y + y;
+                cmd.pt_count = 1;
+                vlc_add_command(out_path, cmd);
+                prev_x += x;
+                prev_y += y;
                 break;
             }
             
@@ -188,6 +216,19 @@ int vlc_parse_path(const vg_lite_path_t* vg_path, VlcPath* out_path)
                 break;
             }
             
+            case VLC_OP_QUAD_REL: {
+                float qx1 = prev_x + VLC_GET_ARG(cur, 0, vg_path->format, fmt_size);
+                float qy1 = prev_y + VLC_GET_ARG(cur, 1, vg_path->format, fmt_size);
+                float x = prev_x + VLC_GET_ARG(cur, 2, vg_path->format, fmt_size);
+                float y = prev_y + VLC_GET_ARG(cur, 3, vg_path->format, fmt_size);
+                VlcCommand cmd;
+                quad_to_cubic(prev_x, prev_y, qx1, qy1, x, y, &cmd);
+                vlc_add_command(out_path, cmd);
+                prev_x = x;
+                prev_y = y;
+                break;
+            }
+            
             case VLC_OP_CUBIC: {
                 float cx1 = VLC_GET_ARG(cur, 0, vg_path->format, fmt_size);
                 float cy1 = VLC_GET_ARG(cur, 1, vg_path->format, fmt_size);
@@ -195,6 +236,28 @@ int vlc_parse_path(const vg_lite_path_t* vg_path, VlcPath* out_path)
                 float cy2 = VLC_GET_ARG(cur, 3, vg_path->format, fmt_size);
                 float x = VLC_GET_ARG(cur, 4, vg_path->format, fmt_size);
                 float y = VLC_GET_ARG(cur, 5, vg_path->format, fmt_size);
+                VlcCommand cmd;
+                cmd.type = VLC_CMD_CUBIC;
+                cmd.pts[0].x = cx1;
+                cmd.pts[0].y = cy1;
+                cmd.pts[1].x = cx2;
+                cmd.pts[1].y = cy2;
+                cmd.pts[2].x = x;
+                cmd.pts[2].y = y;
+                cmd.pt_count = 3;
+                vlc_add_command(out_path, cmd);
+                prev_x = x;
+                prev_y = y;
+                break;
+            }
+            
+            case VLC_OP_CUBIC_REL: {
+                float cx1 = prev_x + VLC_GET_ARG(cur, 0, vg_path->format, fmt_size);
+                float cy1 = prev_y + VLC_GET_ARG(cur, 1, vg_path->format, fmt_size);
+                float cx2 = prev_x + VLC_GET_ARG(cur, 2, vg_path->format, fmt_size);
+                float cy2 = prev_y + VLC_GET_ARG(cur, 3, vg_path->format, fmt_size);
+                float x = prev_x + VLC_GET_ARG(cur, 4, vg_path->format, fmt_size);
+                float y = prev_y + VLC_GET_ARG(cur, 5, vg_path->format, fmt_size);
                 VlcCommand cmd;
                 cmd.type = VLC_CMD_CUBIC;
                 cmd.pts[0].x = cx1;

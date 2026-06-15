@@ -663,6 +663,33 @@ vg_lite_error_t vg_lite_draw(vg_lite_buffer_t *t, vg_lite_path_t *p, vg_lite_fil
 vg_lite_error_t vg_lite_set_color_key(vg_lite_color_key4_t ck) { (void)ck; return VG_LITE_NOT_SUPPORT; }
 
 vg_lite_error_t vg_lite_clear_path(vg_lite_path_t *path) { (void)path; return VG_LITE_SUCCESS; }
+
+vg_lite_error_t vg_lite_init_path(vg_lite_path_t *path,
+                                  vg_lite_format_t format,
+                                  vg_lite_quality_t quality,
+                                  vg_lite_uint32_t length,
+                                  vg_lite_pointer data,
+                                  vg_lite_float_t min_x,
+                                  vg_lite_float_t min_y,
+                                  vg_lite_float_t max_x,
+                                  vg_lite_float_t max_y)
+{
+    if (path == NULL || data == NULL)
+        return VG_LITE_INVALID_ARGUMENT;
+
+    memset(path, 0, sizeof(vg_lite_path_t));
+    path->bounding_box[0] = min_x;
+    path->bounding_box[1] = min_y;
+    path->bounding_box[2] = max_x;
+    path->bounding_box[3] = max_y;
+    path->quality     = quality;
+    path->format      = format;
+    path->path_length = length;
+    path->path        = data;
+    path->path_changed = 1;
+
+    return VG_LITE_SUCCESS;
+}
 vg_lite_error_t vg_lite_enable_dither(void) { return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_disable_dither(void) { return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_source_global_alpha(vg_lite_global_alpha_t m, vg_lite_uint8_t v) { (void)m;(void)v; return VG_LITE_NOT_SUPPORT; }

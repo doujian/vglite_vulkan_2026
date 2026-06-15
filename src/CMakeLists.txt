@@ -5,6 +5,7 @@ add_library(vg_lite
     vlc_parser.c
     tessellator.c
     vg_lite_draw.c
+    vg_lite_gradient.c
 )
 
 target_include_directories(vg_lite PUBLIC
