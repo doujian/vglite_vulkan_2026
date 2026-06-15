@@ -150,6 +150,11 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     dev_ci.pQueueCreateInfos = &q_ci;
     dev_ci.enabledExtensionCount = 0;
     dev_ci.ppEnabledExtensionNames = NULL;
+
+    VkPhysicalDeviceFeatures enabled_features = {0};
+    enabled_features.multiViewport = VK_TRUE;
+    dev_ci.pEnabledFeatures = &enabled_features;
+
     if (enable_validation) { dev_ci.enabledLayerCount = 1; dev_ci.ppEnabledLayerNames = validation_layers; }
 
     res = vkCreateDevice(g_vk_ctx.physical_device, &dev_ci, NULL, &g_vk_ctx.device);
@@ -1275,4 +1280,56 @@ VkPipeline vg_lite_vulkan_get_grad_cover_pipeline(VkFormat format, int blend_gro
         g_vk_ctx.grad_pipeline_cache_count++;
     }
     return pipeline;
+}
+
+/* ---- Scissor API ---- */
+
+void vg_lite_vulkan_apply_scissor(uint32_t fb_width, uint32_t fb_height)
+{
+    if (g_vk_ctx.scissor_enabled && g_vk_ctx.scissor_count > 0) {
+        vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, g_vk_ctx.scissor_count, g_vk_ctx.scissor_rects);
+    } else {
+        VkRect2D full = {{0, 0}, {fb_width, fb_height}};
+        vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, 1, &full);
+    }
+}
+
+vg_lite_error_t vg_lite_set_scissor(vg_lite_int32_t x, vg_lite_int32_t y,
+                                    vg_lite_int32_t right, vg_lite_int32_t bottom)
+{
+    if (right <= x || bottom <= y) return VG_LITE_INVALID_ARGUMENT;
+    g_vk_ctx.scissor_rects[0].offset.x = x;
+    g_vk_ctx.scissor_rects[0].offset.y = y;
+    g_vk_ctx.scissor_rects[0].extent.width = (uint32_t)(right - x);
+    g_vk_ctx.scissor_rects[0].extent.height = (uint32_t)(bottom - y);
+    g_vk_ctx.scissor_count = 1;
+    g_vk_ctx.scissor_enabled = 1;
+    return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_scissor_rects(vg_lite_buffer_t *target, vg_lite_uint32_t nums,
+                                      vg_lite_rectangle_t rect[])
+{
+    (void)target;
+    if (nums == 0 || nums > MAX_SCISSOR_RECTS || !rect) return VG_LITE_INVALID_ARGUMENT;
+    for (uint32_t i = 0; i < nums; i++) {
+        g_vk_ctx.scissor_rects[i].offset.x = rect[i].x;
+        g_vk_ctx.scissor_rects[i].offset.y = rect[i].y;
+        g_vk_ctx.scissor_rects[i].extent.width = rect[i].width;
+        g_vk_ctx.scissor_rects[i].extent.height = rect[i].height;
+    }
+    g_vk_ctx.scissor_count = (int)nums;
+    return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_enable_scissor(void)
+{
+    g_vk_ctx.scissor_enabled = 1;
+    return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_disable_scissor(void)
+{
+    g_vk_ctx.scissor_enabled = 0;
+    return VG_LITE_SUCCESS;
 }

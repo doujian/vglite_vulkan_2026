@@ -120,7 +120,16 @@ typedef struct {
     VkDeviceMemory grad_cover_ibo_mem;
     pipeline_cache_entry_t grad_pipeline_cache[MAX_PIPELINE_CACHE];
     int grad_pipeline_cache_count;
+
+    /* Scissor state */
+    #define MAX_SCISSOR_RECTS 16
+    VkRect2D scissor_rects[MAX_SCISSOR_RECTS];
+    int scissor_count;
+    int scissor_enabled;
 } vk_context_t;
+
+/* Helper: set scissor at draw time — uses user scissor if enabled, else full framebuffer */
+void vg_lite_vulkan_apply_scissor(uint32_t fb_width, uint32_t fb_height);
 
 extern vk_context_t g_vk_ctx;
 
