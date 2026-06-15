@@ -374,9 +374,8 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     }
     
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
-    VkRect2D scissor = {{0, 0}, {target->width, target->height}};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
-    vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, 1, &scissor);
+    vg_lite_vulkan_apply_scissor(target->width, target->height);
     
 struct {
         float m0[4];
@@ -714,9 +713,8 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
                             g_vk_ctx.pattern_pipeline_layout, 0, 1, &desc_set, 0, NULL);
     
     VkViewport vp = {0, 0, w, h, 0, 1};
-    VkRect2D scissor = {{0, 0}, {(uint32_t)w, (uint32_t)h}};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
-    vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, 1, &scissor);
+    vg_lite_vulkan_apply_scissor((uint32_t)w, (uint32_t)h);
     
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &offset);
@@ -796,9 +794,8 @@ static vg_lite_error_t draw_grad_internal(
     }
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
-    VkRect2D scissor = {{0, 0}, {target->width, target->height}};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
-    vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, 1, &scissor);
+    vg_lite_vulkan_apply_scissor(target->width, target->height);
 
     VkClearAttachment clear_att = {0};
     clear_att.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;

@@ -557,9 +557,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         0, 1, &desc_set, 0, NULL);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
-    VkRect2D sc = {{0,0}, {target->width, target->height}};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
-    vkCmdSetScissor(g_vk_ctx.cmd_buf, 0, 1, &sc);
+    vg_lite_vulkan_apply_scissor(target->width, target->height);
     vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
     vg_lite_vulkan_end_render_pass();
 
