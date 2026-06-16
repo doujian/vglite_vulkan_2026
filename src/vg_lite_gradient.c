@@ -44,11 +44,77 @@ vg_lite_error_t vg_lite_set_grad(vg_lite_linear_gradient_t *grad,
                                   uint32_t *colors,
                                   uint32_t *stops)
 {
-    if (!grad || !colors || !stops || count == 0) return VG_LITE_INVALID_ARGUMENT;
-    if (count > VLC_MAX_GRADIENT_STOPS) count = VLC_MAX_GRADIENT_STOPS;
-    grad->count = count;
-    memcpy(grad->colors, colors, count * sizeof(uint32_t));
-    memcpy(grad->stops, stops, count * sizeof(uint32_t));
+    if (!grad) return VG_LITE_INVALID_ARGUMENT;
+
+    /* Working arrays for validation + implicit stop insertion.
+     * Max entries: user stops (up to 16) + 2 implicit (head + tail). */
+    uint32_t valid_colors[VLC_MAX_GRADIENT_STOPS + 2];
+    uint32_t valid_stops[VLC_MAX_GRADIENT_STOPS + 2];
+    uint32_t valid_count = 0;
+
+    /* Filter invalid stops: out-of-range (> 255) stops are dropped.
+     * Out-of-order is handled by sort_stops() later in update_grad. */
+    if (colors && stops && count > 0) {
+        for (uint32_t i = 0; i < count && valid_count < VLC_MAX_GRADIENT_STOPS; i++) {
+            if (stops[i] <= 255) {
+                valid_stops[valid_count] = stops[i];
+                valid_colors[valid_count] = colors[i];
+                valid_count++;
+            }
+        }
+    }
+
+    if (valid_count == 0) {
+        /* Rule 1: No valid stops → default black(0,0,0,255) at stop 0
+         *         and white(255,255,255,255) at stop 255. */
+        grad->count = 2;
+        grad->stops[0] = 0;
+        grad->colors[0] = 0xFF000000;   /* opaque black (A,R,G,B) */
+        grad->stops[1] = 255;
+        grad->colors[1] = 0xFFFFFFFF;   /* opaque white */
+        return VG_LITE_SUCCESS;
+    }
+
+    /* Sort valid stops ascending (needed to determine first/last for rules 2,3). */
+    for (uint32_t i = 0; i < valid_count - 1; i++) {
+        for (uint32_t j = i + 1; j < valid_count; j++) {
+            if (valid_stops[i] > valid_stops[j]) {
+                uint32_t tmp_s = valid_stops[i];
+                valid_stops[i] = valid_stops[j];
+                valid_stops[j] = tmp_s;
+                uint32_t tmp_c = valid_colors[i];
+                valid_colors[i] = valid_colors[j];
+                valid_colors[j] = tmp_c;
+            }
+        }
+    }
+
+    /* Rule 2: No stop at offset 0 → prepend implicit stop with first color. */
+    int need_head = (valid_stops[0] != 0);
+    /* Rule 3: No stop at offset 255 → append implicit stop with last color. */
+    int need_tail = (valid_stops[valid_count - 1] != 255);
+
+    uint32_t out_idx = 0;
+
+    if (need_head) {
+        grad->stops[out_idx] = 0;
+        grad->colors[out_idx] = valid_colors[0];
+        out_idx++;
+    }
+
+    for (uint32_t i = 0; i < valid_count; i++) {
+        grad->stops[out_idx] = valid_stops[i];
+        grad->colors[out_idx] = valid_colors[i];
+        out_idx++;
+    }
+
+    if (need_tail) {
+        grad->stops[out_idx] = 255;
+        grad->colors[out_idx] = valid_colors[valid_count - 1];
+        out_idx++;
+    }
+
+    grad->count = out_idx;
     return VG_LITE_SUCCESS;
 }
 
