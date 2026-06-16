@@ -421,18 +421,6 @@ struct {
     
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_draw_pipeline.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(pc_data), &pc_data);
     
-    VkClearAttachment clear_att = {0};
-    clear_att.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-    clear_att.clearValue.depthStencil.stencil = 0;
-    VkClearRect clear_rect = {0};
-    clear_rect.rect.offset.x = 0;
-    clear_rect.rect.offset.y = 0;
-    clear_rect.rect.extent.width = target->width;
-    clear_rect.rect.extent.height = target->height;
-    clear_rect.baseArrayLayer = 0;
-    clear_rect.layerCount = 1;
-    vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
-    
     /* Pass 1: Stencil pass - draw triangles to set stencil */
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &offset);
@@ -796,12 +784,6 @@ static vg_lite_error_t draw_grad_internal(
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
     vg_lite_vulkan_apply_scissor(target->width, target->height);
-
-    VkClearAttachment clear_att = {0};
-    clear_att.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-    clear_att.clearValue.depthStencil.stencil = 0;
-    VkClearRect clear_rect = {{{0, 0}, {target->width, target->height}}, 0, 1};
-    vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
 
     float w = (float)target->width;
     float h = (float)target->height;
