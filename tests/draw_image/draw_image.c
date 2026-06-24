@@ -157,8 +157,7 @@ static vg_lite_error_t Draw_Image_001(void)
                         memset(&src_buf, 0, sizeof(src_buf));
                         memset(&dst_buf, 0, sizeof(dst_buf));
 
-                        CHECK_ERROR(Allocate_Buffer(&src_buf, formats[i], 256, 256));
-                        CHECK_GEN(gen_buffer(i % 2, &src_buf, formats[i], src_buf.width, src_buf.height));
+                        CHECK_GEN(gen_buffer(i % 2, &src_buf, formats[i], ALIGN(256, 128), 256));
                         CHECK_ERROR(Allocate_Buffer(&dst_buf, formats[j], 256, 256));
                         CHECK_ERROR(vg_lite_clear(&dst_buf, NULL, cc));
 
@@ -239,8 +238,7 @@ static vg_lite_error_t Draw_Image_002(void)
             memset(&src_buf, 0, sizeof(src_buf));
             memset(&dst_buf, 0, sizeof(dst_buf));
 
-            CHECK_ERROR(Allocate_Buffer(&src_buf, formats[i], 256, 256));
-            CHECK_GEN(gen_buffer(i % 2, &src_buf, formats[i], src_buf.width, src_buf.height));
+            CHECK_GEN(gen_buffer(i % 2, &src_buf, formats[i], ALIGN(256, 128), 256));
             CHECK_ERROR(Allocate_Buffer(&dst_buf, formats[j], 256, 256));
             CHECK_ERROR(vg_lite_clear(&dst_buf, NULL, cc));
             CHECK_ERROR(vg_lite_blit(&dst_buf, &src_buf, &identity_matrix,
