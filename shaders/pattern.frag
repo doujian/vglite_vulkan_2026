@@ -15,6 +15,8 @@ layout(push_constant) uniform PatternPushConstants {
     mat3  pattern_matrix;
     int   pattern_mode;
     uint  pattern_color;
+    int   target_width;
+    int   target_height;
     int   pattern_width;
     int   pattern_height;
     int   blend_mode;
