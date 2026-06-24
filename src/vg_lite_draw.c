@@ -186,7 +186,7 @@ static void init_draw_pipeline(VkFormat format)
     cover_ds.back.reference = 0;
     
     VkPipelineInputAssemblyStateCreateInfo cover_ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    cover_ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    cover_ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     
     gp_ci.pInputAssemblyState = &cover_ia;
     gp_ci.pColorBlendState = &cb;
@@ -285,6 +285,31 @@ static void upload_geom(VkBuffer vbo, VkDeviceMemory vbo_mem, VkBuffer ibo, VkDe
     VK_CHECK(vkMapMemory(g_vk_ctx.device, ibo_mem, 0, geom->index_count * sizeof(uint32_t), 0, &ptr));
     memcpy(ptr, geom->indices, geom->index_count * sizeof(uint32_t));
     vkUnmapMemory(g_vk_ctx.device, ibo_mem);
+}
+
+/* Create a 32-byte vertex buffer for a bounding-box cover quad (4 verts × 2 floats).
+ * Follows the same pattern as create_vertex_buffer() but fixed-size for cover geometry.
+ * Does NOT create an IBO — the cover index buffer is shared/global. */
+static void create_cover_vbo(float ndc_verts[8], VkBuffer* vbo, VkDeviceMemory* vbo_mem)
+{
+    VkBufferCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    ci.size = 32; /* 4 vertices × 2 floats × 4 bytes */
+    ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &ci, NULL, vbo));
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, *vbo, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    alloc.memoryTypeIndex = (uint32_t)find_memory_type(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &alloc, NULL, vbo_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, *vbo, *vbo_mem, 0));
+
+    void* ptr;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, *vbo_mem, 0, 32, 0, &ptr));
+    memcpy(ptr, ndc_verts, 32);
+    vkUnmapMemory(g_vk_ctx.device, *vbo_mem);
 }
 
 static void destroy_buffer(VkBuffer buf, VkDeviceMemory mem)
@@ -428,7 +453,25 @@ struct {
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_draw_pipeline.stencil_pipeline);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
     
-    /* Pass 2: Cover pass - draw cover quad, test stencil, write color */
+    /* Pass 2: Cover pass - draw bounding-box-scoped cover quad, test stencil, write color */
+    /* Compute bbox NDC corners using path_combined matrix (same as stencil pass) */
+    float cover_verts[8];
+    float corners[4][2] = {
+        {(float)path->bounding_box[0], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[3]},
+        {(float)path->bounding_box[0], (float)path->bounding_box[3]}
+    };
+    for (int i = 0; i < 4; i++) {
+        cover_verts[i*2]   = combined[0][0]*corners[i][0] + combined[0][1]*corners[i][1] + combined[0][2];
+        cover_verts[i*2+1] = combined[1][0]*corners[i][0] + combined[1][1]*corners[i][1] + combined[1][2];
+    }
+
+    VkBuffer cover_vbo;
+    VkDeviceMemory cover_vbo_mem;
+    create_cover_vbo(cover_verts, &cover_vbo, &cover_vbo_mem);
+
+    /* Cover push constant: path_m = identity (bbox verts are already NDC) */
     struct {
         float m0[4];
         float m1[4];
@@ -439,12 +482,13 @@ struct {
     cover_pc.m0[0] = 1; cover_pc.m0[1] = 0; cover_pc.m0[2] = 0;
     cover_pc.m1[0] = 0; cover_pc.m1[1] = 1; cover_pc.m1[2] = 0;
     cover_pc.m2[0] = 0; cover_pc.m2[1] = 0; cover_pc.m2[2] = 1;
+    cover_pc.m0[3] = 0; cover_pc.m1[3] = 0; cover_pc.m2[3] = 0;
     cover_pc.blend = 0;
     cover_pc.color = color;
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_draw_pipeline.pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(cover_pc), &cover_pc);
     
     VkDeviceSize cover_offset = 0;
-    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &g_draw_pipeline.cover_vbo, &cover_offset);
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &cover_vbo, &cover_offset);
     vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, g_draw_pipeline.cover_ibo, 0, VK_INDEX_TYPE_UINT32);
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_draw_pipeline.cover_pipeline);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, 6, 1, 0, 0, 0);
@@ -452,6 +496,7 @@ struct {
     tess_geometry_free(&geom);
     vlc_path_free(&vlc_path);
     add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+    add_pending_buffer(cover_vbo, cover_vbo_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
     
     return err;
 }
@@ -711,7 +756,24 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_ctx.pattern_stencil_pipeline);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
 
-    /* Cover pass: path_m = identity, pattern_m = pattern_inv (SAME as stencil) */
+    /* Compute bbox NDC corners using path_combined matrix for cover pass */
+    float cover_verts[8];
+    float corners[4][2] = {
+        {(float)path->bounding_box[0], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[3]},
+        {(float)path->bounding_box[0], (float)path->bounding_box[3]}
+    };
+    for (int i = 0; i < 4; i++) {
+        cover_verts[i*2]   = path_combined[0][0]*corners[i][0] + path_combined[0][1]*corners[i][1] + path_combined[0][2];
+        cover_verts[i*2+1] = path_combined[1][0]*corners[i][0] + path_combined[1][1]*corners[i][1] + path_combined[1][2];
+    }
+
+    VkBuffer cover_vbo;
+    VkDeviceMemory cover_vbo_mem;
+    create_cover_vbo(cover_verts, &cover_vbo, &cover_vbo_mem);
+
+    /* Cover pass: path_m = identity (bbox verts are already NDC), pattern_m = pattern_inv */
     memset(&pc_data, 0, sizeof(pc_data));
     pc_data.pattern_mode = shader_pattern_mode;
     pc_data.pattern_color = pattern_color;
@@ -736,12 +798,13 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         tess_geometry_free(&geom);
         vlc_path_free(&vlc_path);
         add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+        add_pending_buffer(cover_vbo, cover_vbo_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
         return VG_LITE_OUT_OF_MEMORY;
     }
 
-    /* Bind cover quad VBO/IBO and draw cover pass */
+    /* Bind per-draw cover quad VBO, shared IBO, and draw cover pass */
     VkDeviceSize cover_offset = 0;
-    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &g_vk_ctx.pattern_cover_vbo, &cover_offset);
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &cover_vbo, &cover_offset);
     vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, g_vk_ctx.pattern_cover_ibo, 0, VK_INDEX_TYPE_UINT32);
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, cover_pipeline);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, 6, 1, 0, 0, 0);
@@ -749,6 +812,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     tess_geometry_free(&geom);
     vlc_path_free(&vlc_path);
     add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+    add_pending_buffer(cover_vbo, cover_vbo_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
     
     return VG_LITE_SUCCESS;
 }
@@ -922,7 +986,25 @@ static vg_lite_error_t draw_grad_internal(
     float combined_pattern[3][3] = {0};
     mat3_multiply(grad_norm, mat_inv, combined_pattern);
 
-    /* Cover pass push constants: path_matrix = identity, grad_matrix = combined_pattern */
+    /* Compute bbox NDC corners using path_combined matrix for cover pass */
+    float cover_verts[8];
+    float corners[4][2] = {
+        {(float)path->bounding_box[0], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[3]},
+        {(float)path->bounding_box[0], (float)path->bounding_box[3]}
+    };
+    for (int i = 0; i < 4; i++) {
+        cover_verts[i*2]   = path_combined[0][0]*corners[i][0] + path_combined[0][1]*corners[i][1] + path_combined[0][2];
+        cover_verts[i*2+1] = path_combined[1][0]*corners[i][0] + path_combined[1][1]*corners[i][1] + path_combined[1][2];
+    }
+
+    VkBuffer cover_vbo;
+    VkDeviceMemory cover_vbo_mem;
+    create_cover_vbo(cover_verts, &cover_vbo, &cover_vbo_mem);
+
+    /* Cover pass push constants: path_matrix = identity (bbox verts are already NDC),
+     * grad_matrix = combined_pattern */
     memset(&pc_data, 0, sizeof(pc_data));
     pc_data.target_width = target->width;
     pc_data.target_height = target->height;
@@ -945,11 +1027,12 @@ static vg_lite_error_t draw_grad_internal(
         tess_geometry_free(&geom);
         vlc_path_free(&vlc_path);
         add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+        add_pending_buffer(cover_vbo, cover_vbo_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
         return VG_LITE_OUT_OF_MEMORY;
     }
 
     VkDeviceSize cover_offset = 0;
-    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &g_vk_ctx.grad_cover_vbo, &cover_offset);
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &cover_vbo, &cover_offset);
     vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, g_vk_ctx.grad_cover_ibo, 0, VK_INDEX_TYPE_UINT32);
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, cover_pipeline);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, 6, 1, 0, 0, 0);
@@ -957,6 +1040,7 @@ static vg_lite_error_t draw_grad_internal(
     tess_geometry_free(&geom);
     vlc_path_free(&vlc_path);
     add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+    add_pending_buffer(cover_vbo, cover_vbo_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
 
     return VG_LITE_SUCCESS;
 }

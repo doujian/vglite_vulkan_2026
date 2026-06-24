@@ -1256,7 +1256,7 @@ void vg_lite_vulkan_init_grad_pipeline(VkFormat format)
     cover_ds.back = cover_ds.front;
 
     VkPipelineInputAssemblyStateCreateInfo cover_ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    cover_ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    cover_ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     VkPipelineColorBlendAttachmentState cover_cba = {0};
     cover_cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
