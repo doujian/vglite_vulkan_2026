@@ -76,8 +76,8 @@ add_dependencies(test_tiled spirv_compilation)
 add_executable(test_linearGrad linearGrad/linearGrad.c)
 add_dependencies(test_linearGrad spirv_compilation)
 
-# add_executable(test_radialGrad radialGrad/radialGrad.c)
-# add_dependencies(test_radialGrad spirv_compilation)
+add_executable(test_radialGrad radialGrad/radialGrad.c)
+add_dependencies(test_radialGrad spirv_compilation)
 
 add_executable(test_gradient Gradient/gradient.c)
 add_dependencies(test_gradient spirv_compilation)

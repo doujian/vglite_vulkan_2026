@@ -90,4 +90,19 @@ void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
                                  vg_lite_matrix_t *grad_matrix,
                                  int blend);
 
+/* CPU-side radial gradient draw simulation.
+ * Same as vg_lite_expected_draw_grad but with spread_mode-aware UV wrapping:
+ *   spread_mode 0 (FILL) or 1 (PAD)    — clamp to edge
+ *   spread_mode 2 (REPEAT)             — wrap with fract
+ *   spread_mode 3 (REFLECT)            — mirror at boundaries
+ */
+void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
+                                        vg_lite_path_t *path,
+                                        int fill_rule,
+                                        vg_lite_matrix_t *path_matrix,
+                                        vg_lite_buffer_t *grad_image,
+                                        vg_lite_matrix_t *grad_matrix,
+                                        int blend,
+                                        int spread_mode);
+
 #endif

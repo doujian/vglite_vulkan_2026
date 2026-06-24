@@ -861,7 +861,7 @@ void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
 
     /* Build inverse gradient matrix, normalized by texture size */
     if (!grad_matrix) grad_matrix = &identity;
-    float grad_inv[3][3];
+    float grad_inv[3][3] = {0};
     float gm[3][3];
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
@@ -930,6 +930,111 @@ void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
             }
 
             /* Apply blend mode */
+            uint32_t dst_px = eb->pixels[y * eb->width + x];
+            eb->pixels[y * eb->width + x] = blend_grad_pixel(
+                sr, sg, sb, sa, dst_px, blend);
+        }
+    }
+}
+
+void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
+                                        vg_lite_path_t *path,
+                                        int fill_rule,
+                                        vg_lite_matrix_t *path_matrix,
+                                        vg_lite_buffer_t *grad_image,
+                                        vg_lite_matrix_t *grad_matrix,
+                                        int blend,
+                                        int spread_mode)
+{
+    if (!eb || !path || !grad_image) return;
+
+    /* Parse path vertices in path-local coordinates */
+    float local_pts[64 * 2];
+    int vtx_count = parse_s8_path(path, local_pts, 64);
+    if (vtx_count < 3) return;
+
+    /* Build inverse path matrix: screen_pixel -> path_local_coord */
+    float mat_inv[3][3];
+    vg_lite_matrix_t identity = {0};
+    vg_lite_identity(&identity);
+    if (!path_matrix) path_matrix = &identity;
+    if (!mat3_inverse(path_matrix->m, mat_inv)) {
+        mat_inv[0][0] = 1.0f; mat_inv[1][1] = 1.0f; mat_inv[2][2] = 1.0f;
+    }
+
+    /* Build inverse gradient matrix, normalized by texture size */
+    if (!grad_matrix) grad_matrix = &identity;
+    float grad_inv[3][3] = {0};
+    float gm[3][3];
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            gm[i][j] = grad_matrix->m[i][j];
+    if (!mat3_inverse(gm, grad_inv)) {
+        grad_inv[0][0] = 1.0f; grad_inv[1][1] = 1.0f; grad_inv[2][2] = 1.0f;
+    }
+
+    /* grad_norm = grad_inv / {tex_w, tex_h} */
+    float grad_norm[3][3] = {0};
+    grad_norm[0][0] = grad_inv[0][0] / grad_image->width;
+    grad_norm[0][1] = grad_inv[0][1] / grad_image->width;
+    grad_norm[0][2] = grad_inv[0][2] / grad_image->width;
+    grad_norm[1][0] = grad_inv[1][0] / grad_image->height;
+    grad_norm[1][1] = grad_inv[1][1] / grad_image->height;
+    grad_norm[1][2] = grad_inv[1][2] / grad_image->height;
+    grad_norm[2][2] = 1.0f;
+
+    /* combined_pattern = grad_norm * mat_inv */
+    float combined_pattern[3][3];
+    mat3_multiply(grad_norm, mat_inv, combined_pattern);
+
+    /* For each pixel in the expected buffer */
+    for (int y = 0; y < eb->height; y++) {
+        for (int x = 0; x < eb->width; x++) {
+            float sx = (float)x + 0.5f;
+            float sy = (float)y + 0.5f;
+
+            float px, py;
+            mat3_transform_point(mat_inv, sx, sy, &px, &py);
+
+            int inside;
+            if (fill_rule == VG_LITE_FILL_NON_ZERO) {
+                inside = point_in_polygon_evenodd(px, py, local_pts, vtx_count);
+            } else {
+                inside = point_in_polygon_evenodd(px, py, local_pts, vtx_count);
+            }
+            if (!inside) continue;
+
+            float u, v;
+            mat3_transform_point(combined_pattern, sx, sy, &u, &v);
+
+            /* Spread mode UV wrapping */
+            if (spread_mode <= 1) {
+                /* FILL or PAD: clamp */
+                if (u < 0.0f) u = 0.0f;
+                if (u > 1.0f) u = 1.0f;
+                if (v < 0.0f) v = 0.0f;
+                if (v > 1.0f) v = 1.0f;
+            } else if (spread_mode == 2) {
+                /* REPEAT: fract */
+                u = u - floorf(u);
+                v = v - floorf(v);
+            } else {
+                /* REFLECT: mirror */
+                float fu = floorf(u);
+                u = ((int)fu % 2 == 0) ? (u - fu) : (1.0f - (u - fu));
+                float fv = floorf(v);
+                v = ((int)fv % 2 == 0) ? (v - fv) : (1.0f - (v - fv));
+            }
+
+            float tex_x = u * grad_image->width;
+            float tex_y = v * grad_image->height;
+            int sr, sg, sb, sa;
+            vulkan_linear_sample(grad_image, tex_x, tex_y, &sr, &sg, &sb, &sa);
+
+            if (eb->format == VG_LITE_RGB565 || eb->format == VG_LITE_BGR565) {
+                sa = 0xFF;
+            }
+
             uint32_t dst_px = eb->pixels[y * eb->width + x];
             eb->pixels[y * eb->width + x] = blend_grad_pixel(
                 sr, sg, sb, sa, dst_px, blend);
