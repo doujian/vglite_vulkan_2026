@@ -729,7 +729,6 @@ static vg_lite_error_t draw_grad_internal(
 {
     if (!target || !path || !grad_image) return VG_LITE_INVALID_ARGUMENT;
     if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
-    (void)pattern_mode;  /* new gradient shader always uses PAD (clamp-to-edge) */
     (void)pattern_color; /* unused — no COLOR mode in gradient shader */
 
     buffer_internal_t *grad_int = (buffer_internal_t *)grad_image->handle;
@@ -804,12 +803,14 @@ static vg_lite_error_t draw_grad_internal(
         int   target_height;
         int   grad_width;
         int   grad_height;
+        int   spread_mode;  /* 0=FILL, 1=PAD, 2=REPEAT, 3=REFLECT */
     } pc_data = {0};
 
     pc_data.target_width = target->width;
     pc_data.target_height = target->height;
     pc_data.grad_width = grad_image->width;
     pc_data.grad_height = grad_image->height;
+    pc_data.spread_mode = pattern_mode;
 
     /* Stencil pass push constants: path_matrix = screen_to_ndc * user_matrix */
     for (int i = 0; i < 3; i++)
@@ -890,6 +891,7 @@ static vg_lite_error_t draw_grad_internal(
     pc_data.target_height = target->height;
     pc_data.grad_width = grad_image->width;
     pc_data.grad_height = grad_image->height;
+    pc_data.spread_mode = pattern_mode;
     pc_data.path_m[0] = 1.0f;  /* identity col0 */
     pc_data.path_m[5] = 1.0f;  /* identity col1 */
     pc_data.path_m[10] = 1.0f; /* identity col2 */

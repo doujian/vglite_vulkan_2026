@@ -1033,11 +1033,12 @@ void vg_lite_vulkan_init_grad_pipeline(VkFormat format)
     g_vk_ctx.grad_vert_shader = create_shader_module(g_gradient_vert_spv_data, (size_t)g_gradient_vert_spv_size);
     g_vk_ctx.grad_frag_shader = create_shader_module(g_gradient_frag_spv_data, (size_t)g_gradient_frag_spv_size);
 
-    /* Push constant: mat3 path_matrix(48B) + mat3 grad_matrix(48B) + 4 ints(16B) = 112B */
+    /* Push constant: mat3 path_matrix(48B) + mat3 grad_matrix(48B) +
+     * 4 ints(16B) + spread_mode(4B) + padding(12B) = 128B */
     VkPushConstantRange pc_range = {0};
     pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pc_range.offset = 0;
-    pc_range.size = 112;
+    pc_range.size = 128;
 
     /* Binding 0: gradient texture (combined image sampler) */
     VkDescriptorSetLayoutBinding ds_binding = {0};
