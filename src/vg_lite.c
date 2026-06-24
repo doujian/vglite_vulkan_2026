@@ -105,6 +105,7 @@ vg_lite_uint32_t vg_lite_query_feature(vg_lite_feature_t feature)
     case gcFEATURE_BIT_VG_NEW_BLEND_MODE: return VGL_TRUE;
     case gcFEATURE_BIT_VG_BORDER_CULLING: return VGL_TRUE;
     case gcFEATURE_BIT_VG_SCISSOR:      return VGL_TRUE;
+    case gcFEATURE_BIT_VG_RADIAL_GRADIENT: return VGL_TRUE;
     default:                            return VGL_FALSE;
     }
 }

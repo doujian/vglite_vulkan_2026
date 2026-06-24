@@ -12,6 +12,7 @@ layout(push_constant) uniform GradPushConstants {
     int   target_height;
     int   grad_width;
     int   grad_height;
+    int   spread_mode;
 } pc;
 
 layout(location = 0) in vec2 in_pos;

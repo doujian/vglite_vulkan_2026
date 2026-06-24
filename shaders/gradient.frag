@@ -11,6 +11,7 @@ layout(push_constant) uniform GradPushConstants {
     int   target_height;
     int   grad_width;
     int   grad_height;
+    int   spread_mode;
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D grad_texture;
@@ -20,6 +21,18 @@ layout(location = 0) out vec4 out_color;
 
 void main()
 {
-    vec2 uv = clamp(grad_uv, vec2(0.0), vec2(1.0));
+    /* Spread mode UV wrapping:
+     *   0 (FILL) or 1 (PAD)    — clamp to edge
+     *   2 (REPEAT)             — wrap with fract
+     *   3 (REFLECT)            — mirror at boundaries */
+    vec2 uv;
+    if (pc.spread_mode <= 1) {
+        uv = clamp(grad_uv, vec2(0.0), vec2(1.0));
+    } else if (pc.spread_mode == 2) {
+        uv = fract(grad_uv);
+    } else {
+        vec2 folded = mod(grad_uv, 2.0);
+        uv = mix(folded, 2.0 - folded, step(1.0, folded));
+    }
     out_color = texture(grad_texture, uv);
 }
