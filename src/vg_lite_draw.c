@@ -564,12 +564,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     }
     
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-    VkPipeline pipeline = vg_lite_vulkan_get_pattern_pipeline(vkfmt, vg_lite_blend_to_group(blend));
-    if (!pipeline) {
-        tess_geometry_free(&geom);
-        vlc_path_free(&vlc_path);
-        return VG_LITE_OUT_OF_MEMORY;
-    }
+    vg_lite_vulkan_init_pattern_pipeline(vkfmt);
     
     VkBuffer vbo = VK_NULL_HANDLE, ibo = VK_NULL_HANDLE;
     VkDeviceMemory vbo_mem = VK_NULL_HANDLE, ibo_mem = VK_NULL_HANDLE;
@@ -596,7 +591,45 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
             return err;
         }
     }
+
+    float w = (float)target->width;
+    float h = (float)target->height;
+    VkViewport vp = {0, 0, w, h, 0, 1};
+    vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
+    vg_lite_vulkan_apply_scissor(target->width, target->height);
+
+    /* Compute screen-to-ndc and path_combined matrices */
+    float path_screen_to_ndc[3][3] = {{2.0f/w, 0, -1.0f}, {0, 2.0f/h, -1.0f}, {0, 0, 1.0f}};
+    float path_combined[3][3] = {0};
     
+    vg_lite_matrix_t identity = {0};
+    vg_lite_identity(&identity);
+    if (!path_matrix) path_matrix = &identity;
+    
+    mat3_multiply(path_screen_to_ndc, path_matrix->m, path_combined);
+    
+    if (!pattern_matrix) pattern_matrix = &identity;
+    
+    /* Compute inverse of pattern_matrix, then normalize by pattern dimensions.
+     * This gives a matrix that transforms screen pixel coords to normalized UV [0,1].
+     * Pattern matrix is screen-space — do NOT chain through path_matrix inverse. */
+    float pattern_inv[3][3] = {0};
+    float m[3][3];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) m[i][j] = pattern_matrix->m[i][j];
+    
+    if (!mat3_inverse(m, pattern_inv)) {
+        pattern_inv[0][0] = 1.0f / pattern_image->width;
+        pattern_inv[1][1] = 1.0f / pattern_image->height;
+    } else {
+        pattern_inv[0][0] /= pattern_image->width;
+        pattern_inv[0][1] /= pattern_image->width;
+        pattern_inv[0][2] /= pattern_image->width;
+        pattern_inv[1][0] /= pattern_image->height;
+        pattern_inv[1][1] /= pattern_image->height;
+        pattern_inv[1][2] /= pattern_image->height;
+    }
+
+    /* Descriptor set creation — bind pattern texture */
     VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
     ds_alloc.descriptorSetCount = 1;
@@ -621,42 +654,11 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     ws.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     ws.pImageInfo = &img_info;
     vkUpdateDescriptorSets(g_vk_ctx.device, 1, &ws, 0, NULL);
-    
-    float w = (float)target->width;
-    float h = (float)target->height;
-    float path_screen_to_ndc[3][3] = {{2.0f/w, 0, -1.0f}, {0, 2.0f/h, -1.0f}, {0, 0, 1.0f}};
-    float path_combined[3][3] = {0};
-    
-    vg_lite_matrix_t identity = {0};
-    vg_lite_identity(&identity);
-    if (!path_matrix) path_matrix = &identity;
-    
-    mat3_multiply(path_screen_to_ndc, path_matrix->m, path_combined);
-    
-    if (!pattern_matrix) pattern_matrix = &identity;
-    
-    /* Compute inverse of pattern_matrix, then normalize by pattern dimensions.
-     * This gives a matrix that transforms screen pixel coords to normalized UV [0,1].
-     * (Following reference implementation in vg_lite_path.c lines 3355-3379) */
-    float pattern_inv[3][3] = {0};
-    float m[3][3];
-    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) m[i][j] = pattern_matrix->m[i][j];
-    
-    if (!mat3_inverse(m, pattern_inv)) {
-        pattern_inv[0][0] = 1.0f / pattern_image->width;
-        pattern_inv[1][1] = 1.0f / pattern_image->height;
-    } else {
-        pattern_inv[0][0] /= pattern_image->width;
-        pattern_inv[0][1] /= pattern_image->width;
-        pattern_inv[0][2] /= pattern_image->width;
-        pattern_inv[1][0] /= pattern_image->height;
-        pattern_inv[1][1] /= pattern_image->height;
-        pattern_inv[1][2] /= pattern_image->height;
-    }
-    
+
+    /* Push constant struct: matches pattern.vert/frag layout (124B) */
     struct {
-        float path_m[12];
-        float pattern_m[12];
+        float path_m[12];      /* mat3 as 3 vec4 columns (std140) */
+        float pattern_m[12];   /* mat3 as 3 vec4 columns (std140) */
         int pattern_mode;
         uint32_t pattern_color;
         int target_width;
@@ -666,10 +668,6 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         int blend_mode;
     } pc_data = {0};
     
-    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
-        pc_data.path_m[j*4+i] = path_combined[i][j];
-        pc_data.pattern_m[j*4+i] = pattern_inv[i][j];  /* Use normalized inverse */
-    }
     /* Convert vg_lite pattern mode to shader internal mode:
      * VG_LITE_PATTERN_COLOR   = 0x1D00 -> shader mode 0
      * VG_LITE_PATTERN_PAD     = 0x1D01 -> shader mode 1
@@ -684,7 +682,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         case VG_LITE_PATTERN_REFLECT: shader_pattern_mode = 3; break;
         default: shader_pattern_mode = 0; break;
     }
-    
+
     pc_data.pattern_mode = shader_pattern_mode;
     pc_data.pattern_color = pattern_color;
     pc_data.target_width = target->width;
@@ -692,22 +690,61 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     pc_data.pattern_width = pattern_image->width;
     pc_data.pattern_height = pattern_image->height;
     pc_data.blend_mode = (int)blend;
+
+    /* Stencil pass: path_m = screen_to_ndc * path_matrix, pattern_m = pattern_inv */
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
+        pc_data.path_m[j*4+i] = path_combined[i][j];
+        pc_data.pattern_m[j*4+i] = pattern_inv[i][j];
+    }
     
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.pattern_pipeline_layout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc_data), &pc_data);
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc_data), &pc_data);
     
-    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             g_vk_ctx.pattern_pipeline_layout, 0, 1, &desc_set, 0, NULL);
-    
-    VkViewport vp = {0, 0, w, h, 0, 1};
-    vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
-    vg_lite_vulkan_apply_scissor((uint32_t)w, (uint32_t)h);
-    
-    VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &offset);
+
+    /* Bind path VBO/IBO and draw stencil pass */
+    VkDeviceSize vbo_offset = 0;
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &vbo_offset);
     vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, ibo, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_ctx.pattern_stencil_pipeline);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
+
+    /* Cover pass: path_m = identity, pattern_m = pattern_inv (SAME as stencil) */
+    memset(&pc_data, 0, sizeof(pc_data));
+    pc_data.pattern_mode = shader_pattern_mode;
+    pc_data.pattern_color = pattern_color;
+    pc_data.target_width = target->width;
+    pc_data.target_height = target->height;
+    pc_data.pattern_width = pattern_image->width;
+    pc_data.pattern_height = pattern_image->height;
+    pc_data.blend_mode = (int)blend;
+    pc_data.path_m[0] = 1.0f;   /* identity col0 */
+    pc_data.path_m[5] = 1.0f;   /* identity col1 */
+    pc_data.path_m[10] = 1.0f;  /* identity col2 */
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
+        pc_data.pattern_m[j*4+i] = pattern_inv[i][j];
+    }
+    
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.pattern_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc_data), &pc_data);
+    
+    VkPipeline cover_pipeline = vg_lite_vulkan_get_pattern_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend));
+    if (!cover_pipeline) {
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+
+    /* Bind cover quad VBO/IBO and draw cover pass */
+    VkDeviceSize cover_offset = 0;
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &g_vk_ctx.pattern_cover_vbo, &cover_offset);
+    vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, g_vk_ctx.pattern_cover_ibo, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, cover_pipeline);
+    vkCmdDrawIndexed(g_vk_ctx.cmd_buf, 6, 1, 0, 0, 0);
     
     tess_geometry_free(&geom);
     vlc_path_free(&vlc_path);

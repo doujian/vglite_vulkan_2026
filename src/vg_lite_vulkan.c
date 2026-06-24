@@ -879,6 +879,11 @@ void vg_lite_vulkan_destroy_pipelines(void)
     if (g_vk_ctx.pattern_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.pattern_descriptor_layout, NULL); g_vk_ctx.pattern_descriptor_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.pattern_vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.pattern_vert_shader, NULL); g_vk_ctx.pattern_vert_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.pattern_frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.pattern_frag_shader, NULL); g_vk_ctx.pattern_frag_shader = VK_NULL_HANDLE; }
+    if (g_vk_ctx.pattern_stencil_pipeline) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.pattern_stencil_pipeline, NULL); g_vk_ctx.pattern_stencil_pipeline = VK_NULL_HANDLE; }
+    if (g_vk_ctx.pattern_cover_vbo) { vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo, NULL); g_vk_ctx.pattern_cover_vbo = VK_NULL_HANDLE; }
+    if (g_vk_ctx.pattern_cover_vbo_mem) { vkFreeMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo_mem, NULL); g_vk_ctx.pattern_cover_vbo_mem = VK_NULL_HANDLE; }
+    if (g_vk_ctx.pattern_cover_ibo) { vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo, NULL); g_vk_ctx.pattern_cover_ibo = VK_NULL_HANDLE; }
+    if (g_vk_ctx.pattern_cover_ibo_mem) { vkFreeMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo_mem, NULL); g_vk_ctx.pattern_cover_ibo_mem = VK_NULL_HANDLE; }
 
     for (int i = 0; i < g_vk_ctx.grad_pipeline_cache_count; i++) {
         if (g_vk_ctx.grad_pipeline_cache[i].pipeline)
@@ -897,34 +902,36 @@ void vg_lite_vulkan_destroy_pipelines(void)
     if (g_vk_ctx.grad_frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.grad_frag_shader, NULL); g_vk_ctx.grad_frag_shader = VK_NULL_HANDLE; }
 }
 
-static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
+void vg_lite_vulkan_init_pattern_pipeline(VkFormat format)
 {
-    if (!g_vk_ctx.pattern_vert_shader) {
-        g_vk_ctx.pattern_vert_shader = create_shader_module(g_pattern_vert_spv_data, (size_t)g_pattern_vert_spv_size);
-        g_vk_ctx.pattern_frag_shader = create_shader_module(g_pattern_frag_spv_data, (size_t)g_pattern_frag_spv_size);
-    }
+    if (g_vk_ctx.pattern_stencil_pipeline) return;
 
-    if (!g_vk_ctx.pattern_pipeline_layout) {
-        VkPushConstantRange pc_range = {0};
-        pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-        pc_range.offset = 0;
-        pc_range.size = 124;
+    g_vk_ctx.pattern_vert_shader = create_shader_module(g_pattern_vert_spv_data, (size_t)g_pattern_vert_spv_size);
+    g_vk_ctx.pattern_frag_shader = create_shader_module(g_pattern_frag_spv_data, (size_t)g_pattern_frag_spv_size);
 
-        VkDescriptorSetLayoutBinding binding = {0};
-        binding.binding = 0;
-        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binding.descriptorCount = 1;
-        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        binding.pImmutableSamplers = NULL;
+    /* Push constant: mat3 path_matrix(48B) + mat3 pattern_matrix(48B) +
+     * pattern_mode(4B) + pattern_color(4B) + 4 ints(16B) + blend_mode(4B) = 124B */
+    VkPushConstantRange pc_range = {0};
+    pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    pc_range.offset = 0;
+    pc_range.size = 124;
 
-        VkDescriptorSetLayoutCreateInfo ds_ci = {0};
-        ds_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ds_ci.bindingCount = 1;
-        ds_ci.pBindings = &binding;
+    /* Binding 0: pattern texture (combined image sampler) */
+    VkDescriptorSetLayoutBinding ds_binding = {0};
+    ds_binding.binding = 0;
+    ds_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ds_binding.descriptorCount = 1;
+    ds_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    ds_binding.pImmutableSamplers = NULL;
+
+    VkDescriptorSetLayoutCreateInfo ds_ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    ds_ci.bindingCount = 1;
+    ds_ci.pBindings = &ds_binding;
+    if (!g_vk_ctx.pattern_descriptor_layout)
         VK_CHECK(vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.pattern_descriptor_layout));
 
-        VkPipelineLayoutCreateInfo pl_ci = {0};
-        pl_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    if (!g_vk_ctx.pattern_pipeline_layout) {
+        VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pl_ci.setLayoutCount = 1;
         pl_ci.pSetLayouts = &g_vk_ctx.pattern_descriptor_layout;
         pl_ci.pushConstantRangeCount = 1;
@@ -937,16 +944,8 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_vk_ctx.pattern_frag_shader, "main", NULL},
     };
 
-    VkVertexInputBindingDescription binding = {0};
-    binding.binding = 0;
-    binding.stride = 8;
-    binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-    VkVertexInputAttributeDescription attr = {0};
-    attr.binding = 0;
-    attr.location = 0;
-    attr.format = VK_FORMAT_R32G32_SFLOAT;
-    attr.offset = 0;
-
+    VkVertexInputBindingDescription binding = {0, 8, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attr = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
     VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vi.vertexBindingDescriptionCount = 1;
     vi.pVertexBindingDescriptions = &binding;
@@ -965,27 +964,33 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
     ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
     ms.minSampleShading = 1.0f;
 
-    VkPipelineColorBlendAttachmentState cba;
-    get_blend_attachment_state(blend_group, &cba);
-    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    cb.attachmentCount = 1;
-    cb.pAttachments = &cba;
+    VkPipelineColorBlendAttachmentState stencil_cba = {0};
+    stencil_cba.colorWriteMask = 0;
+    VkPipelineColorBlendStateCreateInfo stencil_cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    stencil_cb.attachmentCount = 1;
+    stencil_cb.pAttachments = &stencil_cba;
 
-    VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    ds.depthTestEnable = VK_FALSE;
-    ds.depthWriteEnable = VK_FALSE;
-    ds.stencilTestEnable = VK_FALSE;
-
-    VkRenderPass rp = vg_lite_vulkan_create_render_pass(format);
+    VkPipelineDepthStencilStateCreateInfo stencil_ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    stencil_ds.stencilTestEnable = VK_TRUE;
+    stencil_ds.front.failOp = VK_STENCIL_OP_KEEP;
+    stencil_ds.front.passOp = VK_STENCIL_OP_INVERT;
+    stencil_ds.front.depthFailOp = VK_STENCIL_OP_KEEP;
+    stencil_ds.front.compareOp = VK_COMPARE_OP_ALWAYS;
+    stencil_ds.front.compareMask = 0x01;
+    stencil_ds.front.writeMask = 0x01;
+    stencil_ds.front.reference = 0;
+    stencil_ds.back = stencil_ds.front;
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vs.viewportCount = 1;
     vs.scissorCount = 1;
 
-    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkDynamicState dyn_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dyn_ci = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
     dyn_ci.dynamicStateCount = 2;
     dyn_ci.pDynamicStates = dyn_states;
+
+    VkRenderPass rp = vg_lite_vulkan_create_render_pass(format);
 
     VkGraphicsPipelineCreateInfo gp_ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     gp_ci.stageCount = 2;
@@ -995,8 +1000,129 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
     gp_ci.pViewportState = &vs;
     gp_ci.pRasterizationState = &rs;
     gp_ci.pMultisampleState = &ms;
+    gp_ci.pColorBlendState = &stencil_cb;
+    gp_ci.pDepthStencilState = &stencil_ds;
+    gp_ci.pDynamicState = &dyn_ci;
+    gp_ci.layout = g_vk_ctx.pattern_pipeline_layout;
+    gp_ci.renderPass = rp;
+    gp_ci.subpass = 0;
+
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_vk_ctx.pattern_stencil_pipeline));
+
+    vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
+
+    /* Cover quad VBO: fullscreen triangle-list quad */
+    VkBufferCreateInfo vbo_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    vbo_ci.size = 256;
+    vbo_ci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &vbo_ci, NULL, &g_vk_ctx.pattern_cover_vbo));
+    VkMemoryRequirements vbo_req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo, &vbo_req);
+    VkMemoryAllocateInfo vbo_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    vbo_alloc.allocationSize = vbo_req.size;
+    vbo_alloc.memoryTypeIndex = (uint32_t)find_memory_type(vbo_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &vbo_alloc, NULL, &g_vk_ctx.pattern_cover_vbo_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo, g_vk_ctx.pattern_cover_vbo_mem, 0));
+
+    void *vbo_ptr;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo_mem, 0, 256, 0, &vbo_ptr));
+    float quad[8] = {-1, -1, 1, -1, 1, 1, -1, 1};
+    memcpy(vbo_ptr, quad, sizeof(quad));
+    vkUnmapMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo_mem);
+
+    /* Cover quad IBO: two triangles */
+    VkBufferCreateInfo ibo_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    ibo_ci.size = 6 * sizeof(uint32_t);
+    ibo_ci.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &ibo_ci, NULL, &g_vk_ctx.pattern_cover_ibo));
+    VkMemoryRequirements ibo_req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo, &ibo_req);
+    VkMemoryAllocateInfo ibo_alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    ibo_alloc.allocationSize = ibo_req.size;
+    ibo_alloc.memoryTypeIndex = (uint32_t)find_memory_type(ibo_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &ibo_alloc, NULL, &g_vk_ctx.pattern_cover_ibo_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo, g_vk_ctx.pattern_cover_ibo_mem, 0));
+
+    void *ibo_ptr;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo_mem, 0, 6 * sizeof(uint32_t), 0, &ibo_ptr));
+    uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
+    memcpy(ibo_ptr, indices, sizeof(indices));
+    vkUnmapMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo_mem);
+}
+
+VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group)
+{
+    for (int i = 0; i < g_vk_ctx.pattern_pipeline_cache_count; i++) {
+        if (g_vk_ctx.pattern_pipeline_cache[i].format == format &&
+            g_vk_ctx.pattern_pipeline_cache[i].blend_group == blend_group)
+            return g_vk_ctx.pattern_pipeline_cache[i].pipeline;
+    }
+    if (!g_vk_ctx.pattern_vert_shader) return VK_NULL_HANDLE;
+
+    VkPipelineColorBlendAttachmentState cba;
+    get_blend_attachment_state(blend_group, &cba);
+
+    VkPipelineDepthStencilStateCreateInfo cover_ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    cover_ds.stencilTestEnable = VK_TRUE;
+    cover_ds.front.failOp = VK_STENCIL_OP_KEEP;
+    cover_ds.front.passOp = VK_STENCIL_OP_ZERO;
+    cover_ds.front.depthFailOp = VK_STENCIL_OP_KEEP;
+    cover_ds.front.compareOp = VK_COMPARE_OP_NOT_EQUAL;
+    cover_ds.front.compareMask = 0x01;
+    cover_ds.front.writeMask = 0x01;
+    cover_ds.front.reference = 0;
+    cover_ds.back = cover_ds.front;
+
+    VkPipelineInputAssemblyStateCreateInfo cover_ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    cover_ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+
+    VkVertexInputBindingDescription binding = {0, 8, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attr = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
+    VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &binding;
+    vi.vertexAttributeDescriptionCount = 1;
+    vi.pVertexAttributeDescriptions = &attr;
+
+    VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.lineWidth = 1.0f;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.minSampleShading = 1.0f;
+
+    VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vs.viewportCount = 1;
+    vs.scissorCount = 1;
+
+    VkDynamicState dyn_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn_ci = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dyn_ci.dynamicStateCount = 2;
+    dyn_ci.pDynamicStates = dyn_states;
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.pattern_vert_shader, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_vk_ctx.pattern_frag_shader, "main", NULL},
+    };
+
+    VkRenderPass rp = vg_lite_vulkan_create_render_pass(format);
+
+    VkGraphicsPipelineCreateInfo gp_ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp_ci.stageCount = 2;
+    gp_ci.pStages = stages;
+    gp_ci.pVertexInputState = &vi;
+    gp_ci.pInputAssemblyState = &cover_ia;
+    gp_ci.pViewportState = &vs;
+    gp_ci.pRasterizationState = &rs;
+    gp_ci.pMultisampleState = &ms;
     gp_ci.pColorBlendState = &cb;
-    gp_ci.pDepthStencilState = &ds;
+    gp_ci.pDepthStencilState = &cover_ds;
     gp_ci.pDynamicState = &dyn_ci;
     gp_ci.layout = g_vk_ctx.pattern_pipeline_layout;
     gp_ci.renderPass = rp;
@@ -1005,18 +1131,7 @@ static VkPipeline create_pattern_pipeline(VkFormat format, int blend_group)
     VkPipeline pipeline = VK_NULL_HANDLE;
     VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline));
     vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
-    return pipeline;
-}
 
-VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group)
-{
-    for (int i = 0; i < g_vk_ctx.pattern_pipeline_cache_count; i++) {
-        if (g_vk_ctx.pattern_pipeline_cache[i].format == format &&
-            g_vk_ctx.pattern_pipeline_cache[i].blend_group == blend_group)
-            return g_vk_ctx.pattern_pipeline_cache[i].pipeline;
-    }
-
-    VkPipeline pipeline = create_pattern_pipeline(format, blend_group);
     if (pipeline && g_vk_ctx.pattern_pipeline_cache_count < MAX_PIPELINE_CACHE) {
         g_vk_ctx.pattern_pipeline_cache[g_vk_ctx.pattern_pipeline_cache_count].pipeline = pipeline;
         g_vk_ctx.pattern_pipeline_cache[g_vk_ctx.pattern_pipeline_cache_count].format = format;

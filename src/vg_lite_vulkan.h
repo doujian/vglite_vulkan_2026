@@ -99,6 +99,11 @@ typedef struct {
     VkDescriptorSetLayout pattern_descriptor_layout;
     VkShaderModule pattern_vert_shader;
     VkShaderModule pattern_frag_shader;
+    VkPipeline pattern_stencil_pipeline;
+    VkBuffer pattern_cover_vbo;
+    VkDeviceMemory pattern_cover_vbo_mem;
+    VkBuffer pattern_cover_ibo;
+    VkDeviceMemory pattern_cover_ibo_mem;
     pipeline_cache_entry_t pattern_pipeline_cache[MAX_PIPELINE_CACHE];
     int pattern_pipeline_cache_count;
 
@@ -149,6 +154,8 @@ VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group);
 VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group);
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
+void vg_lite_vulkan_init_pattern_pipeline(VkFormat format);
+VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_destroy_pipelines(void);
 
 void vg_lite_vulkan_init_grad_pipeline(VkFormat format);
