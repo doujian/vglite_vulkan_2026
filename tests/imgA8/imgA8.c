@@ -634,6 +634,9 @@ static volatile uint32_t test_a8_raster[TEST_RASTER_BUF_SIZEW] = {
 
 void cleanup(void)
 {
+    if (offscreenBuf.handle != NULL) {
+        vg_lite_free(&offscreenBuf);
+    }
     if (buffer.handle != NULL) {
         // Free the buffer memory.
         vg_lite_free(&buffer);
