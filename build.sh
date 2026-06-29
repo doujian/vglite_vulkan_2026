@@ -1,6 +1,16 @@
 #!/bin/bash
 # build.sh - One-click build for vglite_by_vulkan
-# Usage: ./build.sh [clean|test|run]
+#
+# Linux usage (volk + vendored headers = self-contained build):
+#   ./build.sh              # build
+#   ./build.sh clean        # clean rebuild
+#   ./build.sh test         # build + run key tests
+#   ./build.sh run          # build + run all tests
+#
+# Runtime: libvulkan.so.1 is loaded via dlopen (volk), so:
+#   export LD_LIBRARY_PATH=/path/to/vulkan/lib:$LD_LIBRARY_PATH
+#
+# Usage:
 #   (default)  - Build the project
 #   clean      - Clean and rebuild from scratch
 #   test       - Build and run all tests with Vulkan validation
@@ -10,13 +20,21 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
+BUILD_TYPE="${BUILD_TYPE:-Debug}"
+
+# Preserve LD_LIBRARY_PATH for runtime (volk dlopens libvulkan.so.1)
+echo "=== vglite_vulkan build ==="
+echo "  LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-(not set)}"
+if [ -n "$LD_LIBRARY_PATH" ]; then
+    echo "  Vulkan loader will search: $LD_LIBRARY_PATH"
+fi
 
 case "${1:-build}" in
     clean)
         echo "=== Cleaning build directory ==="
         rm -rf "$BUILD_DIR"
-        echo "=== Running CMake ==="
-        cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
+        echo "=== Running CMake ($BUILD_TYPE) ==="
+        cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
         echo "=== Building ==="
         cmake --build "$BUILD_DIR" -j$(nproc)
         echo "=== Build complete ==="
@@ -24,7 +42,7 @@ case "${1:-build}" in
     test)
         echo "=== Building ==="
         if [ ! -d "$BUILD_DIR" ]; then
-            cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
+            cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
         fi
         cmake --build "$BUILD_DIR" -j$(nproc)
         echo ""
@@ -36,10 +54,10 @@ case "${1:-build}" in
             echo "--- $t ---"
             if (cd "$BUILD_DIR/tests" && ./$t) 2>&1; then
                 PASS=$((PASS+1))
-                echo "✅ $t PASSED"
+                echo "PASSED: $t"
             else
                 FAIL=$((FAIL+1))
-                echo "❌ $t FAILED"
+                echo "FAILED: $t"
             fi
             echo ""
         done
@@ -49,7 +67,7 @@ case "${1:-build}" in
     run)
         echo "=== Building ==="
         if [ ! -d "$BUILD_DIR" ]; then
-            cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
+            cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
         fi
         cmake --build "$BUILD_DIR" -j$(nproc)
         echo ""
@@ -61,9 +79,9 @@ case "${1:-build}" in
         done
         ;;
     build|*)
-        echo "=== Building ==="
+        echo "=== Building ($BUILD_TYPE) ==="
         if [ ! -d "$BUILD_DIR" ]; then
-            cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE=Debug
+            cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
         fi
         cmake --build "$BUILD_DIR" -j$(nproc)
         echo "=== Build complete ==="
