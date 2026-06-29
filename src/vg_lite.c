@@ -581,12 +581,13 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         if (g_vk_ctx.pending_desc_count < MAX_PENDING_DESC) {
             g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = desc_set;
         } else {
-            /* Overflow safety: flush everything */
+            /* Overflow safety: flush everything, then track current desc set */
             vg_lite_vulkan_flush_blits();
             vg_lite_vulkan_submit_command(1);
             for (int i = 0; i < g_vk_ctx.pending_desc_count; i++)
                 VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &g_vk_ctx.pending_desc_sets[i]));
             g_vk_ctx.pending_desc_count = 0;
+            g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = desc_set;
         }
     }
     return VG_LITE_SUCCESS;
