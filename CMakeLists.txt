@@ -56,6 +56,7 @@ if(GLSLANG_VALIDATOR AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
         set(SPV_OUT "${SPV_OUTPUT_DIR}/${NAME}_vert.spv")
         add_custom_command(
             OUTPUT ${SPV_OUT}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}"
             COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader: ${VERT} -> ${SPV_OUT}"
             COMMAND ${GLSLANG_VALIDATOR} -V ${VERT} -o ${SPV_OUT}
             DEPENDS ${VERT}
@@ -69,6 +70,7 @@ if(GLSLANG_VALIDATOR AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
         set(SPV_OUT "${SPV_OUTPUT_DIR}/${NAME}_frag.spv")
         add_custom_command(
             OUTPUT ${SPV_OUT}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}"
             COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader: ${FRAG} -> ${SPV_OUT}"
             COMMAND ${GLSLANG_VALIDATOR} -V ${FRAG} -o ${SPV_OUT}
             DEPENDS ${FRAG}
