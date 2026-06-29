@@ -45,36 +45,37 @@ if(GLSLANG_VALIDATOR AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
     file(GLOB FRAG_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.frag")
 
     set(SPV_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/spv")
-    file(MAKE_DIRECTORY ${SPV_OUTPUT_DIR})
+    file(MAKE_DIRECTORY "${SPV_OUTPUT_DIR}")
+    get_filename_component(SPV_OUTPUT_ABS "${SPV_OUTPUT_DIR}" ABSOLUTE)
 
     message(STATUS "Shader compiler: ${GLSLANG_VALIDATOR}")
     message(STATUS "Shader source dir: ${CMAKE_CURRENT_SOURCE_DIR}/shaders")
-    message(STATUS "SPIR-V output dir: ${SPV_OUTPUT_DIR}")
+    message(STATUS "SPIR-V output dir: ${SPV_OUTPUT_ABS}")
 
     foreach(VERT ${VERT_SHADERS})
         get_filename_component(NAME ${VERT} NAME_WE)
-        set(SPV_OUT "${SPV_OUTPUT_DIR}/${NAME}_vert.spv")
+        set(SPV_OUT "${SPV_OUTPUT_ABS}/${NAME}_vert.spv")
         add_custom_command(
             OUTPUT ${SPV_OUT}
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader: ${VERT} -> ${SPV_OUT}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_ABS}"
             COMMAND ${GLSLANG_VALIDATOR} -V ${VERT} -o ${SPV_OUT}
             DEPENDS ${VERT}
             COMMENT "Vert SPIR-V: ${NAME}"
+            VERBATIM
         )
         list(APPEND SPV_OUTPUTS ${SPV_OUT})
     endforeach()
 
     foreach(FRAG ${FRAG_SHADERS})
         get_filename_component(NAME ${FRAG} NAME_WE)
-        set(SPV_OUT "${SPV_OUTPUT_DIR}/${NAME}_frag.spv")
+        set(SPV_OUT "${SPV_OUTPUT_ABS}/${NAME}_frag.spv")
         add_custom_command(
             OUTPUT ${SPV_OUT}
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E echo "Compiling shader: ${FRAG} -> ${SPV_OUT}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_ABS}"
             COMMAND ${GLSLANG_VALIDATOR} -V ${FRAG} -o ${SPV_OUT}
             DEPENDS ${FRAG}
             COMMENT "Frag SPIR-V: ${NAME}"
+            VERBATIM
         )
         list(APPEND SPV_OUTPUTS ${SPV_OUT})
     endforeach()
