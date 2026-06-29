@@ -443,17 +443,6 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
             return VG_LITE_OUT_OF_MEMORY;
     }
     
-    if (internal->depth_stencil_image == VK_NULL_HANDLE) {
-        if (create_attachment(&internal->depth_stencil_image, &internal->depth_stencil_memory, &internal->depth_stencil_view,
-                target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, VK_SAMPLE_COUNT_1_BIT,
-                VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
-                VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) < 0)
-            return VG_LITE_OUT_OF_MEMORY;
-    }
-    
     VkImageView fb_views[3] = {internal->msaa_color_view, internal->view, internal->msaa_depth_view};
     VkFramebufferCreateInfo fb_ci = {0};
     fb_ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;

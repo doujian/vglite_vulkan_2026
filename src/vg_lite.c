@@ -241,9 +241,6 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->msaa_depth_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_depth_view, NULL);
     if (internal->msaa_depth_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_depth_image, NULL);
     if (internal->msaa_depth_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_depth_memory, NULL);
-    if (internal->depth_stencil_view) vkDestroyImageView(g_vk_ctx.device, internal->depth_stencil_view, NULL);
-    if (internal->depth_stencil_image) vkDestroyImage(g_vk_ctx.device, internal->depth_stencil_image, NULL);
-    if (internal->depth_stencil_memory) vkFreeMemory(g_vk_ctx.device, internal->depth_stencil_memory, NULL);
     if (internal->view) vkDestroyImageView(g_vk_ctx.device, internal->view, NULL);
     if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
