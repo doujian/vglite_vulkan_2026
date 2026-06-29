@@ -16,6 +16,8 @@ src/vg_lite_format.c     - Pixel format conversion (format→Vulkan mapping, bpp
 src/vg_lite_math.h       - 3x3 matrix helpers (mat3_multiply, mat3_inverse)
 src/vlc_parser.c         - VLC path data parser (S8/S16/S32/FP32, absolute+relative opcodes)
 src/tessellator.c        - Path tessellation (triangulation, even-odd/non-zero fill)
+src/shader_loader.c      - Runtime .spv file loader (multi-path search, replaces embedded headers)
+src/shader_loader.h      - Shader loader API: load_shader_module()
 shaders/blit.vert        - Blit vertex shader (full-screen triangle)
 shaders/blit.frag        - Blit fragment shader (shader-blend path, MSAA)
 shaders/blit_native.frag - Blit fragment shader (pipeline-blend path, no MSAA)
@@ -25,11 +27,9 @@ shaders/gradient.vert    - Linear gradient vertex shader
 shaders/gradient.frag    - Linear gradient fragment shader
 shaders/pattern.vert     - Pattern fill vertex shader
 shaders/pattern.frag     - Pattern fill fragment shader
-src/spv_*.h              - Embedded SPIR-V shader headers (auto-generated)
 util/util.c              - Test utility: expected buffer, gen_image, pack/read pixel, CPU gradient sim
 util/vg_lite_util.c      - PNG save/load, buffer allocation helper
 util/Common.h            - Shared test macros (CHECK_ERROR, IS_ERROR)
-docs/spv-regeneration.md - SPV shader rebuild guide and troubleshooting
 docs/vg_lite_draw.md     - vg_lite_draw API documentation
 ```
 
@@ -68,7 +68,6 @@ Requirements:
 - CMake 3.16+
 - Vulkan SDK (or llvmpipe software renderer)
 - glslangValidator (for SPIR-V shader compilation)
-- Python 3 (for SPV header generation, optional)
 
 ```bash
 ./build.sh          # Build
@@ -77,9 +76,17 @@ Requirements:
 ./build.sh run      # Build and run tests
 ```
 
-### Regenerating Shader SPV Headers
+### Shader System
 
-When modifying shaders, see `docs/spv-regeneration.md` for the complete guide.
+Shaders are compiled from `shaders/*.vert` and `shaders/*.frag` to SPIR-V `.spv` files at build time (output: `build/spv/`). At runtime, `shader_loader.c` loads `.spv` files via `load_shader_module()` with multi-path search:
+
+1. `SPV_SEARCH_PATH` environment variable
+2. `./spv/` (current working directory)
+3. `<exe_dir>/spv/`
+4. `<exe_dir>/../spv/`
+5. `<exe_dir>/../../spv/`
+
+This allows shader modifications without recompiling C code — just rebuild shaders and rerun.
 
 ## Tests
 
@@ -89,7 +96,7 @@ When modifying shaders, see `docs/spv-regeneration.md` for the complete guide.
 | test_clear_unit | Clear unit test with expected buffer | PASS (100%) |
 | test_clear_dl | 1920x1080 RGB565 clear | PASS |
 | test_align16 | 16-pixel alignment check | PASS |
-| test_draw_image | 2 cases: src/dst formats × image modes | PASS |
+| test_draw_image | 72 cases: src/dst formats × image modes | PASS |
 | test_recolor | RECOLOR mode with rotate/scale/translate | PASS |
 | test_tiled | Tiled rendering test | PASS |
 | test_gfx1 | Full buffer clear | PASS |
@@ -103,7 +110,7 @@ When modifying shaders, see `docs/spv-regeneration.md` for the complete guide.
 | test_linearGrad | Linear gradient with CPU-vs-GPU verification | PASS (153600/153600 = 100%) |
 | test_gradient | 5 blend modes + 18 color count variations | PASS (23/23) |
 | test_scissor | Scissor clip test: clear + draw within scissor region | PASS |
-| test_radialGrad | Radial gradient rendering | PASS |
+| test_radialGrad | Radial gradient, 4 spread modes (PAD/REPEAT/REFLECT/FILL) | PASS (307200/307200 each) |
 | test_imgA8 | A8 source image blit | FAIL (pre-existing, alpha mismatch) |
 | test_rotate | Rotate blit (RGB565) | FAIL (pre-existing, golden mismatch) |
 | test_scale | Scale blit with golden comparison | FAIL (pre-existing, golden mismatch) |
