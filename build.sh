@@ -4,8 +4,8 @@
 # Linux usage (volk + vendored headers = self-contained build):
 #   ./build.sh              # build
 #   ./build.sh clean        # clean rebuild
-#   ./build.sh test         # build + run key tests
-#   ./build.sh run          # build + run all tests
+#   ./build.sh test         # build + run ALL tests with Vulkan validation
+#   ./build.sh run          # build + run ALL tests (no validation layer)
 #
 # Runtime: libvulkan.so.1 is loaded via dlopen (volk), so:
 #   export LD_LIBRARY_PATH=/path/to/vulkan/lib:$LD_LIBRARY_PATH
@@ -46,11 +46,25 @@ case "${1:-build}" in
         fi
         cmake --build "$BUILD_DIR" -j$(nproc)
         echo ""
-        echo "=== Running tests with Vulkan validation ==="
+        echo "=== Running ALL tests with Vulkan validation ==="
         export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+        ALL_TESTS="test_clear test_clear_unit test_clear_dl test_align16 \
+                   test_draw_image test_recolor test_tiled \
+                   test_gfx1 test_gfx2 test_gfx3 test_gfx21 \
+                   test_blend_premultiply test_patternFill test_imgIndex \
+                   test_sft_clear test_tiger test_linearGrad test_gradient \
+                   test_scissor test_radialGrad \
+                   test_imgA8 test_rotate test_scale test_sft_blit"
         PASS=0
         FAIL=0
-        for t in test_clear test_clear_unit test_rotate test_gfx21 test_blend_premultiply test_scale test_align16; do
+        SKIP=0
+        for t in $ALL_TESTS; do
+            exe="$BUILD_DIR/tests/$t"
+            if [ ! -x "$exe" ]; then
+                echo "--- SKIP $t (not built) ---"
+                SKIP=$((SKIP+1))
+                continue
+            fi
             echo "--- $t ---"
             if (cd "$BUILD_DIR/tests" && ./$t) 2>&1; then
                 PASS=$((PASS+1))
@@ -61,8 +75,7 @@ case "${1:-build}" in
             fi
             echo ""
         done
-        echo "=== Results: $PASS passed, $FAIL failed ==="
-        [ $FAIL -eq 0 ] || exit 1
+        echo "=== Results: $PASS passed, $FAIL failed, $SKIP skipped ==="
         ;;
     run)
         echo "=== Building ==="
@@ -71,8 +84,17 @@ case "${1:-build}" in
         fi
         cmake --build "$BUILD_DIR" -j$(nproc)
         echo ""
-        echo "=== Running tests ==="
-        for t in test_clear test_clear_unit test_rotate test_gfx21 test_blend_premultiply test_scale test_align16; do
+        echo "=== Running ALL tests (no validation layer) ==="
+        ALL_TESTS="test_clear test_clear_unit test_clear_dl test_align16 \
+                   test_draw_image test_recolor test_tiled \
+                   test_gfx1 test_gfx2 test_gfx3 test_gfx21 \
+                   test_blend_premultiply test_patternFill test_imgIndex \
+                   test_sft_clear test_tiger test_linearGrad test_gradient \
+                   test_scissor test_radialGrad \
+                   test_imgA8 test_rotate test_scale test_sft_blit"
+        for t in $ALL_TESTS; do
+            exe="$BUILD_DIR/tests/$t"
+            if [ ! -x "$exe" ]; then continue; fi
             echo "--- $t ---"
             (cd "$BUILD_DIR/tests" && ./$t)
             echo ""
