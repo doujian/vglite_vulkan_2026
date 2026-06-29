@@ -7,9 +7,7 @@
 #include <math.h>
 
 #include "vg_lite_math.h"
-#include "spv_vert.h"
-#include "spv_frag.h"
-#include "spv_native_frag.h"
+#include "shader_loader.h"
 
 extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *t, vg_lite_path_t *p, 
                                          vg_lite_fill_t fl, vg_lite_matrix_t *m, 

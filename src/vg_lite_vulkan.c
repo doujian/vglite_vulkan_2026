@@ -1,9 +1,6 @@
 #include "vg_lite_vulkan.h"
+#include "shader_loader.h"
 #include "vg_lite_format.h"
-#include "spv_pattern_vert.h"
-#include "spv_pattern_frag.h"
-#include "spv_gradient_vert.h"
-#include "spv_gradient_frag.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -596,14 +593,10 @@ static VkRenderPass create_render_pass_no_msaa(VkFormat format);
 static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group, int no_msaa)
 {
     if (no_msaa) {
-        extern const uint32_t g_vert_spv_data[];
-        extern const uint32_t g_native_frag_spv_data[];
-        extern const uint32_t g_vert_spv_size;
-        extern const uint32_t g_native_frag_spv_size;
         if (!g_vk_ctx.vert_shader)
-            g_vk_ctx.vert_shader = create_shader_module(g_vert_spv_data, (size_t)g_vert_spv_size);
+            g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
         if (!g_vk_ctx.native_frag_shader)
-            g_vk_ctx.native_frag_shader = create_shader_module(g_native_frag_spv_data, (size_t)g_native_frag_spv_size);
+            g_vk_ctx.native_frag_shader = load_shader_module(g_vk_ctx.device, "blit_native_frag");
         if (!g_vk_ctx.native_pipeline_layout) {
             VkDescriptorSetLayoutBinding bindings[2] = {
                 {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
@@ -620,12 +613,8 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
         }
     } else {
         if (!g_vk_ctx.vert_shader) {
-            extern const uint32_t g_vert_spv_data[];
-            extern const uint32_t g_frag_spv_data[];
-            extern const uint32_t g_vert_spv_size;
-            extern const uint32_t g_frag_spv_size;
-            g_vk_ctx.vert_shader = create_shader_module(g_vert_spv_data, (size_t)g_vert_spv_size);
-            g_vk_ctx.frag_shader = create_shader_module(g_frag_spv_data, (size_t)g_frag_spv_size);
+            g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
+            g_vk_ctx.frag_shader = load_shader_module(g_vk_ctx.device, "blit_frag");
         }
         if (!g_vk_ctx.blit_pipeline_layout) {
             VkDescriptorSetLayoutBinding bindings[4] = {
@@ -895,8 +884,8 @@ void vg_lite_vulkan_init_pattern_pipeline(VkFormat format)
 {
     if (g_vk_ctx.pattern_stencil_pipeline) return;
 
-    g_vk_ctx.pattern_vert_shader = create_shader_module(g_pattern_vert_spv_data, (size_t)g_pattern_vert_spv_size);
-    g_vk_ctx.pattern_frag_shader = create_shader_module(g_pattern_frag_spv_data, (size_t)g_pattern_frag_spv_size);
+    g_vk_ctx.pattern_vert_shader = load_shader_module(g_vk_ctx.device, "pattern_vert");
+    g_vk_ctx.pattern_frag_shader = load_shader_module(g_vk_ctx.device, "pattern_frag");
 
     /* Push constant: mat3 path_matrix(48B) + mat3 pattern_matrix(48B) +
      * pattern_mode(4B) + pattern_color(4B) + 4 ints(16B) + blend_mode(4B) = 124B */
@@ -1134,8 +1123,8 @@ void vg_lite_vulkan_init_grad_pipeline(VkFormat format)
 {
     if (g_vk_ctx.grad_stencil_pipeline) return;
 
-    g_vk_ctx.grad_vert_shader = create_shader_module(g_gradient_vert_spv_data, (size_t)g_gradient_vert_spv_size);
-    g_vk_ctx.grad_frag_shader = create_shader_module(g_gradient_frag_spv_data, (size_t)g_gradient_frag_spv_size);
+    g_vk_ctx.grad_vert_shader = load_shader_module(g_vk_ctx.device, "gradient_vert");
+    g_vk_ctx.grad_frag_shader = load_shader_module(g_vk_ctx.device, "gradient_frag");
 
     /* Push constant: mat3 path_matrix(48B) + mat3 grad_matrix(48B) +
      * 4 ints(16B) + spread_mode(4B) + padding(12B) = 128B */

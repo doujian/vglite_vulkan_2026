@@ -3,8 +3,7 @@
 #include "vg_lite_math.h"
 #include "vlc_parser.h"
 #include "tessellator.h"
-#include "draw_vert_spv.h"
-#include "draw_frag_spv.h"
+#include "shader_loader.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -36,17 +35,6 @@ typedef struct {
 
 static draw_pipeline_t g_draw_pipeline = {0};
 
-static VkShaderModule create_shader_module(const uint8_t* code, size_t size)
-{
-    VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    ci.codeSize = size;
-    ci.pCode = (const uint32_t*)code;
-    VkShaderModule module;
-    if (vkCreateShaderModule(g_vk_ctx.device, &ci, NULL, &module) != VK_SUCCESS)
-        return VK_NULL_HANDLE;
-    return module;
-}
-
 static void init_draw_pipeline(VkFormat format)
 {
     if (g_draw_pipeline.fill_pipeline) {
@@ -54,8 +42,8 @@ static void init_draw_pipeline(VkFormat format)
         return;
     }
     
-    g_draw_pipeline.vert_shader = create_shader_module(draw_vert_spv_data, draw_vert_spv_size);
-    g_draw_pipeline.frag_shader = create_shader_module(draw_frag_spv_data, draw_frag_spv_size);
+    g_draw_pipeline.vert_shader = load_shader_module(g_vk_ctx.device, "draw_vert");
+    g_draw_pipeline.frag_shader = load_shader_module(g_vk_ctx.device, "draw_frag");
     
     VkPushConstantRange pc_range = {0};
     pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
