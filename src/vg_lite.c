@@ -206,6 +206,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
 
     /* Transition image from UNDEFINED to GENERAL layout */
+    vg_lite_vulkan_flush_blits();
     vg_lite_vulkan_begin_command();
     VkImageMemoryBarrier init_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     init_bar.srcAccessMask = 0;
@@ -232,6 +233,8 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
+    vg_lite_vulkan_flush_blits();
+    vg_lite_vulkan_submit_command(1);
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
     if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
     if (internal->msaa_color_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_color_image, NULL);
@@ -291,6 +294,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     }
 
     vg_lite_vulkan_begin_command();
+    vg_lite_vulkan_flush_blits();
     vg_lite_vulkan_set_render_target(target);
 
     VkClearRect clear_rect;
@@ -461,7 +465,10 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
     vg_lite_vulkan_begin_command();
-    vg_lite_vulkan_end_render_pass();
+    if (!native_blend) {
+        vg_lite_vulkan_flush_blits();
+        vg_lite_vulkan_end_render_pass();
+    }
 
     VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
@@ -526,17 +533,21 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (source->format == VG_LITE_A8)  pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
-    memcpy(g_vk_ctx.blit_ssbo_mapped, &pc, sizeof(pc));
+    if (native_blend) {
+        vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
+            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    } else {
+        memcpy(g_vk_ctx.blit_ssbo_mapped, &pc, sizeof(pc));
+    }
     
     VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};
     VkDescriptorBufferInfo clut_info = {g_vk_ctx.clut_buffer, 0, 256 * 4};
 
     if (native_blend) {
-        VkWriteDescriptorSet ws[2] = {
+        VkWriteDescriptorSet ws[1] = {
             {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
-            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &ssbo_info, NULL},
         };
-        vkUpdateDescriptorSets(g_vk_ctx.device, 2, ws, 0, NULL);
+        vkUpdateDescriptorSets(g_vk_ctx.device, 1, ws, 0, NULL);
     } else {
         VkWriteDescriptorSet ws[4] = {
             {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
@@ -556,14 +567,27 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
     vg_lite_vulkan_apply_scissor(target->width, target->height);
     vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
-    vg_lite_vulkan_end_render_pass();
 
-    vg_lite_vulkan_submit_command(1);
-    VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &desc_set));
     if (!native_blend) {
+        /* Shader blend: immediate flush (temp copy lifecycle) */
+        vg_lite_vulkan_end_render_pass();
+        vg_lite_vulkan_submit_command(1);
+        VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &desc_set));
         vkDestroyImageView(g_vk_ctx.device, tmp_view, NULL);
         vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
         vkFreeMemory(g_vk_ctx.device, tmp_memory, NULL);
+    } else {
+        /* Native blend: defer — RP stays open, desc set freed after submit */
+        if (g_vk_ctx.pending_desc_count < MAX_PENDING_DESC) {
+            g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = desc_set;
+        } else {
+            /* Overflow safety: flush everything */
+            vg_lite_vulkan_flush_blits();
+            vg_lite_vulkan_submit_command(1);
+            for (int i = 0; i < g_vk_ctx.pending_desc_count; i++)
+                VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &g_vk_ctx.pending_desc_sets[i]));
+            g_vk_ctx.pending_desc_count = 0;
+        }
     }
     return VG_LITE_SUCCESS;
 }

@@ -292,6 +292,10 @@ vg_lite_error_t vg_lite_vulkan_submit_command(int wait)
         vkDestroyRenderPass(g_vk_ctx.device, g_vk_ctx.pending_rp[i], NULL);
     }
     g_vk_ctx.pending_rp_count = 0;
+    for (int i = 0; i < g_vk_ctx.pending_desc_count; i++) {
+        VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &g_vk_ctx.pending_desc_sets[i]));
+    }
+    g_vk_ctx.pending_desc_count = 0;
     return VG_LITE_SUCCESS;
 }
 
@@ -417,7 +421,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
 
-    if (g_vk_ctx.current_fb_image == internal->image) return VG_LITE_SUCCESS;
+    if (g_vk_ctx.current_fb_image == internal->image && !g_vk_ctx.current_fb_is_no_msaa) return VG_LITE_SUCCESS;
     
     if (g_vk_ctx.current_fb) { vg_lite_vulkan_end_render_pass(); }
     
@@ -465,6 +469,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     g_vk_ctx.current_fb_view = internal->view;
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
+    g_vk_ctx.current_fb_is_no_msaa = 0;
     
     VkClearValue clear_values[3] = {0};
     clear_values[0].color.float32[0] = 0.0f;
@@ -516,8 +521,16 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
         }
         g_vk_ctx.current_fb = VK_NULL_HANDLE;
         g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
+        g_vk_ctx.current_fb_is_no_msaa = 0;
     }
     return VG_LITE_SUCCESS;
+}
+
+void vg_lite_vulkan_flush_blits(void)
+{
+    if (g_vk_ctx.current_fb) {
+        vg_lite_vulkan_end_render_pass();
+    }
 }
 
 static VkShaderModule create_shader_module(const uint32_t *code, size_t size)
@@ -606,17 +619,22 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
         if (!g_vk_ctx.native_frag_shader)
             g_vk_ctx.native_frag_shader = load_shader_module(g_vk_ctx.device, "blit_native_frag");
         if (!g_vk_ctx.native_pipeline_layout) {
-            VkDescriptorSetLayoutBinding bindings[2] = {
+            VkDescriptorSetLayoutBinding bindings[1] = {
                 {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
-                {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
             };
             VkDescriptorSetLayoutCreateInfo ds_ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-            ds_ci.bindingCount = 2;
+            ds_ci.bindingCount = 1;
             ds_ci.pBindings = bindings;
             VK_CHECK(vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.native_descriptor_layout));
+            VkPushConstantRange pc_range = {0};
+            pc_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            pc_range.offset = 0;
+            pc_range.size = 80;
             VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
+            pl_ci.pushConstantRangeCount = 1;
+            pl_ci.pPushConstantRanges = &pc_range;
             VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.native_pipeline_layout));
         }
     } else {
@@ -776,6 +794,9 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
 
+    if (g_vk_ctx.current_fb_image == internal->image && g_vk_ctx.current_fb_is_no_msaa)
+        return VG_LITE_SUCCESS;
+
     if (g_vk_ctx.current_fb) { vg_lite_vulkan_end_render_pass(); }
 
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
@@ -801,6 +822,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
     g_vk_ctx.current_fb_view = internal->view;
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
+    g_vk_ctx.current_fb_is_no_msaa = 1;
 
     {
         VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};

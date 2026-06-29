@@ -1,6 +1,6 @@
 #version 450
 
-layout(std430, set = 0, binding = 1) readonly buffer BlitParams {
+layout(push_constant) uniform BlitParams {
     mat3  matrix;
     int   blend_mode;
     uint  color;

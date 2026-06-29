@@ -63,12 +63,16 @@ typedef struct {
     VkImage current_fb_image;
     uint32_t current_fb_width;
     uint32_t current_fb_height;
+    int current_fb_is_no_msaa;
 
     #define MAX_PENDING_FB 32
+    #define MAX_PENDING_DESC 64
     VkFramebuffer pending_fb[MAX_PENDING_FB];
     int pending_fb_count;
     VkRenderPass pending_rp[MAX_PENDING_FB];
     int pending_rp_count;
+    VkDescriptorSet pending_desc_sets[MAX_PENDING_DESC];
+    int pending_desc_count;
 
     VkCommandBuffer cmd_buf;
     int cmd_buf_recording;
@@ -141,6 +145,7 @@ vg_lite_error_t vg_lite_vulkan_destroy(void);
 
 vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target);
 vg_lite_error_t vg_lite_vulkan_end_render_pass(void);
+void vg_lite_vulkan_flush_blits(void);
 
 vg_lite_error_t vg_lite_vulkan_begin_command(void);
 vg_lite_error_t vg_lite_vulkan_submit_command(int wait);
