@@ -155,9 +155,8 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     dev_ci.enabledExtensionCount = 0;
     dev_ci.ppEnabledExtensionNames = NULL;
 
-    VkPhysicalDeviceFeatures enabled_features = {0};
-    enabled_features.multiViewport = VK_TRUE;
-    dev_ci.pEnabledFeatures = &enabled_features;
+    /* No special physical device features required */
+    dev_ci.pEnabledFeatures = NULL;
 
     if (enable_validation) { dev_ci.enabledLayerCount = 1; dev_ci.ppEnabledLayerNames = validation_layers; }
 
