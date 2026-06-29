@@ -12,13 +12,31 @@ else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter -fPIC)
 endif()
 
-# Find Vulkan
-find_package(Vulkan REQUIRED)
+# Vulkan headers: prefer vendored copy, fallback to find_package(Vulkan)
+# volk handles runtime function loading via dlopen/LoadLibrary,
+# so we only need headers at compile time, not a linked .so/.lib
+set(VULKAN_HEADERS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-headers/include")
+if(EXISTS "${VULKAN_HEADERS_DIR}/vulkan/vulkan_core.h")
+    message(STATUS "Using vendored Vulkan headers: ${VULKAN_HEADERS_DIR}")
+    add_library(Vulkan::Headers INTERFACE IMPORTED)
+    set_target_properties(Vulkan::Headers PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${VULKAN_HEADERS_DIR}"
+    )
+else()
+    find_package(Vulkan REQUIRED)
+    message(STATUS "Using system Vulkan SDK headers")
+endif()
 
-# Find glslangValidator
-find_program(GLSLANG_VALIDATOR glslangValidator)
+# Find glslangValidator: check project-local paths first, then system PATH
+find_program(GLSLANG_VALIDATOR glslangValidator
+    HINTS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools
+        ${CMAKE_CURRENT_SOURCE_DIR}/bin
+)
 if(NOT GLSLANG_VALIDATOR)
-    message(WARNING "glslangValidator not found - SPIR-V compilation will be skipped")
+    message(WARNING "glslangValidator not found - SPIR-V compilation will be skipped.\n"
+                    "Place glslangValidator in project root, tools/, or bin/ - or install system-wide.")
 endif()
 
 # SPIR-V compilation for shaders
