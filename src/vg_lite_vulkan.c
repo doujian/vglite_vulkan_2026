@@ -125,7 +125,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
 
     uint32_t gpu_count = 0;
     VK_CHECK(vkEnumeratePhysicalDevices(g_vk_ctx.instance, &gpu_count, NULL));
-    if (gpu_count == 0) return VG_LITE_NO_CONTEXT;
+    if (gpu_count == 0) { fprintf(stderr, "No Vulkan GPU found\n"); return VG_LITE_NO_CONTEXT; }
     VkPhysicalDevice *gpus = malloc(gpu_count * sizeof(VkPhysicalDevice));
     VK_CHECK(vkEnumeratePhysicalDevices(g_vk_ctx.instance, &gpu_count, gpus));
     g_vk_ctx.physical_device = gpus[0];
@@ -162,7 +162,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     if (enable_validation) { dev_ci.enabledLayerCount = 1; dev_ci.ppEnabledLayerNames = validation_layers; }
 
     res = vkCreateDevice(g_vk_ctx.physical_device, &dev_ci, NULL, &g_vk_ctx.device);
-    if (res != VK_SUCCESS) return VG_LITE_NO_CONTEXT;
+    if (res != VK_SUCCESS) { fprintf(stderr, "vkCreateDevice failed: %d\n", res); return VG_LITE_NO_CONTEXT; }
     /* Overwrite device-level pointers with direct driver dispatch (performance) */
     volkLoadDevice(g_vk_ctx.device);
     vkGetDeviceQueue(g_vk_ctx.device, g_vk_ctx.queue_family_index, 0, &g_vk_ctx.queue);
