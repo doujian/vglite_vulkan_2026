@@ -1,7 +1,7 @@
 #ifndef VG_LITE_VULKAN_H
 #define VG_LITE_VULKAN_H
 
-#include <vulkan/vulkan.h>
+#include "volk.h"
 #include "vg_lite.h"
 #include <stdio.h>
 

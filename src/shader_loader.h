@@ -1,7 +1,7 @@
 #ifndef VULKAN_SHADER_LOADER_H
 #define VULKAN_SHADER_LOADER_H
 
-#include <vulkan/vulkan.h>
+#include "volk.h"
 
 /*
  * Load a SPIR-V shader file from disk.

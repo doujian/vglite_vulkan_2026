@@ -26,16 +26,14 @@ static VkResult create_debug_messenger(VkInstance inst, VkDebugUtilsMessengerEXT
     ci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     ci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     ci.pfnUserCallback = debug_callback;
-    PFN_vkCreateDebugUtilsMessengerEXT fn = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(inst, "vkCreateDebugUtilsMessengerEXT");
-    if (!fn) return VK_ERROR_EXTENSION_NOT_PRESENT;
-    return fn(inst, &ci, NULL, out);
+    /* volk loads extension functions automatically after volkLoadInstance */
+    return vkCreateDebugUtilsMessengerEXT(inst, &ci, NULL, out);
 }
 
 static void destroy_debug_messenger(VkInstance inst, VkDebugUtilsMessengerEXT messenger)
 {
     if (!messenger) return;
-    PFN_vkDestroyDebugUtilsMessengerEXT fn = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(inst, "vkDestroyDebugUtilsMessengerEXT");
-    if (fn) fn(inst, messenger, NULL);
+    vkDestroyDebugUtilsMessengerEXT(inst, messenger, NULL);
 }
 
 int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props)
@@ -53,6 +51,13 @@ vg_lite_error_t vg_lite_vulkan_init(void)
 {
     VkResult res;
     memset(&g_vk_ctx, 0, sizeof(g_vk_ctx));
+
+    /* Initialize volk — dynamically loads vulkan-1.dll / libvulkan.so */
+    res = volkInitialize();
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "volkInitialize failed: %d (Vulkan loader not found)\n", res);
+        return VG_LITE_NO_CONTEXT;
+    }
 
     const char *validation_layers[] = { "VK_LAYER_KHRONOS_validation" };
     int enable_validation = 0;
@@ -114,6 +119,8 @@ vg_lite_error_t vg_lite_vulkan_init(void)
 
     res = vkCreateInstance(&inst_ci, NULL, &g_vk_ctx.instance);
     if (res != VK_SUCCESS) { fprintf(stderr, "vkCreateInstance failed: %d\n", res); return VG_LITE_NO_CONTEXT; }
+    /* Load all instance-level + device-level function pointers via volk */
+    volkLoadInstance(g_vk_ctx.instance);
     if (enable_validation) create_debug_messenger(g_vk_ctx.instance, &g_vk_ctx.debug_messenger);
 
     uint32_t gpu_count = 0;
@@ -156,6 +163,8 @@ vg_lite_error_t vg_lite_vulkan_init(void)
 
     res = vkCreateDevice(g_vk_ctx.physical_device, &dev_ci, NULL, &g_vk_ctx.device);
     if (res != VK_SUCCESS) return VG_LITE_NO_CONTEXT;
+    /* Overwrite device-level pointers with direct driver dispatch (performance) */
+    volkLoadDevice(g_vk_ctx.device);
     vkGetDeviceQueue(g_vk_ctx.device, g_vk_ctx.queue_family_index, 0, &g_vk_ctx.queue);
 
     VkCommandPoolCreateInfo pool_ci = {0};
