@@ -485,6 +485,20 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vg_lite_vulkan_end_render_pass();
     }
 
+    VkImage tmp_image = VK_NULL_HANDLE;
+    VkDeviceMemory tmp_memory = VK_NULL_HANDLE;
+    VkImageView tmp_view = VK_NULL_HANDLE;
+
+    if (!native_blend) {
+        vg_lite_error_t err = create_temp_copy_image(vkfmt, target, target_int, &tmp_image, &tmp_memory, &tmp_view);
+        if (err != VG_LITE_SUCCESS) return err;
+    }
+
+    if (native_blend)
+        vg_lite_vulkan_set_render_target_no_msaa(target);
+    else
+        vg_lite_vulkan_set_render_target(target);
+
     VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
     src_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -501,20 +515,6 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
     float shader_mat[3][3];
     compute_blit_shader_matrix(matrix, source->width, source->height, target->width, target->height, shader_mat);
-
-    VkImage tmp_image = VK_NULL_HANDLE;
-    VkDeviceMemory tmp_memory = VK_NULL_HANDLE;
-    VkImageView tmp_view = VK_NULL_HANDLE;
-
-    if (!native_blend) {
-        vg_lite_error_t err = create_temp_copy_image(vkfmt, target, target_int, &tmp_image, &tmp_memory, &tmp_view);
-        if (err != VG_LITE_SUCCESS) return err;
-    }
-
-    if (native_blend)
-        vg_lite_vulkan_set_render_target_no_msaa(target);
-    else
-        vg_lite_vulkan_set_render_target(target);
 
     VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
