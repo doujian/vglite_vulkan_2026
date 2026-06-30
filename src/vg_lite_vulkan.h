@@ -77,6 +77,7 @@ typedef struct {
     VkCommandBuffer cmd_buf;
     int cmd_buf_recording;
     int cmd_buf_submitted;
+    VkCommandBuffer init_cmd_buf; /* separate cmd buf for init/layout barriers */
 
     pipeline_cache_entry_t pipeline_cache[MAX_PIPELINE_CACHE];
     int pipeline_cache_count;

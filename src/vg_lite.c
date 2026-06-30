@@ -205,21 +205,34 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     void *mapped = NULL;
     VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
 
-    /* Transition image from UNDEFINED to GENERAL layout */
-    vg_lite_vulkan_flush_blits();
-    vg_lite_vulkan_begin_command();
-    VkImageMemoryBarrier init_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    init_bar.srcAccessMask = 0;
-    init_bar.dstAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
-    init_bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    init_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    init_bar.image = internal->image;
-    init_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    init_bar.subresourceRange.levelCount = 1;
-    init_bar.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &init_bar);
-    vg_lite_vulkan_submit_command(1);
+    /* Layout transition on a separate command buffer (does not interrupt main cmd_buf render pass) */
+    {
+        VkCommandBuffer icb = g_vk_ctx.init_cmd_buf;
+        VK_CHECK(vkResetCommandBuffer(icb, 0));
+        VkCommandBufferBeginInfo bi = {0};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VK_CHECK(vkBeginCommandBuffer(icb, &bi));
+        VkImageMemoryBarrier init_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        init_bar.srcAccessMask = 0;
+        init_bar.dstAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+        init_bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        init_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        init_bar.image = internal->image;
+        init_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        init_bar.subresourceRange.levelCount = 1;
+        init_bar.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &init_bar);
+        VK_CHECK(vkEndCommandBuffer(icb));
+        VkSubmitInfo si = {0};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &icb;
+        VK_CHECK(vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence));
+        VK_CHECK(vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence));
+        VK_CHECK(vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX));
+    }
 
     buffer->handle = internal;
     buffer->memory = (uint8_t *)mapped + layout.offset;
