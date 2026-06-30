@@ -374,6 +374,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         vlc_path_free(&vlc_path);
         return err;
     }
+    vg_lite_vulkan_flush_blits();
     
     if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
         err = vg_lite_vulkan_set_render_target(target);
@@ -612,6 +613,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         vlc_path_free(&vlc_path);
         return err;
     }
+    vg_lite_vulkan_flush_blits();
     
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
     if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != target_int->image) {
@@ -856,6 +858,7 @@ static vg_lite_error_t draw_grad_internal(
         vlc_path_free(&vlc_path);
         return err;
     }
+    vg_lite_vulkan_flush_blits();
 
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
     if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
