@@ -85,3 +85,6 @@ add_dependencies(test_gradient spirv_compilation)
 add_executable(test_scissor scissor/scissor.c)
 add_dependencies(test_scissor spirv_compilation)
 
+add_executable(test_blit_chain blit_chain/blit_chain.c)
+add_dependencies(test_blit_chain spirv_compilation)
+
