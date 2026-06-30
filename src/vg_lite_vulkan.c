@@ -178,7 +178,6 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     cmd_ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmd_ai.commandBufferCount = 1;
     VK_CHECK(vkAllocateCommandBuffers(g_vk_ctx.device, &cmd_ai, &g_vk_ctx.cmd_buf));
-    cmd_ai.commandBufferCount = 1;
     VK_CHECK(vkAllocateCommandBuffers(g_vk_ctx.device, &cmd_ai, &g_vk_ctx.init_cmd_buf));
 
     VkFenceCreateInfo fence_ci = {0};
