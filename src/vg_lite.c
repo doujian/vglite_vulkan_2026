@@ -454,7 +454,9 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
     int blend_group = vg_lite_blend_to_group(blend);
-    if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565)
+    if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565
+        && target->format != VG_LITE_RGBA8888 && target->format != VG_LITE_RGB565
+        && target->format != VG_LITE_A8 && target->format != VG_LITE_L8)
         blend_group = BG_SHADER;
     int native_blend = (blend_group != BG_SHADER);
 

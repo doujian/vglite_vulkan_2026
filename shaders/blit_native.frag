@@ -20,6 +20,12 @@ layout(location = 0) out vec4 out_color;
 #define IMAGE_MODE_NONE     0x1F03
 #define IMAGE_MODE_RECOLOR  0x1F04
 
+#define FLAG_OUTPUT_L8       1
+#define FLAG_OUTPUT_A8       2
+#define FLAG_SOURCE_A8       8
+
+#define BLEND_NORMAL_LVGL   11
+
 vec4 apply_image_mode(vec4 src, uint mix_color)
 {
     float mr = float((mix_color      ) & 0xFFu) / 255.0;
@@ -32,6 +38,10 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
         return mix;
     }
     if (params.image_mode == IMAGE_MODE_MULTIPLY) {
+        /* A8 source: swizzled to (0,0,0,alpha), multiply uses alpha * color */
+        if ((params.flags & FLAG_SOURCE_A8) != 0) {
+            return vec4(mix.rgb * src.a, mix.a * src.a);
+        }
         return vec4(src.rgb * mix.rgb, src.a * mix.a);
     }
     if (params.image_mode == IMAGE_MODE_STENCIL) {
@@ -66,5 +76,21 @@ void main()
 
     src = apply_image_mode(src, params.color);
 
-    out_color = src;
+    /* NORMAL_LVGL (PREMULTIPLY_SRC_OVER): source must be premultiplied before
+     * hardware blend, matching blit.frag L312-313 behavior. */
+    if (params.blend_mode == BLEND_NORMAL_LVGL) {
+        src = vec4(src.rgb * src.a, src.a);
+    }
+
+    /* For A8/L8 targets (R8_UNORM), write the appropriate value to R channel.
+     * Hardware blend uses src.A for blend factor, so we keep A = src.a for
+     * SRC_OVER/ADDITIVE/SUBTRACT to work correctly on single-channel format. */
+    if ((params.flags & FLAG_OUTPUT_L8) != 0) {
+        float lum = 0.2126 * src.r + 0.7152 * src.g + 0.0722 * src.b;
+        out_color = vec4(lum, 0.0, 0.0, src.a);
+    } else if ((params.flags & FLAG_OUTPUT_A8) != 0) {
+        out_color = vec4(src.a, 0.0, 0.0, src.a);
+    } else {
+        out_color = src;
+    }
 }
