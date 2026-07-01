@@ -255,6 +255,9 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->msaa_depth_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_depth_view, NULL);
     if (internal->msaa_depth_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_depth_image, NULL);
     if (internal->msaa_depth_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_depth_memory, NULL);
+    if (internal->resolve_view) vkDestroyImageView(g_vk_ctx.device, internal->resolve_view, NULL);
+    if (internal->resolve_image) vkDestroyImage(g_vk_ctx.device, internal->resolve_image, NULL);
+    if (internal->resolve_memory) vkFreeMemory(g_vk_ctx.device, internal->resolve_memory, NULL);
     if (internal->view) vkDestroyImageView(g_vk_ctx.device, internal->view, NULL);
     if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
@@ -475,7 +478,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
     VkPipeline pipeline;
     if (native_blend)
-        pipeline = vg_lite_vulkan_get_pipeline_no_msaa(vkfmt, blend_group);
+        pipeline = vg_lite_vulkan_get_pipeline_native_msaa(vkfmt, blend_group);
     else
         pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
@@ -494,10 +497,15 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         if (err != VG_LITE_SUCCESS) return err;
     }
 
-    if (native_blend)
-        vg_lite_vulkan_set_render_target_no_msaa(target);
-    else
-        vg_lite_vulkan_set_render_target(target);
+    VkSampler sampler = get_or_create_sampler(filter);
+    VkFramebuffer prev_fb = g_vk_ctx.current_fb;
+    vg_lite_vulkan_set_render_target(target);
+    if (native_blend && g_vk_ctx.current_fb != prev_fb) {
+        /* New RP for a native+MSAA blit: seed the MSAA with the target's
+         * current content so the hardware-blend draw reads the right dst.
+         * Skipped on RP reuse (deferred batching) to preserve accumulation. */
+        vg_lite_vulkan_seed_msaa(target, sampler);
+    }
 
     VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
@@ -524,7 +532,6 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
 
-    VkSampler sampler = get_or_create_sampler(filter);
     VkImageView src_view = src_int->swizzle_view ? src_int->swizzle_view : src_int->view;
     VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo di;
