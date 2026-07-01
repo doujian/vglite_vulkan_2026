@@ -325,7 +325,7 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
     float sw = (float)src->width, sh = (float)src->height;
     float src_uv_x = sx / sw, src_uv_y = sy / sh;
     if (src_uv_x < -0.001f || src_uv_x > 1.001f || src_uv_y < -0.001f || src_uv_y > 1.001f)
-        return 0;
+        return dst_px;  /* out-of-bounds: discard, preserve dst (matches blit_native.frag) */
     if (src_uv_x < 0.0f) src_uv_x = 0.0f;
     else if (src_uv_x > 1.0f) src_uv_x = 1.0f;
     if (src_uv_y < 0.0f) src_uv_y = 0.0f;

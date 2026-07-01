@@ -64,8 +64,7 @@ void main()
     }
 
     if (src_uv.x < -0.001 || src_uv.x > 1.001 || src_uv.y < -0.001 || src_uv.y > 1.001) {
-        out_color = vec4(0.0, 0.0, 0.0, 0.0);
-        return;
+        discard;
     }
     if (src_uv.x < 0.0) src_uv.x = 0.0;
     else if (src_uv.x > 1.0) src_uv.x = 1.0;
