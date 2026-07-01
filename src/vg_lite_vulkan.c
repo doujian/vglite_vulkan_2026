@@ -312,15 +312,17 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    /* Resolve attachment (final output) */
+    /* Resolve attachment: 1x OPTIMAL scratch. MSAA resolves here, then a
+     * vkCmdCopyImage moves it to the LINEAR target (direct resolve-to-LINEAR
+     * smears non-uniform content on this GPU). */
     attachments[1].format = format;
     attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_GENERAL;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     /* MSAA depth/stencil attachment */
     attachments[2].format = VK_FORMAT_D24_UNORM_S8_UINT;
     attachments[2].samples = VK_SAMPLE_COUNT_4_BIT;
@@ -341,15 +343,42 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
     sub.pColorAttachments = &color_ref;
     sub.pResolveAttachments = &resolve_ref;
     sub.pDepthStencilAttachment = &stencil_ref;
-    
+
+    /* Make loadOp=LOAD across render-pass instances observe the previous
+     * pass's store; required for correct multi-pass MSAA accumulation. */
+    VkSubpassDependency deps[3] = {0};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[0].dependencyFlags = 0;
+    deps[1].srcSubpass = 0;
+    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dependencyFlags = 0;
+    /* Self-dependency: a draw's color-attachment write (e.g. the seed blit)
+     * must be visible to a later draw's blend-dst read in the same subpass. */
+    deps[2].srcSubpass = 0;
+    deps[2].dstSubpass = 0;
+    deps[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[2].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[2].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[2].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     ci.attachmentCount = 3;
     ci.pAttachments = attachments;
     ci.subpassCount = 1;
     ci.pSubpasses = &sub;
-    ci.dependencyCount = 0;
-    ci.pDependencies = NULL;
+    ci.dependencyCount = 3;
+    ci.pDependencies = deps;
     
     VkRenderPass rp;
     if (vkCreateRenderPass(g_vk_ctx.device, &ci, NULL, &rp) != VK_SUCCESS) return VK_NULL_HANDLE;
@@ -417,6 +446,65 @@ static int create_attachment(
     return 0;
 }
 
+vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+
+    VkPipeline seed_pipe = vg_lite_vulkan_get_pipeline_native_msaa(vkfmt, BG_NONE);
+    if (!seed_pipe) return VG_LITE_OUT_OF_MEMORY;
+
+    VkDescriptorSet ds;
+    VkDescriptorSetAllocateInfo a = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    a.descriptorPool = g_vk_ctx.descriptor_pool;
+    a.descriptorSetCount = 1;
+    a.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
+    if (vkAllocateDescriptorSets(g_vk_ctx.device, &a, &ds) != VK_SUCCESS)
+        return VG_LITE_OUT_OF_MEMORY;
+    VkImageView tview = internal->swizzle_view ? internal->swizzle_view : internal->view;
+    VkDescriptorImageInfo ti = {sampler, tview, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, ds, 0, 0, 1,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ti, NULL, NULL};
+    vkUpdateDescriptorSets(g_vk_ctx.device, 1, &w, 0, NULL);
+
+    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = internal->image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, seed_pipe);
+    vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        g_vk_ctx.native_pipeline_layout, 0, 1, &ds, 0, NULL);
+
+    struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; int pad[3]; } pc = {0};
+    pc.m[0] = 1.0f; pc.m[5] = 1.0f; pc.m[10] = 1.0f;
+    pc.blend = (int)VG_LITE_BLEND_NONE;
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
+        VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+
+    VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
+    vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
+    vg_lite_vulkan_apply_scissor(target->width, target->height);
+
+    vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
+
+    if (g_vk_ctx.pending_desc_count < MAX_PENDING_DESC)
+        g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = ds;
+    else
+        vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &ds);
+    return VG_LITE_SUCCESS;
+}
+
 vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
 {
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
@@ -452,8 +540,20 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) < 0)
             return VG_LITE_OUT_OF_MEMORY;
     }
-    
-    VkImageView fb_views[3] = {internal->msaa_color_view, internal->view, internal->msaa_depth_view};
+
+    if (internal->resolve_image == VK_NULL_HANDLE) {
+        VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+        if (create_attachment(&internal->resolve_image, &internal->resolve_memory, &internal->resolve_view,
+                target->width, target->height, vkfmt, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) < 0)
+            return VG_LITE_OUT_OF_MEMORY;
+    }
+
+    VkImageView fb_views[3] = {internal->msaa_color_view, internal->resolve_view, internal->msaa_depth_view};
     VkFramebufferCreateInfo fb_ci = {0};
     fb_ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fb_ci.renderPass = internal->render_pass;
@@ -467,6 +567,8 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     
     g_vk_ctx.current_fb = fb;
     g_vk_ctx.current_fb_image = internal->image;
+    g_vk_ctx.current_msaa_color_image = internal->msaa_color_image;
+    g_vk_ctx.current_resolve_image = internal->resolve_image;
     g_vk_ctx.current_fb_view = internal->view;
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
@@ -500,21 +602,85 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
     if (g_vk_ctx.current_fb) {
         vkCmdEndRenderPass(g_vk_ctx.cmd_buf);
         
-        VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        host_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        host_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        host_barrier.image = g_vk_ctx.current_fb_image;
-        host_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        host_barrier.subresourceRange.levelCount = 1;
-        host_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
-        
+        if (g_vk_ctx.current_resolve_image && g_vk_ctx.current_fb_image) {
+            /* Copy OPTIMAL resolve intermediate -> LINEAR target. The render
+             * pass left the intermediate in TRANSFER_SRC_OPTIMAL (finalLayout). */
+            VkImageMemoryBarrier dst_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            dst_barrier.srcAccessMask = 0;
+            dst_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            dst_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            dst_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            dst_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            dst_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            dst_barrier.image = g_vk_ctx.current_fb_image;
+            dst_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            dst_barrier.subresourceRange.levelCount = 1;
+            dst_barrier.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &dst_barrier);
+
+            VkImageCopy region = {0};
+            region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.srcSubresource.layerCount = 1;
+            region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.dstSubresource.layerCount = 1;
+            region.extent.width = g_vk_ctx.current_fb_width;
+            region.extent.height = g_vk_ctx.current_fb_height;
+            region.extent.depth = 1;
+            vkCmdCopyImage(g_vk_ctx.cmd_buf,
+                g_vk_ctx.current_resolve_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                g_vk_ctx.current_fb_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                1, &region);
+
+            VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            host_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            host_barrier.image = g_vk_ctx.current_fb_image;
+            host_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            host_barrier.subresourceRange.levelCount = 1;
+            host_barrier.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+                VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
+        } else if (g_vk_ctx.current_fb_image) {
+            VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            host_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            host_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            host_barrier.image = g_vk_ctx.current_fb_image;
+            host_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            host_barrier.subresourceRange.levelCount = 1;
+            host_barrier.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
+        }
+
+        if (g_vk_ctx.current_msaa_color_image) {
+            VkImageMemoryBarrier msaa_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            msaa_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            msaa_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            msaa_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            msaa_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            msaa_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            msaa_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            msaa_barrier.image = g_vk_ctx.current_msaa_color_image;
+            msaa_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            msaa_barrier.subresourceRange.levelCount = 1;
+            msaa_barrier.subresourceRange.layerCount = 1;
+            vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &msaa_barrier);
+        }
+
         if (g_vk_ctx.pending_fb_count < MAX_PENDING_FB) {
             g_vk_ctx.pending_fb[g_vk_ctx.pending_fb_count++] = g_vk_ctx.current_fb;
         } else {
@@ -522,6 +688,8 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
         }
         g_vk_ctx.current_fb = VK_NULL_HANDLE;
         g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
+        g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
+        g_vk_ctx.current_resolve_image = VK_NULL_HANDLE;
         g_vk_ctx.current_fb_is_no_msaa = 0;
     }
     return VG_LITE_SUCCESS;
@@ -612,9 +780,9 @@ static void get_blend_attachment_state(int blend_group, VkPipelineColorBlendAtta
 
 static VkRenderPass create_render_pass_no_msaa(VkFormat format);
 
-static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group, int no_msaa)
+static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group, int mode)
 {
-    if (no_msaa) {
+    if (mode != 0) {
         if (!g_vk_ctx.vert_shader)
             g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
         if (!g_vk_ctx.native_frag_shader)
@@ -664,7 +832,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.vert_shader, "main", NULL},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
-         no_msaa ? g_vk_ctx.native_frag_shader : g_vk_ctx.frag_shader, "main", NULL},
+         mode != 0 ? g_vk_ctx.native_frag_shader : g_vk_ctx.frag_shader, "main", NULL},
     };
     VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -672,8 +840,8 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = no_msaa ? VK_SAMPLE_COUNT_1_BIT : VK_SAMPLE_COUNT_4_BIT;
-    if (!no_msaa) ms.minSampleShading = 1.0f;
+    ms.rasterizationSamples = (mode == 1) ? VK_SAMPLE_COUNT_1_BIT : VK_SAMPLE_COUNT_4_BIT;
+    if (mode == 0) ms.minSampleShading = 1.0f;
 
     VkPipelineColorBlendAttachmentState cba;
     get_blend_attachment_state(blend_group, &cba);
@@ -685,7 +853,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     ds.depthWriteEnable = VK_FALSE;
     ds.stencilTestEnable = VK_FALSE;
 
-    VkRenderPass rp = no_msaa ? create_render_pass_no_msaa(format) : vg_lite_vulkan_create_render_pass(format);
+    VkRenderPass rp = (mode == 1) ? create_render_pass_no_msaa(format) : vg_lite_vulkan_create_render_pass(format);
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vs.viewportCount = 1;
@@ -701,7 +869,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     gp_ci.pViewportState = &vs;
     gp_ci.pRasterizationState = &rs; gp_ci.pMultisampleState = &ms;
     gp_ci.pColorBlendState = &cb; gp_ci.pDepthStencilState = &ds; gp_ci.pDynamicState = &dyn_ci;
-    gp_ci.layout = no_msaa ? g_vk_ctx.native_pipeline_layout : g_vk_ctx.blit_pipeline_layout;
+    gp_ci.layout = (mode != 0) ? g_vk_ctx.native_pipeline_layout : g_vk_ctx.blit_pipeline_layout;
     gp_ci.renderPass = rp; gp_ci.subpass = 0;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
@@ -720,11 +888,17 @@ static VkPipeline create_blit_pipeline_no_msaa(VkFormat format, int blend_group)
     return create_blit_pipeline_internal(format, blend_group, 1);
 }
 
+static VkPipeline create_blit_pipeline_native_msaa(VkFormat format, int blend_group)
+{
+    return create_blit_pipeline_internal(format, blend_group, 2);
+}
+
 VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group)
 {
     for (int i = 0; i < g_vk_ctx.pipeline_cache_count; i++) {
         if (g_vk_ctx.pipeline_cache[i].format == format &&
-            g_vk_ctx.pipeline_cache[i].blend_group == blend_group)
+            g_vk_ctx.pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.pipeline_cache[i].mode == 0)
             return g_vk_ctx.pipeline_cache[i].pipeline;
     }
 
@@ -733,6 +907,7 @@ VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group)
         g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].pipeline = pipeline;
         g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].format = format;
         g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].mode = 0;
         g_vk_ctx.pipeline_cache_count++;
     }
     return pipeline;
@@ -775,7 +950,7 @@ VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group)
     for (int i = 0; i < g_vk_ctx.pipeline_cache_count; i++) {
         if (g_vk_ctx.pipeline_cache[i].format == format &&
             g_vk_ctx.pipeline_cache[i].blend_group == blend_group &&
-            g_vk_ctx.pipeline_cache[i].no_msaa)
+            g_vk_ctx.pipeline_cache[i].mode == 1)
             return g_vk_ctx.pipeline_cache[i].pipeline;
     }
 
@@ -784,7 +959,27 @@ VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group)
         g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].pipeline = pipeline;
         g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].format = format;
         g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].blend_group = blend_group;
-        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].no_msaa = 1;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].mode = 1;
+        g_vk_ctx.pipeline_cache_count++;
+    }
+    return pipeline;
+}
+
+VkPipeline vg_lite_vulkan_get_pipeline_native_msaa(VkFormat format, int blend_group)
+{
+    for (int i = 0; i < g_vk_ctx.pipeline_cache_count; i++) {
+        if (g_vk_ctx.pipeline_cache[i].format == format &&
+            g_vk_ctx.pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.pipeline_cache[i].mode == 2)
+            return g_vk_ctx.pipeline_cache[i].pipeline;
+    }
+
+    VkPipeline pipeline = create_blit_pipeline_native_msaa(format, blend_group);
+    if (pipeline && g_vk_ctx.pipeline_cache_count < MAX_PIPELINE_CACHE) {
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].pipeline = pipeline;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].format = format;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.pipeline_cache[g_vk_ctx.pipeline_cache_count].mode = 2;
         g_vk_ctx.pipeline_cache_count++;
     }
     return pipeline;
@@ -820,6 +1015,8 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
 
     g_vk_ctx.current_fb = fb;
     g_vk_ctx.current_fb_image = internal->image;
+    g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
+    g_vk_ctx.current_resolve_image = VK_NULL_HANDLE;
     g_vk_ctx.current_fb_view = internal->view;
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;

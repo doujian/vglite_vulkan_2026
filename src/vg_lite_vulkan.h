@@ -37,13 +37,16 @@ typedef struct {
     VkImage msaa_depth_image;
     VkImageView msaa_depth_view;
     VkDeviceMemory msaa_depth_memory;
+    VkImage resolve_image;
+    VkImageView resolve_view;
+    VkDeviceMemory resolve_memory;
 } buffer_internal_t;
 
 typedef struct {
     VkPipeline pipeline;
     VkFormat format;
     int blend_group;
-    int no_msaa;
+    int mode;  /* 0 = blit.frag shader-blend MSAA; 1 = native no-MSAA; 2 = native + MSAA hardware-blend */
 } pipeline_cache_entry_t;
 
 typedef struct {
@@ -61,6 +64,8 @@ typedef struct {
     VkRenderPass render_pass;
     VkImageView current_fb_view;
     VkImage current_fb_image;
+    VkImage current_msaa_color_image;
+    VkImage current_resolve_image;
     uint32_t current_fb_width;
     uint32_t current_fb_height;
     int current_fb_is_no_msaa;
@@ -154,6 +159,8 @@ vg_lite_error_t vg_lite_vulkan_submit_command(int wait);
 int vg_lite_blend_to_group(vg_lite_blend_t blend);
 VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group);
 VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group);
+VkPipeline vg_lite_vulkan_get_pipeline_native_msaa(VkFormat format, int blend_group);
+vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler);
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_init_pattern_pipeline(VkFormat format);
