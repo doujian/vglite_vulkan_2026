@@ -695,7 +695,7 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
     return VG_LITE_SUCCESS;
 }
 
-void vg_lite_vulkan_flush_blits(void)
+void vg_lite_vulkan_flush_render_pass(void)
 {
     if (g_vk_ctx.current_fb) {
         vg_lite_vulkan_end_render_pass();

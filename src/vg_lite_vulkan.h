@@ -151,7 +151,12 @@ vg_lite_error_t vg_lite_vulkan_destroy(void);
 
 vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target);
 vg_lite_error_t vg_lite_vulkan_end_render_pass(void);
-void vg_lite_vulkan_flush_blits(void);
+/* End the currently-active render pass (if any), resolving the MSAA color
+ * attachment to the OPTIMAL intermediate and copying it to the LINEAR target.
+ * Called by clear/blit/draw/pattern/grad/free/finish before starting a new
+ * render pass or submitting, to flush deferred rendering and make the target's
+ * host-visible memory up-to-date. */
+void vg_lite_vulkan_flush_render_pass(void);
 
 vg_lite_error_t vg_lite_vulkan_begin_command(void);
 vg_lite_error_t vg_lite_vulkan_submit_command(int wait);

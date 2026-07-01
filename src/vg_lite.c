@@ -246,7 +246,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
-    vg_lite_vulkan_flush_blits();
+    vg_lite_vulkan_flush_render_pass();
     vg_lite_vulkan_submit_command(1);
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
     if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
@@ -310,7 +310,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     }
 
     vg_lite_vulkan_begin_command();
-    vg_lite_vulkan_flush_blits();
+    vg_lite_vulkan_flush_render_pass();
     vg_lite_vulkan_set_render_target(target);
 
     VkClearRect clear_rect;
@@ -484,7 +484,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
     vg_lite_vulkan_begin_command();
     if (!native_blend) {
-        vg_lite_vulkan_flush_blits();
+        vg_lite_vulkan_flush_render_pass();
         vg_lite_vulkan_end_render_pass();
     }
 
@@ -604,7 +604,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
             g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = desc_set;
         } else {
             /* Overflow safety: flush everything, then track current desc set */
-            vg_lite_vulkan_flush_blits();
+            vg_lite_vulkan_flush_render_pass();
             vg_lite_vulkan_submit_command(1);
             for (int i = 0; i < g_vk_ctx.pending_desc_count; i++)
                 VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &g_vk_ctx.pending_desc_sets[i]));
