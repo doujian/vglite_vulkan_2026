@@ -20,7 +20,7 @@ src/shader_loader.c      - Runtime .spv file loader (multi-path search, replaces
 src/shader_loader.h      - Shader loader API: load_shader_module()
 shaders/blit.vert        - Blit vertex shader (full-screen triangle)
 shaders/blit.frag        - Blit fragment shader (shader-blend path, MSAA)
-shaders/blit_native.frag - Blit fragment shader (pipeline-blend path, no MSAA)
+shaders/blit_native.frag - Blit fragment shader (hardware-blend path, 4x MSAA + seed)
 shaders/draw.vert        - Draw vertex shader
 shaders/draw.frag        - Draw fragment shader
 shaders/gradient.vert    - Linear gradient vertex shader
@@ -57,10 +57,10 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 
 | Path | Shader | MSAA | Blend | Supported Targets |
 |------|--------|------|-------|-------------------|
-| Native blend | `blit_native.frag` | No | Vulkan pipeline blend | BGRA8888, BGR565 |
-| Shader blend | `blit.frag` | 4x | Shader-based | All formats |
+| Native blend | `blit_native.frag` | 4x | Vulkan hardware pipeline blend + target seeding | BGRA8888, BGR565, RGBA8888, RGB565, A8, L8 |
+| Shader blend | `blit.frag` | 4x | Shader-based (temp copy for dst) | All formats |
 
-Native blend is used for NONE and SRC_OVER on BGRA8888/BGR565 targets. All other format/blend combinations fall back to shader blend.
+Native blend is used for NONE/SRC_OVER/DST_OVER/ADDITIVE/SUBTRACT on common formats. It uses 4x MSAA with hardware pipeline blend. A seed draw copies the target's content into the MSAA at the start of each new render pass, so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). All other format/blend combinations use shader blend (also 4x MSAA, but computes blend in the shader with a temp copy of the target as dst).
 
 ## Build
 
@@ -96,8 +96,8 @@ This allows shader modifications without recompiling C code — just rebuild sha
 | test_clear_unit | Clear unit test with expected buffer | PASS (100%) |
 | test_clear_dl | 1920x1080 RGB565 clear | PASS |
 | test_align16 | 16-pixel alignment check | PASS |
-| test_draw_image | 72 cases: src/dst formats × image modes | PASS |
-| test_recolor | RECOLOR mode with rotate/scale/translate | PASS |
+| test_draw_image | 72 cases: src/dst formats × image modes | FAIL (BGR565 not supported as color attachment on this GPU) |
+| test_recolor | RECOLOR mode with rotate/scale/translate | FAIL (BGR565 not supported as color attachment on this GPU) |
 | test_tiled | Tiled rendering test | PASS |
 | test_gfx1 | Full buffer clear | PASS |
 | test_gfx2 / test_gfx3 | Scale/rotate path draw | PASS |
@@ -112,11 +112,11 @@ This allows shader modifications without recompiling C code — just rebuild sha
 | test_scissor | Scissor clip test: clear + draw within scissor region | PASS |
 | test_radialGrad | Radial gradient, 4 spread modes (PAD/REPEAT/REFLECT/FILL) | PASS (307200/307200 each) |
 | test_imgA8 | A8 source image blit | FAIL (pre-existing, alpha mismatch) |
-| test_rotate | Rotate blit (RGB565) | FAIL (pre-existing, golden mismatch) |
+| test_rotate | Rotate blit (RGB565) | PASS (fixed: discard out-of-bounds UVs) |
 | test_scale | Scale blit with golden comparison | FAIL (pre-existing, golden mismatch) |
 | test_sft_blit | Full blend mode coverage | FAIL (pre-existing, crash) |
 
-**Summary: 20 PASS / 4 FAIL (pre-existing)**
+**Summary: 19 PASS / 5 FAIL**
 
 ## Expected Buffer Tracker
 
