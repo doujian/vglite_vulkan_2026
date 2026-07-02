@@ -114,7 +114,7 @@ uint32_t pack_pixel(vg_lite_buffer_format_t format, uint32_t r, uint32_t g, uint
     case VG_LITE_RGB565:
         return ((r & 0xf8) >> 3) | ((g & 0xfc) << 3) | ((b & 0xf8) << 8);
     case VG_LITE_BGR565:
-        return ((b & 0xf8) << 8) | ((g & 0xfc) << 3) | (r >> 3);
+        return ((b & 0xf8) >> 3) | ((g & 0xfc) << 3) | ((r & 0xf8) << 8);
     case VG_LITE_RGBA4444:
         return ((r & 0xf0) >> 4) | (g & 0xf0) | ((b & 0xf0) << 4) | ((a & 0xf0) << 8);
     case VG_LITE_BGRA4444:
@@ -149,35 +149,39 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
     switch (buffer->format) {
     case VG_LITE_RGB565: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        /* VK_FORMAT_B5G6R5: B in bits 15-11, G in 10-5, R in 4-0 */
+        uint8_t b = (p >> 11) & 0x1F;
+        uint8_t g = (p >> 5) & 0x3F;
+        uint8_t r = p & 0x1F;
+        return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
+    }
+    case VG_LITE_BGR565: {
+        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        /* VK_FORMAT_R5G6B5: R in bits 15-11, G in 10-5, B in 4-0 */
         uint8_t r = (p >> 11) & 0x1F;
         uint8_t g = (p >> 5) & 0x3F;
         uint8_t b = p & 0x1F;
         return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
     }
-    case VG_LITE_BGR565: {
-        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        uint8_t b5 = (p >> 11) & 0x1F;
-        uint8_t g6 = (p >> 5) & 0x3F;
-        uint8_t r5 = p & 0x1F;
-        return ((r5 << 3) | (r5 >> 2)) | (((g6 << 2) | (g6 >> 4)) << 8) | (((b5 << 3) | (b5 >> 2)) << 16) | (0xFF << 24);
-    }
     case VG_LITE_RGBA4444: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        uint8_t r = (p >> 4) & 0xF;
-        uint8_t g = p & 0xF;
+        /* VGLite RGBA4444: R in bits 3:0, G in 7:4, B in 11:8, A in 15:12 */
+        uint8_t r = p & 0xF;
+        uint8_t g = (p >> 4) & 0xF;
         uint8_t b = (p >> 8) & 0xF;
         uint8_t a = (p >> 12) & 0xF;
-        return ((r << 4) | (r >> 0)) | (((g << 4) | (g >> 0)) << 8) |
-               (((b << 4) | (b >> 0)) << 16) | (((a << 4) | (a >> 0)) << 24);
+        return ((r << 4) | r) | (((g << 4) | g) << 8) |
+               (((b << 4) | b) << 16) | (((a << 4) | a) << 24);
     }
     case VG_LITE_BGRA4444: {
         uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        uint8_t b = (p >> 4) & 0xF;
-        uint8_t g = p & 0xF;
+        /* VGLite BGRA4444: B in bits 3:0, G in 7:4, R in 11:8, A in 15:12 */
+        uint8_t b = p & 0xF;
+        uint8_t g = (p >> 4) & 0xF;
         uint8_t r = (p >> 8) & 0xF;
         uint8_t a = (p >> 12) & 0xF;
-        return ((r << 4) | (r >> 0)) | (((g << 4) | (g >> 0)) << 8) |
-               (((b << 4) | (b >> 0)) << 16) | (((a << 4) | (a >> 0)) << 24);
+        return ((r << 4) | r) | (((g << 4) | g) << 8) |
+               (((b << 4) | b) << 16) | (((a << 4) | a) << 24);
     }
     case VG_LITE_BGRA8888:
     case VG_LITE_ARGB8888: {
@@ -593,8 +597,12 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
                 er = (r5 << 3) | (r5 >> 2); eg = (g6 << 2) | (g6 >> 4); eb_ = (b5 << 3) | (b5 >> 2);
                 ea = 0xFF; aa = 0xFF;
             } else if (is_4444) {
+                /* GPU expands 4-bit channels as v*17, CPU expected uses (v>>4)<<4.
+                 * Quantize both actual and expected to 4-bit range for fair comparison. */
                 er = (er >> 4) << 4; eg = (eg >> 4) << 4;
                 eb_ = (eb_ >> 4) << 4; ea = (ea >> 4) << 4;
+                ar = (ar >> 4) << 4; ag = (ag >> 4) << 4;
+                ab = (ab >> 4) << 4; aa = (aa >> 4) << 4;
             }
 
             if (abs(ar - er) > tolerance || abs(ag - eg) > tolerance ||

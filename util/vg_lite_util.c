@@ -69,7 +69,8 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
     int channels = 4;
     int bpp = 32;
     switch (buffer->format) {
-    case VG_LITE_RGB565: case VG_LITE_BGR565: bpp = 16; channels = 3; break;
+    case VG_LITE_RGB565: case VG_LITE_BGR565:
+    case VG_LITE_RGBA4444: case VG_LITE_BGRA4444: bpp = 16; channels = 3; break;
     case VG_LITE_A8: case VG_LITE_L8: bpp = 8; channels = 1; break;
     default: break;
     }
@@ -80,6 +81,7 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
     int is_bgra = (buffer->format == VG_LITE_BGRA8888 ||
                     buffer->format == VG_LITE_BGRX8888 ||
                     buffer->format == VG_LITE_BGR565 ||
+                    buffer->format == VG_LITE_BGRA4444 ||
                     buffer->format == VG_LITE_ARGB8888);
     unsigned char *src = (unsigned char *)buffer->memory;
     for (int y = 0; y < buffer->height; y++) {
@@ -102,14 +104,29 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
             } else if (bpp == 16) {
                 si += x * 2;
                 uint16_t p = *(uint16_t*)(src + si);
-                if (is_bgra) {
-                    rgba[di+0] = (unsigned char)((p & 0x1F) * 255 / 31);
-                    rgba[di+1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
-                    rgba[di+2] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
-                } else {
+                if (buffer->format == VG_LITE_RGBA4444 || buffer->format == VG_LITE_BGRA4444) {
+                    /* VGLite 4444: channel at bits 3:0 is first-named, 7:4 is G, 11:8 is third, 15:12 is A */
+                    if (buffer->format == VG_LITE_BGRA4444) {
+                        /* B in 3:0, G in 7:4, R in 11:8, A in 15:12 */
+                        rgba[di+2] = (unsigned char)((p & 0xF) * 17);
+                        rgba[di+1] = (unsigned char)(((p >> 4) & 0xF) * 17);
+                        rgba[di+0] = (unsigned char)(((p >> 8) & 0xF) * 17);
+                    } else {
+                        /* RGBA4444: R in 3:0, G in 7:4, B in 11:8, A in 15:12 */
+                        rgba[di+0] = (unsigned char)((p & 0xF) * 17);
+                        rgba[di+1] = (unsigned char)(((p >> 4) & 0xF) * 17);
+                        rgba[di+2] = (unsigned char)(((p >> 8) & 0xF) * 17);
+                    }
+                } else if (is_bgra) {
+                    /* VG_LITE_BGR565 -> VK_FORMAT_R5G6B5: R in bits 15-11, G in 10-5, B in 4-0 */
                     rgba[di+0] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
                     rgba[di+1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
                     rgba[di+2] = (unsigned char)((p & 0x1F) * 255 / 31);
+                } else {
+                    /* VG_LITE_RGB565 -> VK_FORMAT_B5G6R5: B in bits 15-11, G in 10-5, R in 4-0 */
+                    rgba[di+0] = (unsigned char)((p & 0x1F) * 255 / 31);
+                    rgba[di+1] = (unsigned char)(((p >> 5) & 0x3F) * 255 / 63);
+                    rgba[di+2] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);
                 }
                 rgba[di+3] = 255;
             } else {
