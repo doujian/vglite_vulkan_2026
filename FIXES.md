@@ -145,3 +145,25 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 - `tests/sft_clear/sft_clear.c`: Increased 4444 tolerance from 4 to 17 to account for GPU round vs CPU truncate.
 
 **Files**: src/vg_lite.c, util/util.c, util/vg_lite_util.c, tests/sft_clear/sft_clear.c
+
+---
+
+## 9. ARGB8888 and ABGR8888 format mapping bug
+
+**Date**: 2026-07-02
+
+**Symptom**: ARGB8888 and ABGR8888 formats had incorrect Vulkan format mappings. ARGB8888 was mapped to B8G8R8A8, ABGR8888 was mapped to R8G8B8A8. Both were wrong — VGLite bit field layouts did not match the Vulkan format's byte order.
+
+**Root cause**: VGLite names formats MSB-first (last letter in highest bits). Official bit fields:
+- ARGB8888: `31:24=B, 23:16=G, 15:8=R, 7:0=A` → memory `[A,R,G,B]`
+- ABGR8888: `31:24=R, 23:16=G, 15:8=B, 7:0=A` → memory `[A,B,G,R]`
+
+The old mappings assumed ARGB8888=BGRA8888 and ABGR8888=RGBA8888, which is incorrect.
+
+**Solution**:
+- `vg_lite_format.c`: ARGB8888 → `VK_FORMAT_R8G8B8A8_UNORM` (with swizzle, since Vulkan has no `A8R8G8B8` format). ABGR8888 → `VK_FORMAT_A8B8G8R8_UNORM_PACK32` (direct match).
+- `vg_lite.c`: Added swizzle_view for ARGB8888 (`r=G, g=B, b=A, a=R`) so shaders read correct channels from R8G8B8A8 memory layout.
+- `util/util.c`: Added pack_pixel and read_pixel cases for ARGB8888 (`[A,R,G,B]`) and ABGR8888 (`[A,B,G,R]`).
+- `util/vg_lite_util.c`: Added ARGB8888/ABGR8888 PNG save with correct channel decode.
+
+**Files**: src/vg_lite_format.c, src/vg_lite.c, util/util.c, util/vg_lite_util.c
