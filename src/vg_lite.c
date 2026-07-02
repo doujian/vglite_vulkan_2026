@@ -191,6 +191,24 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_B;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
+    } else if (buffer->format == VG_LITE_RGBA4444) {
+        /* VK R4G4B4A4: R=15:12, G=11:8, B=7:4, A=3:0
+         * VGLite RGBA4444: A=15:12, B=11:8, G=7:4, R=3:0
+         * Swizzle: shader.r=vkA, shader.g=vkB, shader.b=vkG, shader.a=vkR */
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_A;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_B;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_G;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
+    } else if (buffer->format == VG_LITE_BGRA4444) {
+        /* VK B4G4R4A4: B=15:12, G=11:8, R=7:4, A=3:0
+         * VGLite BGRA4444: A=15:12, R=11:8, G=7:4, B=3:0
+         * Swizzle: shader.r=vkR, shader.g=vkG, shader.b=vkA, shader.a=vkB */
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_R;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_G;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_A;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_B;
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     }
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
@@ -299,6 +317,31 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
         clear_att.clearValue.color.float32[1] = 0.0f;
         clear_att.clearValue.color.float32[2] = 0.0f;
         clear_att.clearValue.color.float32[3] = 1.0f;
+    } else if (target->format == VG_LITE_RGB565) {
+        /* VK_FORMAT_B5G6R5_UNORM_PACK16: B in high bits, R in low bits.
+         * vkCmdClearAttachments on some drivers (e.g. Intel Iris Xe) writes
+         * float32[0] to the high bits regardless of format, which matches R5G6B5
+         * layout but not B5G6R5. Swap R and B clear values to compensate. */
+        clear_att.clearValue.color.float32[0] = (float)b / 255.0f;
+        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
+        clear_att.clearValue.color.float32[2] = (float)r / 255.0f;
+        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
+    } else if (target->format == VG_LITE_RGBA4444) {
+        /* VK_FORMAT_R4G4B4A4_UNORM_PACK16: R in bits 15:12, G in 11:8, B in 7:4, A in 3:0.
+         * VGLite RGBA4444: R in bits 3:0, G in 7:4, B in 11:8, A in 15:12.
+         * Remap clear channels so GPU writes VGLite-compatible layout. */
+        clear_att.clearValue.color.float32[0] = (float)a / 255.0f;  /* VK ch0(R,15:12) <- VGLite A */
+        clear_att.clearValue.color.float32[1] = (float)b / 255.0f;  /* VK ch1(G,11:8)  <- VGLite B */
+        clear_att.clearValue.color.float32[2] = (float)g / 255.0f;  /* VK ch2(B,7:4)   <- VGLite G */
+        clear_att.clearValue.color.float32[3] = (float)r / 255.0f;  /* VK ch3(A,3:0)   <- VGLite R */
+    } else if (target->format == VG_LITE_BGRA4444) {
+        /* VK_FORMAT_B4G4R4A4_UNORM_PACK16: B in bits 15:12, G in 11:8, R in 7:4, A in 3:0.
+         * VGLite BGRA4444: B in bits 3:0, G in 7:4, R in 11:8, A in 15:12.
+         * Remap clear channels so GPU writes VGLite-compatible layout. */
+        clear_att.clearValue.color.float32[0] = (float)a / 255.0f;  /* VK ch0(B,15:12) <- VGLite A */
+        clear_att.clearValue.color.float32[1] = (float)r / 255.0f;  /* VK ch1(G,11:8)  <- VGLite R */
+        clear_att.clearValue.color.float32[2] = (float)g / 255.0f;  /* VK ch2(R,7:4)   <- VGLite G */
+        clear_att.clearValue.color.float32[3] = (float)b / 255.0f;  /* VK ch3(A,3:0)   <- VGLite B */
     } else {
         /* VkClearValue channels are format-independent per Vulkan spec:
          * [0]=R value, [1]=G value, [2]=B value, [3]=A value
