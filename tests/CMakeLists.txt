@@ -88,3 +88,9 @@ add_dependencies(test_scissor spirv_compilation)
 add_executable(test_blit_chain blit_chain/blit_chain.c)
 add_dependencies(test_blit_chain spirv_compilation)
 
+add_executable(test_blit_mixed blit_mixed/blit_mixed.c)
+add_dependencies(test_blit_mixed spirv_compilation)
+
+add_executable(test_bgr565_clear test_bgr565_clear/test_bgr565_clear.c)
+add_dependencies(test_bgr565_clear spirv_compilation)
+

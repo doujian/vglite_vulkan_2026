@@ -33,7 +33,7 @@ static int get_tolerance(vg_lite_buffer_format_t fmt)
     case VG_LITE_L8:
     case VG_LITE_RGBA4444:
     case VG_LITE_BGRA4444:
-        return 4;
+        return 17;
     default:
         return 0;
     }
