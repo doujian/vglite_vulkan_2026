@@ -44,8 +44,8 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     case VG_LITE_A8:       return VK_FORMAT_R8_UNORM;
     case VG_LITE_L8:       return VK_FORMAT_R8_UNORM;
     case VG_LITE_INDEX_8:  return VK_FORMAT_R8_UNORM;
-    case VG_LITE_ARGB8888: return VK_FORMAT_B8G8R8A8_UNORM;
-    case VG_LITE_ABGR8888: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VG_LITE_ARGB8888: return VK_FORMAT_R8G8B8A8_UNORM;
+    case VG_LITE_ABGR8888: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
     case VG_LITE_RGBA4444: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
     case VG_LITE_BGRA4444: return VK_FORMAT_B4G4R4A4_UNORM_PACK16;
     default:               return VK_FORMAT_B8G8R8A8_UNORM;

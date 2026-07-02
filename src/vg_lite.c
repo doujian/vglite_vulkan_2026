@@ -209,6 +209,16 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_A;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_B;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
+    } else if (buffer->format == VG_LITE_ARGB8888) {
+        /* VK R8G8B8A8: byte0=R,byte1=G,byte2=B,byte3=A
+         * VGLite ARGB8888 mem [A,R,G,B]: byte0=A,byte1=R,byte2=G,byte3=B
+         * Swizzle: shader.r=G(byte1=VGR), shader.g=B(byte2=VGG),
+         *          shader.b=A(byte3=VGB), shader.a=R(byte0=VGA) */
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_G;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_B;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_A;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     }
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;

@@ -81,8 +81,9 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
     int is_bgra = (buffer->format == VG_LITE_BGRA8888 ||
                     buffer->format == VG_LITE_BGRX8888 ||
                     buffer->format == VG_LITE_BGR565 ||
-                    buffer->format == VG_LITE_BGRA4444 ||
-                    buffer->format == VG_LITE_ARGB8888);
+                    buffer->format == VG_LITE_BGRA4444);
+    int is_argb = (buffer->format == VG_LITE_ARGB8888 ||
+                   buffer->format == VG_LITE_ABGR8888);
     unsigned char *src = (unsigned char *)buffer->memory;
     for (int y = 0; y < buffer->height; y++) {
         for (int x = 0; x < buffer->width; x++) {
@@ -95,6 +96,19 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
                     rgba[di+1] = src[si+1];
                     rgba[di+2] = src[si+0];
                     rgba[di+3] = src[si+3];
+                } else if (is_argb) {
+                    /* ARGB8888 mem [A,R,G,B], ABGR8888 mem [A,B,G,R] */
+                    if (buffer->format == VG_LITE_ARGB8888) {
+                        rgba[di+0] = src[si+1]; /* R */
+                        rgba[di+1] = src[si+2]; /* G */
+                        rgba[di+2] = src[si+3]; /* B */
+                        rgba[di+3] = src[si+0]; /* A */
+                    } else { /* ABGR8888 mem [A,B,G,R] */
+                        rgba[di+0] = src[si+3]; /* R */
+                        rgba[di+1] = src[si+2]; /* G */
+                        rgba[di+2] = src[si+1]; /* B */
+                        rgba[di+3] = src[si+0]; /* A */
+                    }
                 } else {
                     rgba[di+0] = src[si+0];
                     rgba[di+1] = src[si+1];
