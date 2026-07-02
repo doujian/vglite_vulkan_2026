@@ -108,3 +108,40 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 **Result**: test_rotate 153600/153600 (100%), PASS.
 
 **Files**: shaders/blit_native.frag, util/util.c, tests/rotate/rotate.c
+
+---
+
+## 7. RGBX8888 format mapping bug
+
+**Date**: 2026-07-02
+
+**Symptom**: `test_sft_clear` SFT_Clear_002 format 0x402 (RGBX8888) had R/B channel swap on clear. Output showed R and B swapped vs expected.
+
+**Root cause**: VGLite RGBX8888 has memory layout `[R,G,B,X]` (R at LSB), but was mapped to `VK_FORMAT_B8G8R8A8` which has layout `[B,G,R,A]`. The R and B channels were reversed.
+
+**Solution**: Changed `VG_LITE_RGBX8888` mapping from `VK_FORMAT_B8G8R8A8_UNORM` to `VK_FORMAT_R8G8B8A8_UNORM` in `vg_lite_format.c`. Now memory layout matches: both are `[R,G,B,A]`.
+
+**Files**: src/vg_lite_format.c
+
+---
+
+## 8. RGBA4444/BGRA4444 clear color + read/write mismatch
+
+**Date**: 2026-07-02
+
+**Symptom**: `test_sft_clear` SFT_Clear_002 formats 0x406 (RGBA4444) and 0x407 (BGRA4444) had completely garbled clear colors (0% pixel match, masked by "skipped" logic). Hidden behind the test's fallback that assumes "driver does not support clear" when all pixels mismatch.
+
+**Root cause**: Three issues:
+1. **Clear color channel mismatch**: VGLite 4444 bit layout doesn't match any standard Vulkan 4444 format. VGLite RGBA4444 has R at bits 3:0, but VK R4G4B4A4 has R at bits 15:12. The `vkCmdClearAttachments` float32-to-channel mapping was wrong.
+2. **read_pixel R/G swap**: `read_pixel` extracted R from bits 7:4 and G from bits 3:0, but pack_pixel puts R at 3:0 and G at 7:4. They were inconsistent.
+3. **GPU rounding vs CPU truncation**: GPU converts float→4bit using round-to-nearest, but pack_pixel uses truncation. A difference of 1 in 4-bit space = 17 in 8-bit space.
+
+**Solution**:
+- `vg_lite.c`: Added clear color channel remap for RGBA4444 (`float32[0]=A,[1]=B,[2]=G,[3]=R`) and BGRA4444 (`float32[0]=A,[1]=R,[2]=G,[3]=B`) so GPU writes VGLite-compatible bit layout.
+- `util/util.c read_pixel`: Fixed RGBA4444 to read R from bits 3:0 (was 7:4), G from 7:4 (was 3:0). Same fix for BGRA4444 B/G.
+- `util/util.c vg_lite_expected_verify`: Added actual-value 4-bit quantization alongside expected-value quantization for fair comparison.
+- `src/vg_lite.c`: Added ImageView component swizzle for RGBA4444 (`r=A,g=B,b=G,a=R`) and BGRA4444 (`r=R,g=G,b=A,a=B`) so shader sampling reads correct channels.
+- `util/vg_lite_util.c`: Added 4444 PNG save support with correct channel decode.
+- `tests/sft_clear/sft_clear.c`: Increased 4444 tolerance from 4 to 17 to account for GPU round vs CPU truncate.
+
+**Files**: src/vg_lite.c, util/util.c, util/vg_lite_util.c, tests/sft_clear/sft_clear.c
