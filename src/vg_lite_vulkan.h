@@ -177,4 +177,6 @@ VkPipeline vg_lite_vulkan_get_grad_cover_pipeline(VkFormat format, int blend_gro
 
 VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format);
 
+VkSampler get_or_create_sampler(vg_lite_filter_t filter);
+
 #endif
