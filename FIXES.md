@@ -167,3 +167,41 @@ The old mappings assumed ARGB8888=BGRA8888 and ABGR8888=RGBA8888, which is incor
 - `util/vg_lite_util.c`: Added ARGB8888/ABGR8888 PNG save with correct channel decode.
 
 **Files**: src/vg_lite_format.c, src/vg_lite.c, util/util.c, util/vg_lite_util.c
+
+---
+
+## 10. PACK16 clear color remapping breaks in no-MSAA path
+
+**Date**: 2026-07-03
+
+**Symptom**: After switching `vg_lite_clear` from 4x MSAA to 1x no-MSAA render pass, `test_clear_dl` (RGB565) failed: got red (R=255, B=0) instead of expected blue (R=0, B=255). 0% pixel match.
+
+**Root cause**: The RGB565/RGBA4444/BGRA4444 clear color remapping in `vg_lite.c` was a driver-specific workaround for Intel Iris Xe, where `vkCmdClearAttachments` inside an MSAA render pass writes `float32[0]` to the high bits of PACK16 formats regardless of the format's channel order. In B5G6R5, high bits = B, so the workaround swapped R↔B (`float32[0]=b, [2]=r`). However, in the no-MSAA render pass, `vkCmdClearAttachments` follows the Vulkan spec correctly: `float32[0]` maps to the first named channel (R for B5G6R5). The MSAA workaround was now wrong — it put `b` in the R position, producing red instead of blue.
+
+**Solution**: Changed `vg_lite.c` PACK16 format clear color branches to use standard Vulkan mapping:
+- RGB565 (VK_FORMAT_B5G6R5): `float32[0]=r, [1]=g, [2]=b` (standard, was swapped)
+- RGBA4444 (VK_FORMAT_R4G4B4A4): `float32[0]=r, [1]=g, [2]=b, [3]=a` (standard, was fully remapped)
+- BGRA4444 (VK_FORMAT_B4G4R4A4): `float32[0]=b, [1]=g, [2]=r, [3]=a` (standard, was fully remapped)
+
+Each branch has a comment noting the no-MSAA path follows the Vulkan spec while the MSAA path needs the Intel Iris Xe workaround.
+
+**Files**: src/vg_lite.c
+
+---
+
+## 11. Missing MSAA seeding in draw path after clear no-MSAA optimization
+
+**Date**: 2026-07-03
+
+**Symptom**: After switching `vg_lite_clear` to 1x no-MSAA render pass, `test_linearGrad` dropped from 100% to 37% pixel match and `test_radialGrad` from 81% to 0% pixel match. The clear operation correctly writes to the target image, but subsequent draw operations overwrite the clear result with stale MSAA content.
+
+**Root cause**: The draw path (`vg_lite_draw.c`) calls `flush_render_pass()` → `set_render_target(target)` which creates a new 4x MSAA render pass with `loadOp=LOAD`. The MSAA color image retains stale content from a previous MSAA RP (or undefined on first use). Since the draw pipeline uses `blendEnable=VK_FALSE` (stencil+cover technique), it doesn't read dst for blending — but `end_render_pass` resolves the **entire** MSAA surface back to the target, overwriting clear's result in non-drawn areas with stale MSAA content. Unlike the blit path (which calls `seed_msaa` to copy target content into the MSAA image when creating a new RP), the draw path never called `seed_msaa` — it didn't need to before because clear always used the MSAA path.
+
+**Solution**: Added conditional `seed_msaa` in all 3 draw call sites (`vg_lite_draw.c` L377-388, L616-628, L861-873):
+1. Capture `prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa` **before** `flush_render_pass()` (flush resets it to 0)
+2. After `set_render_target(target)`, if `prev_was_no_msaa` → call `vg_lite_vulkan_seed_msaa(target, nearest_sampler)`
+3. The seed only fires when transitioning from a no-MSAA RP to an MSAA RP on the same target — MSAA reuse and pure MSAA→MSAA transitions are unaffected.
+
+Also exposed `get_or_create_sampler()` (was static in `vg_lite.c`) via `vg_lite_vulkan.h` so the draw path can create a nearest sampler for seeding.
+
+**Files**: src/vg_lite.c, src/vg_lite_vulkan.h, src/vg_lite_draw.c
