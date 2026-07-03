@@ -72,6 +72,10 @@ add_dependencies(test_recolor spirv_compilation)
 
 add_executable(test_tiled tiled/tiled.c)
 add_dependencies(test_tiled spirv_compilation)
+add_custom_command(TARGET test_tiled POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/tiled/golden
+    $<TARGET_FILE_DIR:test_tiled>/golden)
 
 add_executable(test_linearGrad linearGrad/linearGrad.c)
 add_dependencies(test_linearGrad spirv_compilation)

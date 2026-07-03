@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "stb_image.h"
+
 static int fb_width = 256, fb_height = 256;
 
 static vg_lite_buffer_t buffer;
@@ -34,6 +36,48 @@ static vg_lite_path_t path = {
     path_data,
     1
 };
+
+/* Compare an output PNG against a golden reference.
+ * Returns 0 on match, -1 on load failure, mismatch count otherwise. */
+static int compare_png(const char *golden_path, const char *output_path, int tolerance)
+{
+    int gw, gh, gn;
+    int ow, oh, on;
+
+    unsigned char *g = stbi_load(golden_path, &gw, &gh, &gn, 4);
+    if (!g) {
+        printf("  Failed to load golden: %s\n", golden_path);
+        return -1;
+    }
+    unsigned char *o = stbi_load(output_path, &ow, &oh, &on, 4);
+    if (!o) {
+        printf("  Failed to load output: %s\n", output_path);
+        stbi_image_free(g);
+        return -1;
+    }
+
+    if (gw != ow || gh != oh) {
+        printf("  Size mismatch: golden %dx%d, output %dx%d\n", gw, gh, ow, oh);
+        stbi_image_free(g);
+        stbi_image_free(o);
+        return -1;
+    }
+
+    int total = gw * gh;
+    int mismatch = 0;
+    for (int i = 0; i < total * 4; i += 4) {
+        int dr = abs((int)g[i]     - (int)o[i]);
+        int dg = abs((int)g[i + 1] - (int)o[i + 1]);
+        int db = abs((int)g[i + 2] - (int)o[i + 2]);
+        int da = abs((int)g[i + 3] - (int)o[i + 3]);
+        if (dr > tolerance || dg > tolerance || db > tolerance || da > tolerance)
+            mismatch++;
+    }
+
+    stbi_image_free(g);
+    stbi_image_free(o);
+    return mismatch;
+}
 
 static vg_lite_error_t Tiled_001(void)
 {
@@ -74,7 +118,30 @@ static vg_lite_error_t Tiled_001(void)
     CHECK_ERROR(vg_lite_finish());
     vg_lite_save_png("Tiled_001_1.png", &buffer);
 
-    printf("  Tiled_001 PASSED\n");
+    /* Golden verification */
+    int mismatch0 = compare_png("golden/Tiled_001_0.png", "Tiled_001_0.png", 2);
+    int mismatch1 = compare_png("golden/Tiled_001_1.png", "Tiled_001_1.png", 2);
+
+    if (mismatch0 < 0)
+        printf("  Tiled_001_0: golden not found — skipped\n");
+    else if (mismatch0 == 0)
+        printf("  Tiled_001_0: PASS (golden match)\n");
+    else
+        printf("  Tiled_001_0: FAIL (%d pixels differ from golden)\n", mismatch0);
+
+    if (mismatch1 < 0)
+        printf("  Tiled_001_1: golden not found — skipped\n");
+    else if (mismatch1 == 0)
+        printf("  Tiled_001_1: PASS (golden match)\n");
+    else
+        printf("  Tiled_001_1: FAIL (%d pixels differ from golden)\n", mismatch1);
+
+    if (mismatch0 > 0 || mismatch1 > 0) {
+        printf("  Tiled_001 FAILED (golden mismatch)\n");
+        error = VG_LITE_INVALID_ARGUMENT;  /* treat as failure */
+    } else {
+        printf("  Tiled_001 PASSED\n");
+    }
 
 ErrorHandler:
     if (tiled_buffer.handle) vg_lite_free(&tiled_buffer);
@@ -103,5 +170,5 @@ int main(void)
         printf("\n=== Results: 0 passed, 1 failed (error=%d) ===\n", error);
 
     vg_lite_close();
-    return 0;
+    return (error == VG_LITE_SUCCESS) ? 0 : -1;
 }
