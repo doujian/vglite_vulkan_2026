@@ -9,6 +9,14 @@
 #include "vg_lite_math.h"
 #include "shader_loader.h"
 
+/* Compile-time switch for blit native-blend MSAA.
+ * 1 = use 4x MSAA render pass (default)
+ * 0 = use 1x no-MSAA render pass (skip seed_msaa, lower overhead)
+ * Override with -DVGLITE_BLIT_MSAA=0 on the compile command line. */
+#ifndef VGLITE_BLIT_MSAA
+#define VGLITE_BLIT_MSAA 1
+#endif
+
 extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *t, vg_lite_path_t *p, 
                                          vg_lite_fill_t fl, vg_lite_matrix_t *m, 
                                          vg_lite_blend_t b, vg_lite_color_t c);
@@ -530,7 +538,11 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
     VkPipeline pipeline;
     if (native_blend)
+#if VGLITE_BLIT_MSAA
         pipeline = vg_lite_vulkan_get_pipeline_native_msaa(vkfmt, blend_group);
+#else
+        pipeline = vg_lite_vulkan_get_pipeline_no_msaa(vkfmt, blend_group);
+#endif
     else
         pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
@@ -550,6 +562,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     }
 
     VkSampler sampler = get_or_create_sampler(filter);
+#if VGLITE_BLIT_MSAA
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     vg_lite_vulkan_set_render_target(target);
     if (native_blend && g_vk_ctx.current_fb != prev_fb) {
@@ -558,6 +571,9 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
          * Skipped on RP reuse (deferred batching) to preserve accumulation. */
         vg_lite_vulkan_seed_msaa(target, sampler);
     }
+#else
+    vg_lite_vulkan_set_render_target_no_msaa(target);
+#endif
 
     VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
