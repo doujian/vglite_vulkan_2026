@@ -393,6 +393,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     clear_rect.baseArrayLayer = 0;
     clear_rect.layerCount = 1;
     vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
+    internal->msaa_needs_seed = 1;  /* no-MSAA RP wrote to target; flag for draw path */
     return VG_LITE_SUCCESS;
 }
 

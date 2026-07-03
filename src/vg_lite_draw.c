@@ -386,9 +386,10 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
             vlc_path_free(&vlc_path);
             return err;
         }
-        if (prev_was_no_msaa) {
+        if (prev_was_no_msaa || internal->msaa_needs_seed) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
+            internal->msaa_needs_seed = 0;
         }
     }
     
@@ -631,9 +632,10 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
             vlc_path_free(&vlc_path);
             return err;
         }
-        if (prev_was_no_msaa) {
+        if (prev_was_no_msaa || target_int->msaa_needs_seed) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
+            target_int->msaa_needs_seed = 0;
         }
     }
 
@@ -881,9 +883,10 @@ static vg_lite_error_t draw_grad_internal(
             vlc_path_free(&vlc_path);
             return err;
         }
-        if (prev_was_no_msaa) {
+        if (prev_was_no_msaa || internal->msaa_needs_seed) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
+            internal->msaa_needs_seed = 0;
         }
     }
 

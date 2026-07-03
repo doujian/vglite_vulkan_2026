@@ -224,3 +224,21 @@ Also exposed `get_or_create_sampler()` (was static in `vg_lite.c`) via `vg_lite_
 The `#ifndef` guard allows build-system override via `-DVGLITE_BLIT_MSAA=0`. Shader-blend path, clear path, and draw path are unaffected. MSAA=1 is byte-identical to pre-change code. Full 27-test suite verified identical results in both macro states (26 PASS, 1 pre-existing failure).
 
 **Files**: src/vg_lite.c
+
+---
+
+## 13. Draw path corrupts clear result after finish (cross-submission seed_msaa gap)
+
+**Date**: 2026-07-03
+
+**Symptom**: After `vg_lite_clear` (no-MSAA) followed by `vg_lite_finish`, a subsequent `vg_lite_draw` on the same target produces black background instead of the cleared color. Only affects the `test_tiled` pattern (clear → finish → draw → finish), not `test_clear` (clear → clear → finish, same buffer, same submission).
+
+**Root cause**: The `prev_was_no_msaa` check in `vg_lite_draw.c` reads `g_vk_ctx.current_fb_is_no_msaa` to detect when the previous RP was no-MSAA (requiring seed_msaa before MSAA draw). However, `vg_lite_finish()` calls `end_render_pass()` which resets `current_fb_is_no_msaa = 0`. When draw executes in a new command buffer submission after finish, `prev_was_no_msaa` is always 0 — seed_msaa is skipped, and the MSAA RP's `loadOp=LOAD` loads stale/undefined MSAA content. The subsequent `end_render_pass` resolve overwrites the target with this stale content, destroying clear's result.
+
+**Solution**: Added `int msaa_needs_seed` field to `buffer_internal_t` (`vg_lite_vulkan.h`). This per-buffer flag persists across command buffer submissions:
+1. **`vg_lite_clear`** (`vg_lite.c` L396): Sets `internal->msaa_needs_seed = 1` after `vkCmdClearAttachments`
+2. **Draw path** (`vg_lite_draw.c` L389, L635, L886): Changed condition from `if (prev_was_no_msaa)` to `if (prev_was_no_msaa || internal->msaa_needs_seed)`, and clears the flag after seeding: `internal->msaa_needs_seed = 0`
+
+The `prev_was_no_msaa` check still handles same-submission transitions (clear → draw without finish). The `msaa_needs_seed` flag handles cross-submission transitions (clear → finish → draw).
+
+**Files**: src/vg_lite.c, src/vg_lite_draw.c, src/vg_lite_vulkan.h

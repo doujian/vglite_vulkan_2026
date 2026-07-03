@@ -40,6 +40,7 @@ typedef struct {
     VkImage resolve_image;
     VkImageView resolve_view;
     VkDeviceMemory resolve_memory;
+    int msaa_needs_seed;  /* Set when no-MSAA RP wrote to target; draw must seed MSAA before use */
 } buffer_internal_t;
 
 typedef struct {
