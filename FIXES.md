@@ -205,3 +205,22 @@ Each branch has a comment noting the no-MSAA path follows the Vulkan spec while 
 Also exposed `get_or_create_sampler()` (was static in `vg_lite.c`) via `vg_lite_vulkan.h` so the draw path can create a nearest sampler for seeding.
 
 **Files**: src/vg_lite.c, src/vg_lite_vulkan.h, src/vg_lite_draw.c
+
+---
+
+## 12. Blit MSAA compile-time macro switch
+
+**Date**: 2026-07-03
+
+**Symptom**: Blit's native-blend path always uses 4x MSAA render pass, even when MSAA is not needed for correctness. Users need a way to toggle blit MSAA on/off at compile time to evaluate performance and correctness tradeoffs.
+
+**Root cause**: The blit path (`vg_lite.c` L533, L554, L555-560) hardcoded calls to `get_pipeline_native_msaa()`, `set_render_target()`, and `seed_msaa()` with no compile-time option to use the existing no-MSAA alternatives (`get_pipeline_no_msaa()`, `set_render_target_no_msaa()`). The no-MSAA infrastructure already existed and was proven by the prior clear optimization, but blit had no way to access it conditionally.
+
+**Solution**: Added `#ifndef VGLITE_BLIT_MSAA / #define VGLITE_BLIT_MSAA 1 / #endif` macro at the top of `vg_lite.c` (after includes). Three `#if VGLITE_BLIT_MSAA` / `#else` blocks wrap the native-blend path:
+1. **Pipeline** (L538-543): `get_pipeline_native_msaa()` (MSAA=1) vs `get_pipeline_no_msaa()` (MSAA=0)
+2. **Render target** (L565-573): `set_render_target()` + `prev_fb` capture (MSAA=1) vs `set_render_target_no_msaa()` (MSAA=0)
+3. **Seed MSAA** (inside #if block): seed_msaa call preserved only when MSAA=1; skipped when MSAA=0 (no MSAA image to seed)
+
+The `#ifndef` guard allows build-system override via `-DVGLITE_BLIT_MSAA=0`. Shader-blend path, clear path, and draw path are unaffected. MSAA=1 is byte-identical to pre-change code. Full 27-test suite verified identical results in both macro states (26 PASS, 1 pre-existing failure).
+
+**Files**: src/vg_lite.c
