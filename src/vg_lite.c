@@ -583,6 +583,11 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vg_lite_vulkan_flush_render_pass();
     if (src_int->msaa_dirty)
         vg_lite_vulkan_resolve_msaa_to_target(src_int);
+    /* Also resolve the target if it has pending MSAA writes (deferred copy).
+     * Without this, seed_msaa reads stale target image because the previous
+     * blit's result is still in resolve_image (not yet copied to target). */
+    if (target_int->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(target_int);
 
     /* Source image barrier: must be OUTSIDE the render pass. */
     VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
