@@ -242,3 +242,26 @@ The `#ifndef` guard allows build-system override via `-DVGLITE_BLIT_MSAA=0`. Sha
 The `prev_was_no_msaa` check still handles same-submission transitions (clear → draw without finish). The `msaa_needs_seed` flag handles cross-submission transitions (clear → finish → draw).
 
 **Files**: src/vg_lite.c, src/vg_lite_draw.c, src/vg_lite_vulkan.h
+
+---
+
+## 14. Deferred MSAA resolve+copy optimization
+
+**Date**: 2026-07-08
+
+**Symptom**: MSAA resolve+copy (resolve_image → LINEAR target) executed on every `end_render_pass` call, causing massive redundant overhead. For test_tiger (239 draws, 1 finish), 238 unnecessary resolve+copy operations were performed — each draw's `flush_render_pass` triggered a full resolve+copy even though the target wouldn't be read until finish.
+
+**Root cause**: `end_render_pass` unconditionally performed the full resolve pipeline (barrier → vkCmdCopyImage → barrier) for the MSAA path, regardless of whether any consumer needed the target content immediately.
+
+**Solution**: Added `msaa_dirty` flag to `buffer_internal_t` (+ `width`/`height` fields for resolve extent). `end_render_pass` now defers resolve+copy — it only marks `msaa_dirty = 1`. A new `vg_lite_vulkan_resolve_msaa_to_target()` function performs the actual resolve+copy lazily at copy-on-read sites:
+1. **Draw path** (vg_lite_draw.c, 3 sites): Resolves dirty target BEFORE `set_render_target` (outside active RP — vkCmdCopyImage is illegal inside RP)
+2. **set_render_target** (vg_lite_vulkan.c): Resolves old dirty target on switch
+3. **Blit src_bar** (vg_lite.c): Resolves source if dirty before texture read
+4. **create_temp_copy_image** (vg_lite.c): Resolves target before vkCmdCopyImage
+5. **finish/flush** (vg_lite.c): Resolves before submit
+6. **vg_lite_free** (vg_lite.c): Resolves before destroy, clears `current_fb_internal`
+7. **vg_lite_clear** (vg_lite.c): Sets `msaa_dirty = 0` (no-MSAA clear writes directly to target, resolve_image is stale)
+
+Added `current_fb_internal` pointer to `vk_context_t` for reverse lookup from VkImage to buffer_internal_t.
+
+**Files**: src/vg_lite_vulkan.h, src/vg_lite_vulkan.c, src/vg_lite.c, src/vg_lite_draw.c
