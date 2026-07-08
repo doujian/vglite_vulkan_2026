@@ -685,14 +685,13 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &msaa_barrier);
         }
 
-        if (g_vk_ctx.pending_fb_count < MAX_PENDING_FB) {
-            g_vk_ctx.pending_fb[g_vk_ctx.pending_fb_count++] = g_vk_ctx.current_fb;
-        } else {
-            /* Pending array full: submit to drain all deferred objects safely,
-             * then start a fresh command buffer for subsequent recording. */
+        /* Enqueue current FB for deferred destruction on next submit.
+         * If pending array is full, submit first to drain it, then enqueue. */
+        if (g_vk_ctx.pending_fb_count >= MAX_PENDING_FB) {
             vg_lite_vulkan_submit_command(1);
             vg_lite_vulkan_begin_command();
         }
+        g_vk_ctx.pending_fb[g_vk_ctx.pending_fb_count++] = g_vk_ctx.current_fb;
         g_vk_ctx.current_fb = VK_NULL_HANDLE;
         g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
         g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
