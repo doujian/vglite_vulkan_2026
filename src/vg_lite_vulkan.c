@@ -467,20 +467,7 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ti, NULL, NULL};
     vkUpdateDescriptorSets(g_vk_ctx.device, 1, &w, 0, NULL);
 
-    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = internal->image;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    /* Target image barrier now issued in set_render_target before RP begin. */
 
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, seed_pipe);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -592,7 +579,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     rpbi.renderArea.extent.height = target->height;
     rpbi.clearValueCount = 3;
     rpbi.pClearValues = clear_values;
-    
+
     vkCmdBeginRenderPass(g_vk_ctx.cmd_buf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     return VG_LITE_SUCCESS;
 }
@@ -684,7 +671,10 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
         if (g_vk_ctx.pending_fb_count < MAX_PENDING_FB) {
             g_vk_ctx.pending_fb[g_vk_ctx.pending_fb_count++] = g_vk_ctx.current_fb;
         } else {
-            vkDestroyFramebuffer(g_vk_ctx.device, g_vk_ctx.current_fb, NULL);
+            /* Pending array full: submit to drain all deferred objects safely,
+             * then start a fresh command buffer for subsequent recording. */
+            vg_lite_vulkan_submit_command(1);
+            vg_lite_vulkan_begin_command();
         }
         g_vk_ctx.current_fb = VK_NULL_HANDLE;
         g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
@@ -1013,6 +1003,17 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
         return VG_LITE_OUT_OF_MEMORY;
     }
 
+    /* Track RP for deferred destruction. no-MSAA RPs are created per-call
+     * (not cached), so each one must be queued for cleanup on submit. */
+    if (g_vk_ctx.pending_rp_count < MAX_PENDING_FB) {
+        g_vk_ctx.pending_rp[g_vk_ctx.pending_rp_count++] = rp;
+    } else {
+        /* Overflow: drain deferred objects, then track. */
+        vg_lite_vulkan_submit_command(1);
+        vg_lite_vulkan_begin_command();
+        g_vk_ctx.pending_rp[g_vk_ctx.pending_rp_count++] = rp;
+    }
+
     g_vk_ctx.current_fb = fb;
     g_vk_ctx.current_fb_image = internal->image;
     g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
@@ -1045,11 +1046,27 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
     rpbi.renderArea.extent.height = target->height;
     rpbi.clearValueCount = 0;
 
+    /* Transition target image to SHADER_READ so seed_msaa and draw can
+     * sample it as a texture. This barrier must be outside the render pass
+     * (Vulkan spec: barriers inside RP can only reference attachments). */
+    {
+        VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = internal->image;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+            VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    }
+
     vkCmdBeginRenderPass(g_vk_ctx.cmd_buf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
-    if (g_vk_ctx.pending_rp_count < MAX_PENDING_FB)
-        g_vk_ctx.pending_rp[g_vk_ctx.pending_rp_count++] = rp;
-    else
-        vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
     return VG_LITE_SUCCESS;
 }
 

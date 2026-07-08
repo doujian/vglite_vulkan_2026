@@ -563,19 +563,14 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     }
 
     VkSampler sampler = get_or_create_sampler(filter);
-#if VGLITE_BLIT_MSAA
-    VkFramebuffer prev_fb = g_vk_ctx.current_fb;
-    vg_lite_vulkan_set_render_target(target);
-    if (native_blend && g_vk_ctx.current_fb != prev_fb) {
-        /* New RP for a native+MSAA blit: seed the MSAA with the target's
-         * current content so the hardware-blend draw reads the right dst.
-         * Skipped on RP reuse (deferred batching) to preserve accumulation. */
-        vg_lite_vulkan_seed_msaa(target, sampler);
-    }
-#else
-    vg_lite_vulkan_set_render_target_no_msaa(target);
-#endif
 
+    /* Flush any active RP so the source barrier runs outside any render pass.
+     * For consecutive native-blend blits, the previous blit's RP is still
+     * open (deferred). This barrier references the source image which is NOT
+     * an attachment of the target's RP. */
+    vg_lite_vulkan_flush_render_pass();
+
+    /* Source image barrier: must be OUTSIDE the render pass. */
     VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
     src_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -589,6 +584,19 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
         0, NULL, 0, NULL, 1, &src_bar);
+
+#if VGLITE_BLIT_MSAA
+    VkFramebuffer prev_fb = g_vk_ctx.current_fb;
+    vg_lite_vulkan_set_render_target(target);
+    if (native_blend && g_vk_ctx.current_fb != prev_fb) {
+        /* New RP for a native+MSAA blit: seed the MSAA with the target's
+         * current content so the hardware-blend draw reads the right dst.
+         * Skipped on RP reuse (deferred batching) to preserve accumulation. */
+        vg_lite_vulkan_seed_msaa(target, sampler);
+    }
+#else
+    vg_lite_vulkan_set_render_target_no_msaa(target);
+#endif
 
     float shader_mat[3][3];
     compute_blit_shader_matrix(matrix, source->width, source->height, target->width, target->height, shader_mat);
