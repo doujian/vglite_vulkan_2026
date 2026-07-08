@@ -576,33 +576,40 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
     VkSampler sampler = get_or_create_sampler(filter);
 
-    /* Flush any active RP so the source barrier runs outside any render pass.
-     * For consecutive native-blend blits, the previous blit's RP is still
-     * open (deferred). This barrier references the source image which is NOT
-     * an attachment of the target's RP. */
-    vg_lite_vulkan_flush_render_pass();
-    if (src_int->msaa_dirty)
-        vg_lite_vulkan_resolve_msaa_to_target(src_int);
-    /* Also resolve the target if it has pending MSAA writes (deferred copy).
-     * Without this, seed_msaa reads stale target image because the previous
-     * blit's result is still in resolve_image (not yet copied to target). */
-    if (target_int->msaa_dirty)
-        vg_lite_vulkan_resolve_msaa_to_target(target_int);
+    /* Only flush + resolve when the source or target has pending MSAA
+     * writes that haven't been copied to the LINEAR image yet.
+     * For consecutive native-blend blits to the same target with simple
+     * CPU-filled sources (msaa_dirty=0), this is a no-op → RP stays open
+     * and set_render_target's reuse path fires (L500). */
+    int need_flush = (src_int->msaa_dirty || target_int->msaa_dirty);
+    if (need_flush) {
+        vg_lite_vulkan_flush_render_pass();
+        if (src_int->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(src_int);
+        if (target_int->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(target_int);
+    }
 
-    /* Source image barrier: must be OUTSIDE the render pass. */
-    VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
-    src_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    src_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    src_bar.image = src_int->image;
-    src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    src_bar.subresourceRange.levelCount = 1;
-    src_bar.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
-        0, NULL, 0, NULL, 1, &src_bar);
+    /* Source image barrier: ensures CPU writes to the source are visible
+     * to the fragment shader. Runs outside any render pass (after flush
+     * if dirty, or when no RP is active). On RP reuse (consecutive blits,
+     * current_fb != NULL, no dirty source), the prior vkQueueSubmit's
+     * implicit host barrier already guarantees visibility — skip it. */
+    if (need_flush || !g_vk_ctx.current_fb) {
+        VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+        src_bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        src_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        src_bar.image = src_int->image;
+        src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        src_bar.subresourceRange.levelCount = 1;
+        src_bar.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+            VK_PIPELINE_STAGE_HOST_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+            0, NULL, 0, NULL, 1, &src_bar);
+    }
 
 #if VGLITE_BLIT_MSAA
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
