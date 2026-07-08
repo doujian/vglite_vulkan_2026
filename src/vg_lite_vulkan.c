@@ -499,7 +499,11 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
 
     if (g_vk_ctx.current_fb_image == internal->image && !g_vk_ctx.current_fb_is_no_msaa) return VG_LITE_SUCCESS;
     
-    if (g_vk_ctx.current_fb) { vg_lite_vulkan_end_render_pass(); }
+    if (g_vk_ctx.current_fb) {
+        vg_lite_vulkan_end_render_pass();
+        if (g_vk_ctx.current_fb_internal && g_vk_ctx.current_fb_internal->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(g_vk_ctx.current_fb_internal);
+    }
     
     if (internal->render_pass == VK_NULL_HANDLE) {
         VkFormat vkfmt = vg_lite_format_to_vk(target->format);
@@ -560,6 +564,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
     g_vk_ctx.current_fb_is_no_msaa = 0;
+    g_vk_ctx.current_fb_internal = internal;
     
     VkClearValue clear_values[3] = {0};
     clear_values[0].color.float32[0] = 0.0f;
@@ -584,56 +589,68 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     return VG_LITE_SUCCESS;
 }
 
+vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *internal)
+{
+    if (!internal || !internal->msaa_dirty)
+        return VG_LITE_SUCCESS;
+
+    VkImageMemoryBarrier dst_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    dst_barrier.srcAccessMask = 0;
+    dst_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dst_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dst_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dst_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    dst_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    dst_barrier.image = internal->image;
+    dst_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    dst_barrier.subresourceRange.levelCount = 1;
+    dst_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &dst_barrier);
+
+    VkImageCopy region = {0};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.layerCount = 1;
+    region.extent.width = internal->width;
+    region.extent.height = internal->height;
+    region.extent.depth = 1;
+    vkCmdCopyImage(g_vk_ctx.cmd_buf,
+        internal->resolve_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        internal->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &region);
+
+    VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    host_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    host_barrier.image = internal->image;
+    host_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    host_barrier.subresourceRange.levelCount = 1;
+    host_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
+
+    internal->msaa_dirty = 0;
+    return VG_LITE_SUCCESS;
+}
+
 vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
 {
     if (g_vk_ctx.current_fb) {
         vkCmdEndRenderPass(g_vk_ctx.cmd_buf);
         
         if (g_vk_ctx.current_resolve_image && g_vk_ctx.current_fb_image) {
-            /* Copy OPTIMAL resolve intermediate -> LINEAR target. The render
-             * pass left the intermediate in TRANSFER_SRC_OPTIMAL (finalLayout). */
-            VkImageMemoryBarrier dst_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-            dst_barrier.srcAccessMask = 0;
-            dst_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            dst_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-            dst_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            dst_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            dst_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            dst_barrier.image = g_vk_ctx.current_fb_image;
-            dst_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            dst_barrier.subresourceRange.levelCount = 1;
-            dst_barrier.subresourceRange.layerCount = 1;
-            vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &dst_barrier);
-
-            VkImageCopy region = {0};
-            region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.srcSubresource.layerCount = 1;
-            region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.dstSubresource.layerCount = 1;
-            region.extent.width = g_vk_ctx.current_fb_width;
-            region.extent.height = g_vk_ctx.current_fb_height;
-            region.extent.depth = 1;
-            vkCmdCopyImage(g_vk_ctx.cmd_buf,
-                g_vk_ctx.current_resolve_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                g_vk_ctx.current_fb_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                1, &region);
-
-            VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-            host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-            host_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-            host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-            host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            host_barrier.image = g_vk_ctx.current_fb_image;
-            host_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            host_barrier.subresourceRange.levelCount = 1;
-            host_barrier.subresourceRange.layerCount = 1;
-            vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-                VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
+            /* MSAA path: defer resolve+copy. Mark target dirty.
+             * Actual resolve+copy happens on next copy-on-read. */
+            if (g_vk_ctx.current_fb_internal)
+                g_vk_ctx.current_fb_internal->msaa_dirty = 1;
         } else if (g_vk_ctx.current_fb_image) {
             VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
             host_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -983,7 +1000,11 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
     if (g_vk_ctx.current_fb_image == internal->image && g_vk_ctx.current_fb_is_no_msaa)
         return VG_LITE_SUCCESS;
 
-    if (g_vk_ctx.current_fb) { vg_lite_vulkan_end_render_pass(); }
+    if (g_vk_ctx.current_fb) {
+        vg_lite_vulkan_end_render_pass();
+        if (g_vk_ctx.current_fb_internal && g_vk_ctx.current_fb_internal->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(g_vk_ctx.current_fb_internal);
+    }
 
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
     VkRenderPass rp = create_render_pass_no_msaa(vkfmt);
@@ -1022,6 +1043,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
     g_vk_ctx.current_fb_is_no_msaa = 1;
+    g_vk_ctx.current_fb_internal = internal;
 
     {
         VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};

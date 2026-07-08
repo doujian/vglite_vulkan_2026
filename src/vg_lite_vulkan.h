@@ -41,6 +41,9 @@ typedef struct {
     VkImageView resolve_view;
     VkDeviceMemory resolve_memory;
     int msaa_needs_seed;  /* Set when no-MSAA RP wrote to target; draw must seed MSAA before use */
+    uint32_t width;
+    uint32_t height;
+    int msaa_dirty;
 } buffer_internal_t;
 
 typedef struct {
@@ -70,6 +73,7 @@ typedef struct {
     uint32_t current_fb_width;
     uint32_t current_fb_height;
     int current_fb_is_no_msaa;
+    buffer_internal_t *current_fb_internal;
 
     #define MAX_PENDING_FB 32
     #define MAX_PENDING_DESC 64
@@ -168,6 +172,7 @@ VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group)
 VkPipeline vg_lite_vulkan_get_pipeline_native_msaa(VkFormat format, int blend_group);
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler);
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
+vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *internal);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_init_pattern_pipeline(VkFormat format);
 VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group);

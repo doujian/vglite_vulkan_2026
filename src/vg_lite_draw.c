@@ -359,8 +359,6 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
     init_draw_pipeline(vkfmt);
     
-    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    
     VkBuffer vbo = VK_NULL_HANDLE, ibo = VK_NULL_HANDLE;
     VkDeviceMemory vbo_mem = VK_NULL_HANDLE, ibo_mem = VK_NULL_HANDLE;
     create_vertex_buffer(geom.vertex_count, geom.index_count, &vbo, &vbo_mem, &ibo, &ibo_mem);
@@ -376,6 +374,10 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     }
     int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
     vg_lite_vulkan_flush_render_pass();
+    
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    if (internal->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(internal);
     
     if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
         err = vg_lite_vulkan_set_render_target(target);
@@ -623,6 +625,8 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     vg_lite_vulkan_flush_render_pass();
     
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
+    if (target_int->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(target_int);
     if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != target_int->image) {
         err = vg_lite_vulkan_set_render_target(target);
         if (err != VG_LITE_SUCCESS) {
@@ -874,6 +878,8 @@ static vg_lite_error_t draw_grad_internal(
     vg_lite_vulkan_flush_render_pass();
 
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    if (internal->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(internal);
     if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
         err = vg_lite_vulkan_set_render_target(target);
         if (err != VG_LITE_SUCCESS) {

@@ -231,6 +231,9 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
     internal->mapped_base = NULL;
+    internal->width = buffer->width;
+    internal->height = buffer->height;
+    internal->msaa_dirty = 0;
 
     /* Get actual image layout in memory (offset and row pitch) */
     VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
@@ -283,8 +286,13 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
     vg_lite_vulkan_flush_render_pass();
-    vg_lite_vulkan_submit_command(1);
+    vg_lite_vulkan_begin_command();
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (internal->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(internal);
+    if (g_vk_ctx.current_fb_internal == internal)
+        g_vk_ctx.current_fb_internal = NULL;
+    vg_lite_vulkan_submit_command(1);
     if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
     if (internal->msaa_color_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_color_image, NULL);
     if (internal->msaa_color_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_color_memory, NULL);
@@ -394,6 +402,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     clear_rect.layerCount = 1;
     vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
     internal->msaa_needs_seed = 1;  /* no-MSAA RP wrote to target; flag for draw path */
+    internal->msaa_dirty = 0;
     return VG_LITE_SUCCESS;
 }
 
@@ -490,6 +499,9 @@ static vg_lite_error_t create_temp_copy_image(VkFormat vkfmt,
     vkCmdPipelineBarrier(g_vk_ctx.cmd_buf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
 
+    if (target_int->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(target_int);
+
     VkImageCopy cp = {0};
     cp.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     cp.srcSubresource.layerCount = 1;
@@ -569,6 +581,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
      * open (deferred). This barrier references the source image which is NOT
      * an attachment of the target's RP. */
     vg_lite_vulkan_flush_render_pass();
+    if (src_int->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(src_int);
 
     /* Source image barrier: must be OUTSIDE the render pass. */
     VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -695,6 +709,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 vg_lite_error_t vg_lite_finish(void)
 {
     vg_lite_vulkan_end_render_pass();
+    if (g_vk_ctx.current_fb_internal && g_vk_ctx.current_fb_internal->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(g_vk_ctx.current_fb_internal);
     vg_lite_vulkan_submit_command(1);
     vg_lite_draw_cleanup_pending_buffers();
     return VG_LITE_SUCCESS;
@@ -703,6 +719,8 @@ vg_lite_error_t vg_lite_finish(void)
 vg_lite_error_t vg_lite_flush(void)
 {
     vg_lite_vulkan_end_render_pass();
+    if (g_vk_ctx.current_fb_internal && g_vk_ctx.current_fb_internal->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(g_vk_ctx.current_fb_internal);
     vg_lite_vulkan_submit_command(0);
     return VG_LITE_SUCCESS;
 }
