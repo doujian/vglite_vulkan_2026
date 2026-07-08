@@ -51,13 +51,12 @@ vec2 apply_pattern_mode(vec2 uv)
         return fract(uv);
     }
     else if (pc.pattern_mode == PATTERN_MODE_REFLECT) {
-        /* REFLECT mode: mirror reflection
-         * Formula: abs(mod(uv * 2, 2) - 1)
-         * This creates a mirror effect at each boundary
+        /* REFLECT mode: mirror reflection at each integer boundary.
+         * [0,1] → identity, [1,2] → 2-uv, [2,3] → uv-2, ...
+         * Equivalent to VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT.
          */
-        vec2 uv2 = uv * 2.0;
-        vec2 wrapped = fract(uv2);
-        return abs(wrapped * 2.0 - 1.0);
+        vec2 m = mod(uv, 2.0);
+        return mix(m, 2.0 - m, step(1.0, m));
     }
     return uv;
 }
