@@ -98,6 +98,9 @@ add_dependencies(test_blit_multi spirv_compilation)
 add_executable(test_blit_accum blit_accum/blit_accum.c)
 add_dependencies(test_blit_accum spirv_compilation)
 
+add_executable(test_blit_switch blit_switch/blit_switch.c)
+add_dependencies(test_blit_switch spirv_compilation)
+
 add_executable(test_blit_mixed blit_mixed/blit_mixed.c)
 add_dependencies(test_blit_mixed spirv_compilation)
 
