@@ -378,7 +378,13 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     }
 
     vg_lite_vulkan_begin_command();
-    vg_lite_vulkan_flush_render_pass();
+    /* Reuse the no-MSAA RP if it's already active on the same target.
+     * Only flush when switching targets or when a different RP type is active. */
+    {
+        buffer_internal_t *ci = (buffer_internal_t *)target->handle;
+        if (!(g_vk_ctx.current_fb_image == ci->image && g_vk_ctx.current_fb_is_no_msaa))
+            vg_lite_vulkan_flush_render_pass();
+    }
     vg_lite_vulkan_set_render_target_no_msaa(target);
 
     VkClearRect clear_rect;

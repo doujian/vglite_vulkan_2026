@@ -20,10 +20,12 @@
 
 static vg_lite_buffer_t target_a;
 static vg_lite_buffer_t target_b;
-static vg_lite_buffer_t src;
+static vg_lite_buffer_t srcs[9];
 
 void cleanup(void) {
-    if (src.handle) vg_lite_free(&src);
+    for (int i = 0; i < 9; i++) {
+        if (srcs[i].handle) vg_lite_free(&srcs[i]);
+    }
     if (target_a.handle) vg_lite_free(&target_a);
     if (target_b.handle) vg_lite_free(&target_b);
     vg_lite_close();
@@ -64,14 +66,16 @@ int main() {
     CHECK_ERROR(vg_lite_allocate(&target_b));
 
     /* 9 consecutive BLEND_NONE blits to target_a.
-     * Each overwrites fully; final color = colors[8] (gold 0xFFC0A040). */
+     * Each overwrites fully; final color = colors[8] (gold 0xFFC0A040).
+     * NOTE: Do NOT call vg_lite_free or vg_lite_finish between blits —
+     * that would flush the RP and prevent reuse. */
+    vg_lite_buffer_t srcs[9];
     for (int i = 0; i < 9; i++) {
-        make_src(&src, colors[i]);
-        if (!src.handle) { error = VG_LITE_OUT_OF_MEMORY; goto ErrorHandler; }
+        make_src(&srcs[i], colors[i]);
+        if (!srcs[i].handle) { error = VG_LITE_OUT_OF_MEMORY; goto ErrorHandler; }
         vg_lite_matrix_t m; vg_lite_identity(&m);
-        CHECK_ERROR(vg_lite_blit(&target_a, &src, &m, VG_LITE_BLEND_NONE,
+        CHECK_ERROR(vg_lite_blit(&target_a, &srcs[i], &m, VG_LITE_BLEND_NONE,
                                   0xFFFFFFFF, VG_LITE_FILTER_POINT));
-        vg_lite_free(&src);
     }
 
     /* 10th blit: copy target_a → target_b (switch target). */
@@ -80,6 +84,11 @@ int main() {
                               0xFFFFFFFF, VG_LITE_FILTER_POINT));
 
     CHECK_ERROR(vg_lite_finish());
+
+    /* Free sources after finish */
+    for (int i = 0; i < 9; i++) {
+        if (srcs[i].handle) vg_lite_free(&srcs[i]);
+    }
 
     /* Verify: target_a should be gold (last overwrite) */
     {
