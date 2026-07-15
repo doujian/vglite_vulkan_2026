@@ -71,7 +71,12 @@ tags: [excalidraw]
       "seed": 100002,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "s1-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -79,10 +84,10 @@ tags: [excalidraw]
     {
       "id": "s1-text",
       "type": "text",
-      "x": 365,
-      "y": 80,
-      "width": 270,
-      "height": 30,
+      "x": 350,
+      "y": 70,
+      "width": 300,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#374151",
       "backgroundColor": "transparent",
@@ -105,7 +110,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "s1-box",
       "originalText": "参数校验 + 获取内部 buffer",
       "autoResize": true,
       "lineHeight": 1.25
@@ -132,7 +137,12 @@ tags: [excalidraw]
       "seed": 100004,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "s2-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -140,10 +150,10 @@ tags: [excalidraw]
     {
       "id": "s2-text",
       "type": "text",
-      "x": 370,
-      "y": 150,
-      "width": 260,
-      "height": 30,
+      "x": 350,
+      "y": 140,
+      "width": 300,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#374151",
       "backgroundColor": "transparent",
@@ -166,7 +176,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "s2-box",
       "originalText": "vg_lite_blend_to_group",
       "autoResize": true,
       "lineHeight": 1.25
@@ -259,7 +269,12 @@ tags: [excalidraw]
       "seed": 100008,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "s4-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -267,10 +282,10 @@ tags: [excalidraw]
     {
       "id": "s4-text",
       "type": "text",
-      "x": 375,
-      "y": 290,
-      "width": 250,
-      "height": 30,
+      "x": 350,
+      "y": 280,
+      "width": 300,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#374151",
       "backgroundColor": "transparent",
@@ -293,7 +308,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "s4-box",
       "originalText": "begin_command",
       "autoResize": true,
       "lineHeight": 1.25
@@ -386,7 +401,12 @@ tags: [excalidraw]
       "seed": 100012,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "d1y-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -394,10 +414,10 @@ tags: [excalidraw]
     {
       "id": "d1y-text",
       "type": "text",
-      "x": 35,
-      "y": 390,
-      "width": 220,
-      "height": 30,
+      "x": 20,
+      "y": 385,
+      "width": 250,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#374151",
       "backgroundColor": "transparent",
@@ -420,7 +440,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "d1y-box",
       "originalText": "flush + resolve_msaa",
       "autoResize": true,
       "lineHeight": 1.25
@@ -513,7 +533,12 @@ tags: [excalidraw]
       "seed": 100022,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "d2y-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -521,10 +546,10 @@ tags: [excalidraw]
     {
       "id": "d2y-text",
       "type": "text",
-      "x": 735,
-      "y": 535,
-      "width": 250,
-      "height": 30,
+      "x": 720,
+      "y": 525,
+      "width": 280,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#15803d",
       "backgroundColor": "transparent",
@@ -547,7 +572,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "d2y-box",
       "originalText": "复用 RP「跳过 barrier」",
       "autoResize": true,
       "lineHeight": 1.25
@@ -577,7 +602,10 @@ tags: [excalidraw]
       "boundElements": null,
       "updated": 1,
       "link": null,
-      "locked": false
+      "locked": false,
+      "containerId": "srt-bg",
+      "textAlign": "center",
+      "verticalAlign": "middle"
     },
     {
       "id": "srt-label",
@@ -941,7 +969,12 @@ tags: [excalidraw]
       "seed": 100050,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "s8-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -949,10 +982,10 @@ tags: [excalidraw]
     {
       "id": "s8-text",
       "type": "text",
-      "x": 330,
-      "y": 845,
-      "width": 340,
-      "height": 30,
+      "x": 310,
+      "y": 835,
+      "width": 380,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#374151",
       "backgroundColor": "transparent",
@@ -975,7 +1008,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "s8-box",
       "originalText": "matrix + push constants + desc set",
       "autoResize": true,
       "lineHeight": 1.25
@@ -1002,7 +1035,12 @@ tags: [excalidraw]
       "seed": 100052,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "s9-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -1010,10 +1048,10 @@ tags: [excalidraw]
     {
       "id": "s9-text",
       "type": "text",
-      "x": 330,
-      "y": 915,
-      "width": 340,
-      "height": 30,
+      "x": 310,
+      "y": 905,
+      "width": 380,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#374151",
       "backgroundColor": "transparent",
@@ -1036,7 +1074,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "s9-box",
       "originalText": "bind pipeline + viewport + scissor",
       "autoResize": true,
       "lineHeight": 1.25
@@ -1063,7 +1101,12 @@ tags: [excalidraw]
       "seed": 100054,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "s10-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -1071,10 +1114,10 @@ tags: [excalidraw]
     {
       "id": "s10-text",
       "type": "text",
-      "x": 330,
-      "y": 985,
-      "width": 340,
-      "height": 30,
+      "x": 310,
+      "y": 975,
+      "width": 380,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#15803d",
       "backgroundColor": "transparent",
@@ -1097,7 +1140,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "s10-box",
       "originalText": "vkCmdDraw「3,1,0,0」",
       "autoResize": true,
       "lineHeight": 1.25
@@ -1124,7 +1167,12 @@ tags: [excalidraw]
       "seed": 100056,
       "version": 1,
       "isDeleted": false,
-      "boundElements": null,
+      "boundElements": [
+        {
+          "type": "text",
+          "id": "s11-text"
+        }
+      ],
       "updated": 1,
       "link": null,
       "locked": false
@@ -1132,10 +1180,10 @@ tags: [excalidraw]
     {
       "id": "s11-text",
       "type": "text",
-      "x": 330,
-      "y": 1055,
-      "width": 340,
-      "height": 30,
+      "x": 310,
+      "y": 1045,
+      "width": 380,
+      "height": 50,
       "angle": 0,
       "strokeColor": "#374151",
       "backgroundColor": "transparent",
@@ -1158,7 +1206,7 @@ tags: [excalidraw]
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
-      "containerId": null,
+      "containerId": "s11-box",
       "originalText": "defer submission",
       "autoResize": true,
       "lineHeight": 1.25
