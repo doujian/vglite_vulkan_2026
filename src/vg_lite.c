@@ -865,18 +865,17 @@ vg_lite_error_t vg_lite_finish(void)
 
 #if BLIT_PERF
     if (g_vk_ctx.blit_perf_count > 0) {
+        uint64_t batch_ns = 0;
 
         if (!blit_perf_gpu_checked && g_vk_ctx.timestamp_query_pool) {
-            /* First time: check if GPU timestamps work */
-            uint64_t t0 = vg_lite_vulkan_read_timestamp(0);
+            /* First time: try reading one GPU timestamp to check support */
+            vg_lite_vulkan_read_timestamp(0);
             blit_perf_gpu_checked = 1;
-            if (t0 == 0) {
+            if (g_vk_ctx.timestamp_query_failed) {
                 blit_perf_use_cpu_timer = 1;
                 fprintf(stderr, "[BLIT_PERF] GPU timestamps unavailable, falling back to CPU timer\n");
             }
         }
-
-        uint64_t batch_ns = 0;
 
         if (blit_perf_use_cpu_timer) {
             /* CPU timer: measure total wall-clock time for the batch */
@@ -887,7 +886,7 @@ vg_lite_error_t vg_lite_finish(void)
                    (unsigned long long)batch_ns,
                    g_vk_ctx.blit_perf_count ? (double)batch_ns / g_vk_ctx.blit_perf_count : 0.0,
                    (unsigned long long)g_vk_ctx.blit_perf_total_ns);
-        } else if (g_vk_ctx.timestamp_query_pool) {
+        } else if (g_vk_ctx.timestamp_query_pool && !g_vk_ctx.timestamp_query_failed) {
             /* GPU timer: read back timestamps */
             for (uint32_t i = 0; i < g_vk_ctx.blit_perf_count; i++) {
                 uint32_t s0 = i * 2, s1 = i * 2 + 1;

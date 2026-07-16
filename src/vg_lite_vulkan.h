@@ -153,6 +153,7 @@ typedef struct {
     VkQueryPool timestamp_query_pool;
     float timestamp_period;             /* nanoseconds per timestamp tick */
     uint32_t timestamp_slot_counter;
+    int timestamp_query_failed;         /* set when vkGetQueryPoolResults fails */
 
     /* Blit perf statistics (accumulated across blits within a batch) */
     uint32_t blit_perf_count;           /* number of timed blits in current batch */
