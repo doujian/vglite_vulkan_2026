@@ -19,6 +19,7 @@ src/tessellator.c        - Path tessellation (triangulation, even-odd/non-zero f
 src/shader_loader.c      - Runtime .spv file loader (multi-path search, replaces embedded headers)
 src/shader_loader.h      - Shader loader API: load_shader_module()
 shaders/blit.vert        - Blit vertex shader (full-screen triangle)
+shaders/blit_aabb.vert   - Blit vertex shader (AABB-optimized, dynamic triangle from push constants)
 shaders/blit.frag        - Blit fragment shader (shader-blend path, MSAA)
 shaders/blit_native.frag - Blit fragment shader (hardware-blend path, 4x MSAA + seed)
 shaders/draw.vert        - Draw vertex shader
@@ -39,6 +40,7 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 - **vg_lite_allocate / vg_lite_free** - Buffer allocation via Vulkan memory
 - **vg_lite_clear** - Full or rectangle clear with solid color
 - **vg_lite_blit** - Blit with 3x3 matrix transform, format conversion, blend modes
+- **AABB blit optimization** - Dynamic vertex shader computes tight triangle from source AABB, reducing rasterized fragments by up to 17x for small sources (runtime switch via `vg_lite_set_blit_aabb_mode()`)
 - **vg_lite_draw** - Path fill with tessellation (non-zero / even-odd fill rules)
 - **vg_lite_init_path** - Programmatic path creation (bounding box, quality, format, data)
 - **vg_lite_draw_grad** - Linear gradient fill with dedicated Vulkan shaders
@@ -114,9 +116,15 @@ This allows shader modifications without recompiling C code — just rebuild sha
 | test_imgA8 | A8 source image blit | PASS |
 | test_rotate | Rotate blit (RGB565) | PASS (fixed: discard out-of-bounds UVs) |
 | test_scale | Scale blit with golden comparison | PASS |
+| test_blit_multi | Multiple blits to single target | PASS |
+| test_blit_accum | Blit accumulation (deferred batching) | PASS |
+| test_blit_chain | Sequential blit chain A→B→C | PASS |
+| test_blit_mixed | Mixed format blits to shared target | PASS |
+| test_blit_switch | 9 blits to A, then blit A→B | PASS |
+| test_blit_perf | AABB vs fullscreen perf comparison (GPU timestamps) | PASS |
 | test_sft_blit | Full blend mode coverage | FAIL (pre-existing, crash) |
 
-**Summary: 23 PASS / 1 FAIL**
+**Summary: 30 PASS / 1 FAIL**
 
 ## Expected Buffer Tracker
 
