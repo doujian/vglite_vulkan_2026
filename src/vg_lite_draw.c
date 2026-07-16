@@ -35,6 +35,113 @@ typedef struct {
 
 static draw_pipeline_t g_draw_pipeline = {0};
 
+/* Per-(format, blend_group) draw cover pipeline cache.
+ * BG_NONE reuses the fixed cover_pipeline created in init_draw_pipeline;
+ * other blend groups are created on demand with hardware blend enabled. */
+#define MAX_DRAW_COVER_PIPELINES 32
+typedef struct { VkFormat format; int blend_group; VkPipeline pipeline; } draw_cover_entry_t;
+static draw_cover_entry_t s_draw_cover_cache[MAX_DRAW_COVER_PIPELINES];
+static int s_draw_cover_cache_count = 0;
+
+static VkPipeline get_draw_cover_pipeline(VkFormat format, int blend_group)
+{
+    if (blend_group == BG_NONE)
+        return g_draw_pipeline.cover_pipeline;
+
+    for (int i = 0; i < s_draw_cover_cache_count; i++) {
+        if (s_draw_cover_cache[i].format == format &&
+            s_draw_cover_cache[i].blend_group == blend_group)
+            return s_draw_cover_cache[i].pipeline;
+    }
+
+    if (!g_draw_pipeline.vert_shader || !g_draw_pipeline.frag_shader)
+        return VK_NULL_HANDLE;
+
+    VkPipelineColorBlendAttachmentState cba;
+    vg_lite_vulkan_get_blend_state(blend_group, &cba);
+    if (blend_group == BG_SRC_OVER) {
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    }
+
+    VkPipelineDepthStencilStateCreateInfo cover_ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    cover_ds.stencilTestEnable = VK_TRUE;
+    cover_ds.front.failOp = VK_STENCIL_OP_KEEP;
+    cover_ds.front.passOp = VK_STENCIL_OP_ZERO;
+    cover_ds.front.depthFailOp = VK_STENCIL_OP_KEEP;
+    cover_ds.front.compareOp = VK_COMPARE_OP_NOT_EQUAL;
+    cover_ds.front.compareMask = 0x01;
+    cover_ds.front.writeMask = 0x01;
+    cover_ds.front.reference = 0;
+    cover_ds.back = cover_ds.front;
+
+    VkPipelineInputAssemblyStateCreateInfo cover_ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    cover_ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1;
+    cb.pAttachments = &cba;
+
+    VkVertexInputBindingDescription binding = {0, 8, VK_VERTEX_INPUT_RATE_VERTEX};
+    VkVertexInputAttributeDescription attr = {0, 0, VK_FORMAT_R32G32_SFLOAT, 0};
+    VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vi.vertexBindingDescriptionCount = 1;
+    vi.pVertexBindingDescriptions = &binding;
+    vi.vertexAttributeDescriptionCount = 1;
+    vi.pVertexAttributeDescriptions = &attr;
+
+    VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.lineWidth = 1.0f;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+
+    VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vs.viewportCount = 1;
+    vs.scissorCount = 1;
+
+    VkDynamicState dyn_states[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dyn_ci = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dyn_ci.dynamicStateCount = 2;
+    dyn_ci.pDynamicStates = dyn_states;
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_draw_pipeline.vert_shader, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_draw_pipeline.frag_shader, "main", NULL},
+    };
+
+    VkRenderPass rp = vg_lite_vulkan_create_render_pass(format);
+
+    VkGraphicsPipelineCreateInfo gp_ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp_ci.stageCount = 2;
+    gp_ci.pStages = stages;
+    gp_ci.pVertexInputState = &vi;
+    gp_ci.pInputAssemblyState = &cover_ia;
+    gp_ci.pViewportState = &vs;
+    gp_ci.pRasterizationState = &rs;
+    gp_ci.pMultisampleState = &ms;
+    gp_ci.pColorBlendState = &cb;
+    gp_ci.pDepthStencilState = &cover_ds;
+    gp_ci.pDynamicState = &dyn_ci;
+    gp_ci.layout = g_draw_pipeline.pipeline_layout;
+    gp_ci.renderPass = rp;
+    gp_ci.subpass = 0;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline));
+    vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
+
+    if (pipeline && s_draw_cover_cache_count < MAX_DRAW_COVER_PIPELINES) {
+        s_draw_cover_cache[s_draw_cover_cache_count].format = format;
+        s_draw_cover_cache[s_draw_cover_cache_count].blend_group = blend_group;
+        s_draw_cover_cache[s_draw_cover_cache_count].pipeline = pipeline;
+        s_draw_cover_cache_count++;
+    }
+    return pipeline;
+}
+
 static void init_draw_pipeline(VkFormat format)
 {
     if (g_draw_pipeline.fill_pipeline) {
@@ -335,7 +442,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
                              vg_lite_fill_t fill_rule, vg_lite_matrix_t *matrix,
                              vg_lite_blend_t blend, vg_lite_color_t color)
 {
-    (void)fill_rule; (void)blend;
+    (void)fill_rule;
     if (!target || !path) return VG_LITE_INVALID_ARGUMENT;
     if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
     
@@ -376,8 +483,10 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     vg_lite_vulkan_flush_render_pass();
     
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    if (internal->msaa_dirty)
+    if (internal->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(internal);
+        internal->msaa_needs_seed = 1;
+    }
     
     if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
         err = vg_lite_vulkan_set_render_target(target);
@@ -388,7 +497,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
             vlc_path_free(&vlc_path);
             return err;
         }
-        if (prev_was_no_msaa || internal->msaa_needs_seed) {
+        if (prev_was_no_msaa || internal->msaa_needs_seed || blend != VG_LITE_BLEND_NONE) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
             internal->msaa_needs_seed = 0;
@@ -487,7 +596,8 @@ struct {
     VkDeviceSize cover_offset = 0;
     vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &cover_vbo, &cover_offset);
     vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, g_draw_pipeline.cover_ibo, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_draw_pipeline.cover_pipeline);
+    VkPipeline cover = get_draw_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend));
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, cover);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, 6, 1, 0, 0, 0);
     
     tess_geometry_free(&geom);

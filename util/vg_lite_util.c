@@ -32,6 +32,21 @@ int vg_lite_load_raw(vg_lite_buffer_t *buffer, const char *name)
 
     switch (format) {
     case 0:
+    case 1024: /* VG_LITE_RGBA8888 */
+        buffer->format = VG_LITE_RGBA8888;
+        break;
+    case 1:
+    case 1025: /* VG_LITE_BGRA8888 */
+        buffer->format = VG_LITE_BGRA8888;
+        break;
+    case 4:
+    case 1028: /* VG_LITE_RGB565 */
+        buffer->format = VG_LITE_RGB565;
+        break;
+    case 5:
+    case 1029: /* VG_LITE_BGR565 */
+        buffer->format = VG_LITE_BGR565;
+        break;
     default:
         buffer->format = VG_LITE_RGBA8888;
         break;

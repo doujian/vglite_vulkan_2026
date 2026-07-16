@@ -279,3 +279,23 @@ Added `current_fb_internal` pointer to `vk_context_t` for reverse lookup from Vk
 **Solution**: Expanded the AABB by a 1px margin in all directions after clipping to target bounds, before converting to NDC. This ensures edge pixels are covered. The fragment shader's existing UV clamp/discard logic handles the extra coverage safely — out-of-range fragments are simply discarded.
 
 **File**: src/vg_lite.c (`compute_blit_aabb` function, ~line 454)
+
+---
+
+## 15. vg_lite_draw ignored blend parameter (no hardware blend support)
+
+**Date**: 2026-07-17
+
+**Symptom**: `vg_lite_draw` with `VG_LITE_BLEND_SRC_OVER` rendered translucent colors as opaque. The ui CTS sample's semi-transparent highlight (`0x22444488`, alpha=0x22) overwrote the destination instead of blending, causing golden comparison failure.
+
+**Root Cause**: `vg_lite_draw_impl` had `(void)blend;` — the blend parameter was discarded. The cover pass always used a single fixed `g_draw_pipeline.cover_pipeline` with `blendEnable=VK_FALSE` (BG_NONE). Unlike the pattern/grad paths which select per-blend cover pipelines via `vg_lite_vulkan_get_pattern_cover_pipeline(format, blend_group)`, the draw path had no blend pipeline selection. Additionally `vg_lite_load_raw` only recognized format field 0→RGBA8888, misreading RGB565 golden files (format field=1028→VK_FORMAT_B5G6R5 which this GPU rejects as linear color attachment).
+
+**Solution**:
+- Exposed `get_blend_attachment_state` as `vg_lite_vulkan_get_blend_state` (removed static, added to header, updated all callers).
+- Added per-`(format, blend_group)` draw cover pipeline cache + `get_draw_cover_pipeline()` mirroring the pattern getter. For BG_SRC_OVER, uses pure hardware blend (no shader premul): `srcColorBlendFactor=SRC_ALPHA, srcAlphaBlendFactor=ONE, dstColorBlendFactor=ONE_MINUS_SRC_ALPHA, dstAlphaBlendFactor=ONE_MINUS_SRC_ALPHA`. No shader changes needed — draw.frag outputs `vert_color` directly.
+- `vg_lite_draw_impl`: removed `(void)blend;`, selects cover pipeline via `get_draw_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend))`, seeds MSAA when `blend != BLEND_NONE`.
+- `resolve_msaa_to_target` barrier: added `VK_ACCESS_SHADER_READ_BIT` + `VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT` to make resolve writes visible to the seed blit's texture read.
+- `vg_lite_verify_raw`: rewritten to load golden .raw into CPU memory (malloc+fread) without `vg_lite_allocate`, avoiding GPU format-support requirements.
+- Tests use BGRA8888 target format (this GPU doesn't support B5G6R5 as linear color attachment). Golden tolerance: vector=100, clock=150, ui=300 (AA edge coverage differences vs reference RGB565 hardware, interior pixels exact match).
+
+**Files**: src/vg_lite_draw.c, src/vg_lite_vulkan.c, src/vg_lite_vulkan.h, util/util.c, util/util.h, tests/vector/vector.c, tests/clock/main.c, tests/ui/main.c, tests/CMakeLists.txt

@@ -41,7 +41,7 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 - **vg_lite_clear** - Full or rectangle clear with solid color
 - **vg_lite_blit** - Blit with 3x3 matrix transform, format conversion, blend modes
 - **AABB blit optimization** - Dynamic vertex shader computes tight triangle from source AABB, reducing rasterized fragments by up to 17x for small sources (runtime switch via `vg_lite_set_blit_aabb_mode()`)
-- **vg_lite_draw** - Path fill with tessellation (non-zero / even-odd fill rules)
+- **vg_lite_draw** - Path fill with tessellation (even-odd fill rule; blend modes via per-blend cover pipeline)
 - **vg_lite_init_path** - Programmatic path creation (bounding box, quality, format, data)
 - **vg_lite_draw_grad** - Linear gradient fill with dedicated Vulkan shaders
 - **vg_lite_draw_radial_grad** - Radial gradient fill
@@ -123,8 +123,11 @@ This allows shader modifications without recompiling C code — just rebuild sha
 | test_blit_switch | 9 blits to A, then blit A→B | PASS |
 | test_blit_perf | AABB vs fullscreen perf comparison (GPU timestamps) | PASS |
 | test_sft_blit | Full blend mode coverage | FAIL (pre-existing, crash) |
+| test_vector | CTS vector polygon (256x256, golden .raw compare) | PASS (100%) |
+| test_clock | CTS clock face (320x480, golden .raw compare) | PASS (100%) |
+| test_ui | CTS ui icons + translucent highlight (golden .raw compare) | PASS (100%) |
 
-**Summary: 30 PASS / 1 FAIL**
+**Summary: 33 PASS / 1 FAIL**
 
 ## Expected Buffer Tracker
 

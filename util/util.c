@@ -652,6 +652,45 @@ void vg_lite_expected_copy(vg_lite_expected_buffer_t *eb, vg_lite_buffer_t *buf)
             eb->pixels[y * eb->width + x] = vg_lite_read_pixel(buf, x, y);
 }
 
+int vg_lite_verify_raw(vg_lite_buffer_t *actual, const char *golden_path, int tolerance)
+{
+    FILE *fp = fopen(golden_path, "rb");
+    if (!fp) { printf("golden load fail: %s\n", golden_path); return -1; }
+
+    int32_t header[4];
+    if (fread(header, 4, 4, fp) != 4) { fclose(fp); return -1; }
+
+    vg_lite_buffer_t golden = {0};
+    golden.width = header[0];
+    golden.height = header[1];
+    golden.stride = header[2];
+    int fmt = header[3];
+    switch (fmt) {
+        case 0: case 1024: golden.format = VG_LITE_RGBA8888; break;
+        case 1: case 1025: golden.format = VG_LITE_BGRA8888; break;
+        case 4: case 1028: golden.format = VG_LITE_RGB565; break;
+        case 5: case 1029: golden.format = VG_LITE_BGR565; break;
+        default: golden.format = VG_LITE_RGBA8888; break;
+    }
+
+    int bpp = vg_lite_format_bpp(golden.format) / 8;
+    if (golden.stride == 0) golden.stride = golden.width * bpp;
+    int data_size = golden.stride * golden.height;
+    uint8_t *pixels = malloc(data_size);
+    if (!pixels || fread(pixels, 1, data_size, fp) != data_size) {
+        free(pixels); fclose(fp); printf("golden read fail: %s\n", golden_path); return -1;
+    }
+    fclose(fp);
+    golden.memory = pixels;
+
+    vg_lite_expected_buffer_t *eb = vg_lite_expected_create(golden.width, golden.height, golden.format);
+    vg_lite_expected_copy(eb, &golden);
+    int fail = vg_lite_expected_verify(eb, actual, tolerance);
+    vg_lite_expected_destroy(eb);
+    free(pixels);
+    return fail;
+}
+
 static void *gen_checker(vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
 {
     int checker = 20;

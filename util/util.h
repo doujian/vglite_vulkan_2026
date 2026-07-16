@@ -66,6 +66,8 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
                               vg_lite_buffer_t *actual,
                               int tolerance);
 
+int vg_lite_verify_raw(vg_lite_buffer_t *actual, const char *golden_path, int tolerance);
+
 void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32_t height);
 int   gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, uint32_t width, uint32_t height);
 

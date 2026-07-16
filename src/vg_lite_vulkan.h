@@ -20,6 +20,7 @@
 #define BG_SUBTRACT   4
 #define BG_NONE       5
 #define BG_COUNT      6
+void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachmentState *cba);
 
 typedef struct {
     VkImage image;

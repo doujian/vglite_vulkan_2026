@@ -677,7 +677,7 @@ vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *interna
 
     VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
     host_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
     host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -688,7 +688,7 @@ vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *interna
     host_barrier.subresourceRange.layerCount = 1;
     vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
 
     internal->msaa_dirty = 0;
     return VG_LITE_SUCCESS;
@@ -791,7 +791,7 @@ int vg_lite_blend_to_group(vg_lite_blend_t blend)
     }
 }
 
-static void get_blend_attachment_state(int blend_group, VkPipelineColorBlendAttachmentState *cba)
+void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachmentState *cba)
 {
     memset(cba, 0, sizeof(*cba));
     cba->colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
@@ -903,7 +903,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     if (mode == 0) ms.minSampleShading = 1.0f;
 
     VkPipelineColorBlendAttachmentState cba;
-    get_blend_attachment_state(blend_group, &cba);
+    vg_lite_vulkan_get_blend_state(blend_group, &cba);
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1; cb.pAttachments = &cba;
 
@@ -1089,7 +1089,7 @@ static VkPipeline create_blit_aabb_pipeline_internal(VkFormat format, int blend_
     ms.rasterizationSamples = (mode == 1) ? VK_SAMPLE_COUNT_1_BIT : VK_SAMPLE_COUNT_4_BIT;
 
     VkPipelineColorBlendAttachmentState cba;
-    get_blend_attachment_state(blend_group, &cba);
+    vg_lite_vulkan_get_blend_state(blend_group, &cba);
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1; cb.pAttachments = &cba;
 
@@ -1484,7 +1484,7 @@ VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_
     if (!g_vk_ctx.pattern_vert_shader) return VK_NULL_HANDLE;
 
     VkPipelineColorBlendAttachmentState cba;
-    get_blend_attachment_state(blend_group, &cba);
+    vg_lite_vulkan_get_blend_state(blend_group, &cba);
 
     VkPipelineDepthStencilStateCreateInfo cover_ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     cover_ds.stencilTestEnable = VK_TRUE;
@@ -1742,7 +1742,7 @@ VkPipeline vg_lite_vulkan_get_grad_cover_pipeline(VkFormat format, int blend_gro
     if (!g_vk_ctx.grad_vert_shader) return VK_NULL_HANDLE;
 
     VkPipelineColorBlendAttachmentState cba;
-    get_blend_attachment_state(blend_group, &cba);
+    vg_lite_vulkan_get_blend_state(blend_group, &cba);
 
     VkPipelineDepthStencilStateCreateInfo cover_ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     cover_ds.stencilTestEnable = VK_TRUE;
