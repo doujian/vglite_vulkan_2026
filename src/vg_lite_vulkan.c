@@ -480,7 +480,10 @@ uint64_t vg_lite_vulkan_read_timestamp(uint32_t slot)
     VkResult res = vkGetQueryPoolResults(g_vk_ctx.device, g_vk_ctx.timestamp_query_pool,
         slot, 1, sizeof(uint64_t), &result, sizeof(uint64_t),
         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-    if (res != VK_SUCCESS) return 0;
+    if (res != VK_SUCCESS) {
+        fprintf(stderr, "[BLIT_PERF] vkGetQueryPoolResults failed: slot=%u res=%d\n", slot, res);
+        return 0;
+    }
     return result;
 }
 
