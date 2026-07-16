@@ -104,6 +104,9 @@ add_dependencies(test_blit_switch spirv_compilation)
 add_executable(test_blit_mixed blit_mixed/blit_mixed.c)
 add_dependencies(test_blit_mixed spirv_compilation)
 
+add_executable(test_blit_perf blit_perf/blit_perf.c)
+add_dependencies(test_blit_perf spirv_compilation)
+
 add_executable(test_bgr565_clear test_bgr565_clear/test_bgr565_clear.c)
 add_dependencies(test_bgr565_clear spirv_compilation)
 
