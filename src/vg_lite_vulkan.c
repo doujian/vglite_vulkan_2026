@@ -175,7 +175,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     /* Create timestamp query pool */
     VkQueryPoolCreateInfo qp_ci = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     qp_ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-    qp_ci.queryCount = 4096;
+    qp_ci.queryCount = VGLITE_TIMESTAMP_QUERY_COUNT;
     VK_CHECK(vkCreateQueryPool(g_vk_ctx.device, &qp_ci, NULL, &g_vk_ctx.timestamp_query_pool));
     g_vk_ctx.timestamp_slot_counter = 0;
 
@@ -252,7 +252,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.clut_buffer, g_vk_ctx.clut_memory, 0));
     VK_CHECK(vkMapMemory(g_vk_ctx.device, g_vk_ctx.clut_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.clut_mapped));
 
-    g_vk_ctx.use_aabb_blit = 1;  /* AABB optimization enabled by default */
+    g_vk_ctx.use_aabb_blit = VGLITE_BLIT_AABB;  /* AABB optimization, configurable via vg_lite_config.h */
     return VG_LITE_SUCCESS;
 }
 
@@ -286,7 +286,7 @@ vg_lite_error_t vg_lite_vulkan_begin_command(void)
     g_vk_ctx.cmd_buf_recording = 1;
     g_vk_ctx.timestamp_slot_counter = 0;
     if (g_vk_ctx.timestamp_query_pool)
-        vkCmdResetQueryPool(g_vk_ctx.cmd_buf, g_vk_ctx.timestamp_query_pool, 0, 4096);
+        vkCmdResetQueryPool(g_vk_ctx.cmd_buf, g_vk_ctx.timestamp_query_pool, 0, VGLITE_TIMESTAMP_QUERY_COUNT);
     return VG_LITE_SUCCESS;
 }
 
@@ -468,7 +468,7 @@ static int create_attachment(
 void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage)
 {
     if (!g_vk_ctx.timestamp_query_pool || !g_vk_ctx.cmd_buf_recording) return;
-    if (g_vk_ctx.timestamp_slot_counter >= 64) return;
+    if (g_vk_ctx.timestamp_slot_counter >= VGLITE_TIMESTAMP_QUERY_COUNT) return;
     vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, stage, g_vk_ctx.timestamp_query_pool, g_vk_ctx.timestamp_slot_counter);
     g_vk_ctx.timestamp_slot_counter++;
 }

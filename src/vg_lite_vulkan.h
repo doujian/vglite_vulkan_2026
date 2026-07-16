@@ -3,6 +3,7 @@
 
 #include "volk.h"
 #include "vg_lite.h"
+#include "vg_lite_config.h"
 #include <stdio.h>
 
 #define VK_CHECK(call) do { \
@@ -19,8 +20,6 @@
 #define BG_SUBTRACT   4
 #define BG_NONE       5
 #define BG_COUNT      6
-
-#define MAX_PIPELINE_CACHE 64
 
 typedef struct {
     VkImage image;
@@ -75,8 +74,6 @@ typedef struct {
     int current_fb_is_no_msaa;
     buffer_internal_t *current_fb_internal;
 
-    #define MAX_PENDING_FB 32
-    #define MAX_PENDING_DESC 64
     VkFramebuffer pending_fb[MAX_PENDING_FB];
     int pending_fb_count;
     VkRenderPass pending_rp[MAX_PENDING_FB];
@@ -138,7 +135,6 @@ typedef struct {
     int grad_pipeline_cache_count;
 
     /* Scissor state */
-    #define MAX_SCISSOR_RECTS 16
     VkRect2D scissor_rects[MAX_SCISSOR_RECTS];
     int scissor_count;
     int scissor_enabled;

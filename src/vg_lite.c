@@ -1,4 +1,5 @@
 #include "vg_lite.h"
+#include "vg_lite_config.h"
 #include "vg_lite_vulkan.h"
 #include "vg_lite_format.h"
 #include <stdio.h>
@@ -9,23 +10,7 @@
 #include "vg_lite_math.h"
 #include "shader_loader.h"
 
-/* Compile-time switch for blit native-blend MSAA.
- * 1 = use 4x MSAA render pass (default)
- * 0 = use 1x no-MSAA render pass (skip seed_msaa, lower overhead)
- * Override with -DVGLITE_BLIT_MSAA=0 on the compile command line. */
-#ifndef VGLITE_BLIT_MSAA
-#define VGLITE_BLIT_MSAA 1
-#endif
-
-/* Compile-time switch for blit GPU performance profiling.
- * 1 = wrap every vkCmdDraw in vg_lite_blit() with GPU timestamps (default)
- * 0 = disable, zero overhead
- * Override with -DBLIT_PERF=0 on the compile command line. */
-#ifndef BLIT_PERF
-#define BLIT_PERF 1
-#endif
-
-#if BLIT_PERF
+#if VGLITE_BLIT_PERF
 #define BOTTOM_OF_PIPE_BIT 0x00002000
 
 /* CPU fallback timer for environments without GPU timestamp support (e.g. cmodel) */
@@ -390,7 +375,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     } else if (target->format == VG_LITE_RGB565) {
         /* VK_FORMAT_B5G6R5_UNORM_PACK16: standard Vulkan mapping float32[0]=R, [1]=G, [2]=B.
          * No-MSAA path follows Vulkan spec correctly.
-         * (MSAA path needs R/B swap due to Intel Iris Xe driver bug — see blit/draw code.) */
+         * (MSAA path needs R/B swap due to Intel Iris Xe driver bug �?see blit/draw code.) */
         clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
         clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
         clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
@@ -687,7 +672,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     /* Only flush + resolve when the source or target has pending MSAA
      * writes that haven't been copied to the LINEAR image yet.
      * For consecutive native-blend blits to the same target with simple
-     * CPU-filled sources (msaa_dirty=0), this is a no-op → RP stays open
+     * CPU-filled sources (msaa_dirty=0), this is a no-op �?RP stays open
      * and set_render_target's reuse path fires (L500). */
     int need_flush = (src_int->msaa_dirty || target_int->msaa_dirty);
     if (need_flush) {
@@ -702,7 +687,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
      * to the fragment shader. Runs outside any render pass (after flush
      * if dirty, or when no RP is active). On RP reuse (consecutive blits,
      * current_fb != NULL, no dirty source), the prior vkQueueSubmit's
-     * implicit host barrier already guarantees visibility — skip it. */
+     * implicit host barrier already guarantees visibility �?skip it. */
     if (need_flush || !g_vk_ctx.current_fb) {
         VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         src_bar.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
@@ -808,15 +793,15 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
     vg_lite_vulkan_apply_scissor(target->width, target->height);
-#if BLIT_PERF
+#if VGLITE_BLIT_PERF
     uint32_t perf_slot0 = g_vk_ctx.timestamp_slot_counter;
-    if (perf_slot0 + 1 < 4096)
+    if (perf_slot0 + 1 < VGLITE_TIMESTAMP_QUERY_COUNT)
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
             g_vk_ctx.timestamp_query_pool, perf_slot0);
 #endif
     vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
-#if BLIT_PERF
-    if (perf_slot0 + 1 < 4096) {
+#if VGLITE_BLIT_PERF
+    if (perf_slot0 + 1 < VGLITE_TIMESTAMP_QUERY_COUNT) {
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
             g_vk_ctx.timestamp_query_pool, perf_slot0 + 1);
         g_vk_ctx.timestamp_slot_counter += 2;
@@ -833,7 +818,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
         vkFreeMemory(g_vk_ctx.device, tmp_memory, NULL);
     } else {
-        /* Native blend: defer — RP stays open, desc set freed after submit */
+        /* Native blend: defer �?RP stays open, desc set freed after submit */
         if (g_vk_ctx.pending_desc_count < MAX_PENDING_DESC) {
             g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = desc_set;
         } else {
@@ -851,8 +836,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
 vg_lite_error_t vg_lite_finish(void)
 {
-#if BLIT_PERF
-    /* Always record CPU start before submit — cheap, used if GPU timestamps fail */
+#if VGLITE_BLIT_PERF
+    /* Always record CPU start before submit �?cheap, used if GPU timestamps fail */
     if (g_vk_ctx.blit_perf_count > 0)
         blit_perf_cpu_record_start();
 #endif
@@ -863,7 +848,7 @@ vg_lite_error_t vg_lite_finish(void)
     vg_lite_vulkan_submit_command(1);
     vg_lite_draw_cleanup_pending_buffers();
 
-#if BLIT_PERF
+#if VGLITE_BLIT_PERF
     if (g_vk_ctx.blit_perf_count > 0) {
         uint64_t batch_ns = 0;
 
