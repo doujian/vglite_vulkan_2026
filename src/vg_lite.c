@@ -707,10 +707,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 #if VGLITE_BLIT_MSAA
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     vg_lite_vulkan_set_render_target(target);
-    if (native_blend && g_vk_ctx.current_fb != prev_fb) {
-        /* New RP for a native+MSAA blit: seed the MSAA with the target's
-         * current content so the hardware-blend draw reads the right dst.
-         * Skipped on RP reuse (deferred batching) to preserve accumulation. */
+    if (g_vk_ctx.current_fb != prev_fb) {
         vg_lite_vulkan_seed_msaa(target, sampler);
     }
 #else

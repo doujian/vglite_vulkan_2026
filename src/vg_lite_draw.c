@@ -479,29 +479,35 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         vlc_path_free(&vlc_path);
         return err;
     }
-    int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
-    vg_lite_vulkan_flush_render_pass();
-    
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    if (internal->msaa_dirty) {
+
+    int need_flush = (internal->msaa_dirty);
+    if (need_flush) {
+        vg_lite_vulkan_flush_render_pass();
         vg_lite_vulkan_resolve_msaa_to_target(internal);
-        internal->msaa_needs_seed = 1;
     }
-    
-    if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
-        err = vg_lite_vulkan_set_render_target(target);
-        if (err != VG_LITE_SUCCESS) {
-            destroy_buffer(vbo, vbo_mem);
-            destroy_buffer(ibo, ibo_mem);
-            tess_geometry_free(&geom);
-            vlc_path_free(&vlc_path);
-            return err;
-        }
-        if (prev_was_no_msaa || internal->msaa_needs_seed || blend != VG_LITE_BLEND_NONE) {
-            VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
-            vg_lite_vulkan_seed_msaa(target, sampler);
-            internal->msaa_needs_seed = 0;
-        }
+
+    VkFramebuffer prev_fb = g_vk_ctx.current_fb;
+    err = vg_lite_vulkan_set_render_target(target);
+    if (err != VG_LITE_SUCCESS) {
+        destroy_buffer(vbo, vbo_mem);
+        destroy_buffer(ibo, ibo_mem);
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return err;
+    }
+
+    if (g_vk_ctx.current_fb != prev_fb) {
+        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
+        vg_lite_vulkan_seed_msaa(target, sampler);
+    } else {
+        VkClearAttachment clr = {0};
+        clr.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        VkClearRect rect = {0};
+        rect.rect.extent.width = target->width;
+        rect.rect.extent.height = target->height;
+        rect.layerCount = 1;
+        vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clr, 1, &rect);
     }
     
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
