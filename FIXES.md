@@ -265,3 +265,17 @@ The `prev_was_no_msaa` check still handles same-submission transitions (clear �
 Added `current_fb_internal` pointer to `vk_context_t` for reverse lookup from VkImage to buffer_internal_t.
 
 **Files**: src/vg_lite_vulkan.h, src/vg_lite_vulkan.c, src/vg_lite.c, src/vg_lite_draw.c
+
+---
+
+## test_scale regression from AABB blit optimization
+
+**Date**: 2025-07-16
+
+**Symptom**: `test_scale` failed after enabling AABB blit optimization (`use_aabb_blit=1`). Golden verification: 4 passed, 70 failed. Pixel mismatches concentrated at the edges of scaled blit regions — affected pixels rendered approximately 50% darker than expected (e.g., got R=56 vs exp R=76). The test uses BI_LINEAR filtered blits at various scale factors (0.25x–1.2x).
+
+**Root Cause**: The AABB-computed triangle tightly bounds the blit destination region, but Vulkan's rasterization rules (top-left rule) mean pixels whose centers fall just outside the AABB boundary are not rasterized. With the original fullscreen triangle `(-1,-1),(3,-1),(-1,3)`, every pixel on the target was rasterized and the fragment shader's UV clamp/discard handled out-of-region pixels. The AABB triangle left a ~1px gap at the edges where BI_LINEAR filtering still needs fragments to be generated (the filter samples beyond the exact blit region).
+
+**Solution**: Expanded the AABB by a 1px margin in all directions after clipping to target bounds, before converting to NDC. This ensures edge pixels are covered. The fragment shader's existing UV clamp/discard logic handles the extra coverage safely — out-of-range fragments are simply discarded.
+
+**File**: src/vg_lite.c (`compute_blit_aabb` function, ~line 454)
