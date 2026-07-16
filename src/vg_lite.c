@@ -27,6 +27,38 @@
 
 #if BLIT_PERF
 #define BOTTOM_OF_PIPE_BIT 0x00002000
+
+/* CPU fallback timer for environments without GPU timestamp support (e.g. cmodel) */
+static int blit_perf_use_cpu_timer = 0;
+static int blit_perf_gpu_checked   = 0;
+
+#if defined(_WIN32)
+  #include <windows.h>
+  static LARGE_INTEGER blit_perf_cpu_start;
+  static LARGE_INTEGER blit_perf_cpu_freq;
+  static void blit_perf_cpu_record_start(void) {
+      QueryPerformanceFrequency(&blit_perf_cpu_freq);
+      QueryPerformanceCounter(&blit_perf_cpu_start);
+  }
+  static uint64_t blit_perf_cpu_read_ns(void) {
+      LARGE_INTEGER now;
+      QueryPerformanceCounter(&now);
+      return (uint64_t)((double)(now.QuadPart - blit_perf_cpu_start.QuadPart)
+                        * 1e9 / blit_perf_cpu_freq.QuadPart);
+  }
+#else
+  #include <time.h>
+  static struct timespec blit_perf_cpu_start;
+  static void blit_perf_cpu_record_start(void) {
+      clock_gettime(CLOCK_MONOTONIC, &blit_perf_cpu_start);
+  }
+  static uint64_t blit_perf_cpu_read_ns(void) {
+      struct timespec now;
+      clock_gettime(CLOCK_MONOTONIC, &now);
+      return (uint64_t)(now.tv_sec - blit_perf_cpu_start.tv_sec) * 1000000000ULL
+           + (uint64_t)(now.tv_nsec - blit_perf_cpu_start.tv_nsec);
+  }
+#endif
 #endif
 
 extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *t, vg_lite_path_t *p, 
@@ -819,6 +851,12 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
 vg_lite_error_t vg_lite_finish(void)
 {
+#if BLIT_PERF
+    /* CPU fallback: record start time before GPU work */
+    if (blit_perf_use_cpu_timer && g_vk_ctx.blit_perf_count > 0)
+        blit_perf_cpu_record_start();
+#endif
+
     vg_lite_vulkan_end_render_pass();
     if (g_vk_ctx.current_fb_internal && g_vk_ctx.current_fb_internal->msaa_dirty)
         vg_lite_vulkan_resolve_msaa_to_target(g_vk_ctx.current_fb_internal);
@@ -826,22 +864,46 @@ vg_lite_error_t vg_lite_finish(void)
     vg_lite_draw_cleanup_pending_buffers();
 
 #if BLIT_PERF
-    /* Read back GPU timestamps and accumulate perf stats */
-    if (g_vk_ctx.blit_perf_count > 0 && g_vk_ctx.timestamp_query_pool) {
-        uint64_t batch_ns = 0;
-        for (uint32_t i = 0; i < g_vk_ctx.blit_perf_count; i++) {
-            uint32_t s0 = i * 2, s1 = i * 2 + 1;
-            uint64_t t0 = vg_lite_vulkan_read_timestamp(s0);
-            uint64_t t1 = vg_lite_vulkan_read_timestamp(s1);
-            if (t1 > t0)
-                batch_ns += (t1 - t0);
+    if (g_vk_ctx.blit_perf_count > 0) {
+
+        if (!blit_perf_gpu_checked && g_vk_ctx.timestamp_query_pool) {
+            /* First time: check if GPU timestamps work */
+            uint64_t t0 = vg_lite_vulkan_read_timestamp(0);
+            blit_perf_gpu_checked = 1;
+            if (t0 == 0) {
+                blit_perf_use_cpu_timer = 1;
+                fprintf(stderr, "[BLIT_PERF] GPU timestamps unavailable, falling back to CPU timer\n");
+            }
         }
-        g_vk_ctx.blit_perf_total_ns += batch_ns;
-        printf("[BLIT_PERF] batch blits=%u  gpu_ns=%llu  avg_ns/blit=%.0f  total_ns=%llu\n",
-               g_vk_ctx.blit_perf_count,
-               (unsigned long long)batch_ns,
-               g_vk_ctx.blit_perf_count ? (double)batch_ns / g_vk_ctx.blit_perf_count : 0.0,
-               (unsigned long long)g_vk_ctx.blit_perf_total_ns);
+
+        uint64_t batch_ns = 0;
+
+        if (blit_perf_use_cpu_timer) {
+            /* CPU timer: measure total wall-clock time for the batch */
+            batch_ns = blit_perf_cpu_read_ns();
+            g_vk_ctx.blit_perf_total_ns += batch_ns;
+            printf("[BLIT_PERF] batch blits=%u  cpu_ns=%llu  avg_ns/blit=%.0f  total_ns=%llu\n",
+                   g_vk_ctx.blit_perf_count,
+                   (unsigned long long)batch_ns,
+                   g_vk_ctx.blit_perf_count ? (double)batch_ns / g_vk_ctx.blit_perf_count : 0.0,
+                   (unsigned long long)g_vk_ctx.blit_perf_total_ns);
+        } else if (g_vk_ctx.timestamp_query_pool) {
+            /* GPU timer: read back timestamps */
+            for (uint32_t i = 0; i < g_vk_ctx.blit_perf_count; i++) {
+                uint32_t s0 = i * 2, s1 = i * 2 + 1;
+                uint64_t t0 = vg_lite_vulkan_read_timestamp(s0);
+                uint64_t t1 = vg_lite_vulkan_read_timestamp(s1);
+                if (t1 > t0)
+                    batch_ns += (t1 - t0);
+            }
+            g_vk_ctx.blit_perf_total_ns += batch_ns;
+            printf("[BLIT_PERF] batch blits=%u  gpu_ns=%llu  avg_ns/blit=%.0f  total_ns=%llu\n",
+                   g_vk_ctx.blit_perf_count,
+                   (unsigned long long)batch_ns,
+                   g_vk_ctx.blit_perf_count ? (double)batch_ns / g_vk_ctx.blit_perf_count : 0.0,
+                   (unsigned long long)g_vk_ctx.blit_perf_total_ns);
+        }
+
         g_vk_ctx.blit_perf_count = 0;
         g_vk_ctx.timestamp_slot_counter = 0;
     }
