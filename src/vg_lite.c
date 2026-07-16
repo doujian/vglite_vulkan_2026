@@ -852,8 +852,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 vg_lite_error_t vg_lite_finish(void)
 {
 #if BLIT_PERF
-    /* CPU fallback: record start time before GPU work */
-    if (blit_perf_use_cpu_timer && g_vk_ctx.blit_perf_count > 0)
+    /* Always record CPU start before submit — cheap, used if GPU timestamps fail */
+    if (g_vk_ctx.blit_perf_count > 0)
         blit_perf_cpu_record_start();
 #endif
 
@@ -877,7 +877,7 @@ vg_lite_error_t vg_lite_finish(void)
             }
         }
 
-        if (blit_perf_use_cpu_timer) {
+        if (blit_perf_use_cpu_timer || g_vk_ctx.timestamp_query_failed) {
             /* CPU timer: measure total wall-clock time for the batch */
             batch_ns = blit_perf_cpu_read_ns();
             g_vk_ctx.blit_perf_total_ns += batch_ns;
@@ -886,7 +886,7 @@ vg_lite_error_t vg_lite_finish(void)
                    (unsigned long long)batch_ns,
                    g_vk_ctx.blit_perf_count ? (double)batch_ns / g_vk_ctx.blit_perf_count : 0.0,
                    (unsigned long long)g_vk_ctx.blit_perf_total_ns);
-        } else if (g_vk_ctx.timestamp_query_pool && !g_vk_ctx.timestamp_query_failed) {
+        } else if (g_vk_ctx.timestamp_query_pool) {
             /* GPU timer: read back timestamps */
             for (uint32_t i = 0; i < g_vk_ctx.blit_perf_count; i++) {
                 uint32_t s0 = i * 2, s1 = i * 2 + 1;
