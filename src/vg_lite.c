@@ -972,7 +972,34 @@ vg_lite_error_t vg_lite_blit2(vg_lite_buffer_t *t, vg_lite_buffer_t *s0, vg_lite
 
 vg_lite_error_t vg_lite_draw(vg_lite_buffer_t *t, vg_lite_path_t *p, vg_lite_fill_t fl,
     vg_lite_matrix_t *m, vg_lite_blend_t b, vg_lite_color_t c)
-{ 
+{
+    printf("[DRAW] target=%dx%d fmt=%d  path={fmt=%d qual=%d bb=[%g,%g,%g,%g] len=%d  data=",
+           t ? t->width : 0, t ? t->height : 0, t ? (int)t->format : -1,
+           p ? (int)p->format : -1, p ? (int)p->quality : -1,
+           p ? p->bounding_box[0] : 0, p ? p->bounding_box[1] : 0,
+           p ? p->bounding_box[2] : 0, p ? p->bounding_box[3] : 0,
+           p ? (int)p->path_length : 0);
+
+    /* Dump path data as raw bytes (opcode + coordinates) */
+    if (p && p->path && p->path_length > 0) {
+        printf("[");
+        for (vg_lite_uint32_t i = 0; i < p->path_length; i++) {
+            unsigned char byte = ((unsigned char*)p->path)[i];
+            if (i > 0) printf(" ");
+            /* Print opcodes (0-4) as decimal, others as signed value */
+            printf("%d", (signed char)byte);
+        }
+        printf("]");
+    } else {
+        printf("(null)");
+    }
+
+    printf("}  fill=%d  blend=%d  color=0x%08X  "
+           "mat=[%g %g %g; %g %g %g; %g %g %g]\n",
+           (int)fl, (int)b, c,
+           m ? m->m[0][0] : 0, m ? m->m[0][1] : 0, m ? m->m[0][2] : 0,
+           m ? m->m[1][0] : 0, m ? m->m[1][1] : 0, m ? m->m[1][2] : 0,
+           m ? m->m[2][0] : 0, m ? m->m[2][1] : 0, m ? m->m[2][2] : 0);
     return vg_lite_draw_impl(t, p, fl, m, b, c);
 }
 
