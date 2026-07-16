@@ -155,7 +155,8 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     dev_ci.enabledExtensionCount = 0;
     dev_ci.ppEnabledExtensionNames = NULL;
 
-    /* No special physical device features required */
+    /* Timestamp queries supported by default in Vulkan 1.0 — no feature flag needed.
+     * timestampPeriod is queried from VkPhysicalDeviceProperties.limits. */
     dev_ci.pEnabledFeatures = NULL;
 
     if (enable_validation) { dev_ci.enabledLayerCount = 1; dev_ci.ppEnabledLayerNames = validation_layers; }
@@ -165,6 +166,18 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     /* Overwrite device-level pointers with direct driver dispatch (performance) */
     volkLoadDevice(g_vk_ctx.device);
     vkGetDeviceQueue(g_vk_ctx.device, g_vk_ctx.queue_family_index, 0, &g_vk_ctx.queue);
+
+    /* Query timestamp period for GPU timing */
+    VkPhysicalDeviceProperties phys_props;
+    vkGetPhysicalDeviceProperties(g_vk_ctx.physical_device, &phys_props);
+    g_vk_ctx.timestamp_period = (float)phys_props.limits.timestampPeriod;
+
+    /* Create timestamp query pool */
+    VkQueryPoolCreateInfo qp_ci = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    qp_ci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    qp_ci.queryCount = 64;
+    VK_CHECK(vkCreateQueryPool(g_vk_ctx.device, &qp_ci, NULL, &g_vk_ctx.timestamp_query_pool));
+    g_vk_ctx.timestamp_slot_counter = 0;
 
     VkCommandPoolCreateInfo pool_ci = {0};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -239,6 +252,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.clut_buffer, g_vk_ctx.clut_memory, 0));
     VK_CHECK(vkMapMemory(g_vk_ctx.device, g_vk_ctx.clut_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.clut_mapped));
 
+    g_vk_ctx.use_aabb_blit = 1;  /* AABB optimization enabled by default */
     return VG_LITE_SUCCESS;
 }
 
@@ -253,6 +267,7 @@ vg_lite_error_t vg_lite_vulkan_destroy(void)
     if (g_vk_ctx.descriptor_pool) { vkDestroyDescriptorPool(g_vk_ctx.device, g_vk_ctx.descriptor_pool, NULL); g_vk_ctx.descriptor_pool = VK_NULL_HANDLE; }
     if (g_vk_ctx.fence) { vkDestroyFence(g_vk_ctx.device, g_vk_ctx.fence, NULL); g_vk_ctx.fence = VK_NULL_HANDLE; }
     if (g_vk_ctx.command_pool) { vkFreeCommandBuffers(g_vk_ctx.device, g_vk_ctx.command_pool, 1, &g_vk_ctx.cmd_buf); vkFreeCommandBuffers(g_vk_ctx.device, g_vk_ctx.command_pool, 1, &g_vk_ctx.init_cmd_buf); vkDestroyCommandPool(g_vk_ctx.device, g_vk_ctx.command_pool, NULL); g_vk_ctx.command_pool = VK_NULL_HANDLE; }
+    if (g_vk_ctx.timestamp_query_pool) { vkDestroyQueryPool(g_vk_ctx.device, g_vk_ctx.timestamp_query_pool, NULL); g_vk_ctx.timestamp_query_pool = VK_NULL_HANDLE; }
     if (g_vk_ctx.device) { vkDestroyDevice(g_vk_ctx.device, NULL); g_vk_ctx.device = VK_NULL_HANDLE; }
     if (g_vk_ctx.debug_messenger) { destroy_debug_messenger(g_vk_ctx.instance, g_vk_ctx.debug_messenger); g_vk_ctx.debug_messenger = VK_NULL_HANDLE; }
     if (g_vk_ctx.instance) { vkDestroyInstance(g_vk_ctx.instance, NULL); g_vk_ctx.instance = VK_NULL_HANDLE; }
@@ -269,6 +284,9 @@ vg_lite_error_t vg_lite_vulkan_begin_command(void)
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(g_vk_ctx.cmd_buf, &bi));
     g_vk_ctx.cmd_buf_recording = 1;
+    g_vk_ctx.timestamp_slot_counter = 0;
+    if (g_vk_ctx.timestamp_query_pool)
+        vkCmdResetQueryPool(g_vk_ctx.cmd_buf, g_vk_ctx.timestamp_query_pool, 0, 64);
     return VG_LITE_SUCCESS;
 }
 
@@ -446,6 +464,34 @@ static int create_attachment(
     return 0;
 }
 
+/* GPU timestamp utilities */
+void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage)
+{
+    if (!g_vk_ctx.timestamp_query_pool || !g_vk_ctx.cmd_buf_recording) return;
+    if (g_vk_ctx.timestamp_slot_counter >= 64) return;
+    vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, stage, g_vk_ctx.timestamp_query_pool, g_vk_ctx.timestamp_slot_counter);
+    g_vk_ctx.timestamp_slot_counter++;
+}
+
+uint64_t vg_lite_vulkan_read_timestamp(uint32_t slot)
+{
+    if (!g_vk_ctx.timestamp_query_pool) return 0;
+    uint64_t result = 0;
+    VkResult res = vkGetQueryPoolResults(g_vk_ctx.device, g_vk_ctx.timestamp_query_pool,
+        slot, 1, sizeof(uint64_t), &result, sizeof(uint64_t),
+        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+    if (res != VK_SUCCESS) return 0;
+    return result;
+}
+
+double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot)
+{
+    uint64_t start = vg_lite_vulkan_read_timestamp(start_slot);
+    uint64_t end = vg_lite_vulkan_read_timestamp(end_slot);
+    if (start == 0 || end == 0 || end < start) return 0.0;
+    return (double)(end - start) * (double)g_vk_ctx.timestamp_period;
+}
+
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler)
 {
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
@@ -477,7 +523,10 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     pc.m[0] = 1.0f; pc.m[5] = 1.0f; pc.m[10] = 1.0f;
     pc.blend = (int)VG_LITE_BLEND_NONE;
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    float fullscreen_aabb[4] = {-1.0f, -1.0f, 3.0f, 3.0f};
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 16, fullscreen_aabb);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
@@ -802,9 +851,9 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             ds_ci.pBindings = bindings;
             VK_CHECK(vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.native_descriptor_layout));
             VkPushConstantRange pc_range = {0};
-            pc_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             pc_range.offset = 0;
-            pc_range.size = 80;
+            pc_range.size = 96;  /* 80B fragment data at offset 0 + 16B AABB at offset 80 */
             VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
@@ -991,6 +1040,125 @@ VkPipeline vg_lite_vulkan_get_pipeline_native_msaa(VkFormat format, int blend_gr
     return pipeline;
 }
 
+/* Create AABB blit pipeline — same as create_blit_pipeline_internal but uses
+ * blit_aabb_vert shader module instead of the original blit_vert. */
+static VkPipeline create_blit_aabb_pipeline_internal(VkFormat format, int blend_group, int mode)
+{
+    if (!g_vk_ctx.blit_aabb_vert_shader)
+        g_vk_ctx.blit_aabb_vert_shader = load_shader_module(g_vk_ctx.device, "blit_aabb_vert");
+    if (!g_vk_ctx.native_frag_shader)
+        g_vk_ctx.native_frag_shader = load_shader_module(g_vk_ctx.device, "blit_native_frag");
+
+    /* Ensure native_pipeline_layout exists (it has the 96B VERTEX|FRAGMENT range) */
+    if (!g_vk_ctx.native_pipeline_layout) {
+        if (!g_vk_ctx.vert_shader)
+            g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
+        VkDescriptorSetLayoutBinding bindings[1] = {
+            {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
+        };
+        VkDescriptorSetLayoutCreateInfo ds_ci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        ds_ci.bindingCount = 1;
+        ds_ci.pBindings = bindings;
+        VK_CHECK(vkCreateDescriptorSetLayout(g_vk_ctx.device, &ds_ci, NULL, &g_vk_ctx.native_descriptor_layout));
+        VkPushConstantRange pc_range = {0};
+        pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pc_range.offset = 0;
+        pc_range.size = 96;
+        VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pl_ci.setLayoutCount = 1;
+        pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
+        pl_ci.pushConstantRangeCount = 1;
+        pl_ci.pPushConstantRanges = &pc_range;
+        VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.native_pipeline_layout));
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.blit_aabb_vert_shader, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_vk_ctx.native_frag_shader, "main", NULL},
+    };
+    VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    ms.rasterizationSamples = (mode == 1) ? VK_SAMPLE_COUNT_1_BIT : VK_SAMPLE_COUNT_4_BIT;
+
+    VkPipelineColorBlendAttachmentState cba;
+    get_blend_attachment_state(blend_group, &cba);
+    VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+    VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    ds.depthTestEnable = VK_FALSE;
+    ds.depthWriteEnable = VK_FALSE;
+    ds.stencilTestEnable = VK_FALSE;
+
+    VkRenderPass rp = (mode == 1) ? create_render_pass_no_msaa(format) : vg_lite_vulkan_create_render_pass(format);
+
+    VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    vs.viewportCount = 1;
+    vs.scissorCount = 1;
+
+    VkDynamicState dyn_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dyn_ci = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dyn_ci.dynamicStateCount = 2; dyn_ci.pDynamicStates = dyn_states;
+
+    VkGraphicsPipelineCreateInfo gp_ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    gp_ci.stageCount = 2; gp_ci.pStages = stages;
+    gp_ci.pVertexInputState = &vi; gp_ci.pInputAssemblyState = &ia;
+    gp_ci.pViewportState = &vs;
+    gp_ci.pRasterizationState = &rs; gp_ci.pMultisampleState = &ms;
+    gp_ci.pColorBlendState = &cb; gp_ci.pDepthStencilState = &ds; gp_ci.pDynamicState = &dyn_ci;
+    gp_ci.layout = g_vk_ctx.native_pipeline_layout;
+    gp_ci.renderPass = rp; gp_ci.subpass = 0;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &pipeline));
+    vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
+    return pipeline;
+}
+
+VkPipeline vg_lite_vulkan_get_pipeline_aabb_no_msaa(VkFormat format, int blend_group)
+{
+    for (int i = 0; i < g_vk_ctx.blit_aabb_pipeline_cache_count; i++) {
+        if (g_vk_ctx.blit_aabb_pipeline_cache[i].format == format &&
+            g_vk_ctx.blit_aabb_pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.blit_aabb_pipeline_cache[i].mode == 1)
+            return g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline;
+    }
+
+    VkPipeline pipeline = create_blit_aabb_pipeline_internal(format, blend_group, 1);
+    if (pipeline && g_vk_ctx.blit_aabb_pipeline_cache_count < MAX_PIPELINE_CACHE) {
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].pipeline = pipeline;
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].format = format;
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].mode = 1;
+        g_vk_ctx.blit_aabb_pipeline_cache_count++;
+    }
+    return pipeline;
+}
+
+VkPipeline vg_lite_vulkan_get_pipeline_aabb_native_msaa(VkFormat format, int blend_group)
+{
+    for (int i = 0; i < g_vk_ctx.blit_aabb_pipeline_cache_count; i++) {
+        if (g_vk_ctx.blit_aabb_pipeline_cache[i].format == format &&
+            g_vk_ctx.blit_aabb_pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.blit_aabb_pipeline_cache[i].mode == 2)
+            return g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline;
+    }
+
+    VkPipeline pipeline = create_blit_aabb_pipeline_internal(format, blend_group, 2);
+    if (pipeline && g_vk_ctx.blit_aabb_pipeline_cache_count < MAX_PIPELINE_CACHE) {
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].pipeline = pipeline;
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].format = format;
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].mode = 2;
+        g_vk_ctx.blit_aabb_pipeline_cache_count++;
+    }
+    return pipeline;
+}
+
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target)
 {
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
@@ -1113,6 +1281,14 @@ void vg_lite_vulkan_destroy_pipelines(void)
         g_vk_ctx.blit_ssbo_memory = VK_NULL_HANDLE;
         g_vk_ctx.blit_ssbo_mapped = NULL;
     }
+
+    /* AABB blit pipeline cleanup */
+    for (int i = 0; i < g_vk_ctx.blit_aabb_pipeline_cache_count; i++) {
+        if (g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline)
+            vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline, NULL);
+    }
+    g_vk_ctx.blit_aabb_pipeline_cache_count = 0;
+    if (g_vk_ctx.blit_aabb_vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.blit_aabb_vert_shader, NULL); g_vk_ctx.blit_aabb_vert_shader = VK_NULL_HANDLE; }
 
     for (int i = 0; i < g_vk_ctx.pattern_pipeline_cache_count; i++) {
         if (g_vk_ctx.pattern_pipeline_cache[i].pipeline)

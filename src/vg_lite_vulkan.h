@@ -142,6 +142,17 @@ typedef struct {
     VkRect2D scissor_rects[MAX_SCISSOR_RECTS];
     int scissor_count;
     int scissor_enabled;
+
+    /* AABB blit optimization */
+    VkShaderModule blit_aabb_vert_shader;
+    uint8_t use_aabb_blit;              /* 0 = original fullscreen, 1 = AABB pipeline */
+    pipeline_cache_entry_t blit_aabb_pipeline_cache[MAX_PIPELINE_CACHE];
+    int blit_aabb_pipeline_cache_count;
+
+    /* GPU timestamp query pool */
+    VkQueryPool timestamp_query_pool;
+    float timestamp_period;             /* nanoseconds per timestamp tick */
+    uint32_t timestamp_slot_counter;
 } vk_context_t;
 
 /* Helper: set scissor at draw time — uses user scissor if enabled, else full framebuffer */
@@ -170,6 +181,14 @@ int vg_lite_blend_to_group(vg_lite_blend_t blend);
 VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group);
 VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group);
 VkPipeline vg_lite_vulkan_get_pipeline_native_msaa(VkFormat format, int blend_group);
+VkPipeline vg_lite_vulkan_get_pipeline_aabb_no_msaa(VkFormat format, int blend_group);
+VkPipeline vg_lite_vulkan_get_pipeline_aabb_native_msaa(VkFormat format, int blend_group);
+
+/* GPU timestamp utilities */
+void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage);
+uint64_t vg_lite_vulkan_read_timestamp(uint32_t slot);
+double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot);
+
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler);
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
 vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *internal);
