@@ -1486,6 +1486,28 @@ typedef unsigned int        vg_lite_color_t;
     /* Wrap user memory into a vg_lite_buffer. */
     vg_lite_error_t vg_lite_wrap_user_memory(vg_lite_buffer_t *buffer, vg_lite_uint8_t *memory, vg_lite_uint32_t stride, vg_lite_uint32_t width, vg_lite_uint32_t height, vg_lite_buffer_format_t format);
 
+    /* --- Blit AABB optimization control --- */
+
+    /* Set blit AABB optimization mode.
+     * mode: 0 = original fullscreen triangle, 1 = AABB-driven tight triangle.
+     * Returns VG_LITE_SUCCESS on success. */
+    vg_lite_error_t vg_lite_set_blit_aabb_mode(vg_lite_uint32_t mode);
+
+    /* Get current blit AABB optimization mode (0 or 1). */
+    vg_lite_uint32_t vg_lite_get_blit_aabb_mode(void);
+
+    /* --- GPU timestamp profiling --- */
+
+    /* Write a GPU timestamp at the given pipeline stage.
+     * Returns the query slot index used. */
+    vg_lite_uint32_t vg_lite_write_timestamp(vg_lite_uint32_t stage);
+
+    /* Read a GPU timestamp result (nanoseconds). Call after vg_lite_finish(). */
+    vg_lite_uint64_t vg_lite_read_timestamp(vg_lite_uint32_t slot);
+
+    /* Get elapsed nanoseconds between two timestamp slots. */
+    double vg_lite_get_elapsed_ns(vg_lite_uint32_t start_slot, vg_lite_uint32_t end_slot);
+
 #endif /* VGLITE_VERSION_3_0 */
 
 #ifdef __cplusplus

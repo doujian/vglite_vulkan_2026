@@ -428,6 +428,55 @@ static void compute_blit_shader_matrix(vg_lite_matrix_t *matrix,
     mat3_multiply(s_inv, temp, shader_mat);
 }
 
+/* Compute AABB in NDC of the blit destination region.
+ * Transforms source 4 corners through blit matrix to target pixel space,
+ * takes bounding box, clips to target bounds, converts to NDC.
+ * Output: aabb[4] = {min_x_ndc, min_y_ndc, max_x_ndc, max_y_ndc} */
+static void compute_blit_aabb(vg_lite_matrix_t *matrix,
+    int src_w, int src_h, int dst_w, int dst_h,
+    float aabb[4])
+{
+    float corners[4][2] = {
+        {0, 0}, {(float)src_w, 0}, {(float)src_w, (float)src_h}, {0, (float)src_h}
+    };
+    float min_x = (float)dst_w, min_y = (float)dst_h, max_x = 0, max_y = 0;
+
+    for (int i = 0; i < 4; i++) {
+        float cx = corners[i][0], cy = corners[i][1];
+        float tx = matrix->m[0][0] * cx + matrix->m[0][1] * cy + matrix->m[0][2];
+        float ty = matrix->m[1][0] * cx + matrix->m[1][1] * cy + matrix->m[1][2];
+        if (tx < min_x) min_x = tx;
+        if (ty < min_y) min_y = ty;
+        if (tx > max_x) max_x = tx;
+        if (ty > max_y) max_y = ty;
+    }
+
+    /* Clip to target bounds */
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x > dst_w) max_x = (float)dst_w;
+    if (max_y > dst_h) max_y = (float)dst_h;
+
+    /* Expand by 1px margin to cover edge pixels that BI_LINEAR filtering
+     * needs. Without this, pixels just outside the AABB won't be rasterized,
+     * causing visible artifacts at the boundary of scaled blits. The fragment
+     * shader clamps/discards out-of-range UVs, so extra coverage is safe. */
+    min_x -= 1.0f;
+    min_y -= 1.0f;
+    max_x += 1.0f;
+    max_y += 1.0f;
+    if (min_x < 0) min_x = 0;
+    if (min_y < 0) min_y = 0;
+    if (max_x > dst_w) max_x = (float)dst_w;
+    if (max_y > dst_h) max_y = (float)dst_h;
+
+    /* Convert to NDC: [0,dst] -> [-1,1] */
+    aabb[0] = 2.0f * min_x / dst_w - 1.0f;
+    aabb[1] = 2.0f * min_y / dst_h - 1.0f;
+    aabb[2] = 2.0f * max_x / dst_w - 1.0f;
+    aabb[3] = 2.0f * max_y / dst_h - 1.0f;
+}
+
 static vg_lite_error_t create_temp_copy_image(VkFormat vkfmt,
     vg_lite_buffer_t *target, buffer_internal_t *target_int,
     VkImage *out_image, VkDeviceMemory *out_memory, VkImageView *out_view)
@@ -565,6 +614,15 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     else
         pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
+    VkPipeline aabb_pipeline = VK_NULL_HANDLE;
+    if (native_blend && g_vk_ctx.use_aabb_blit) {
+#if VGLITE_BLIT_MSAA
+        aabb_pipeline = vg_lite_vulkan_get_pipeline_aabb_native_msaa(vkfmt, blend_group);
+#else
+        aabb_pipeline = vg_lite_vulkan_get_pipeline_aabb_no_msaa(vkfmt, blend_group);
+#endif
+        if (!aabb_pipeline) return VG_LITE_OUT_OF_MEMORY;
+    }
     vg_lite_vulkan_begin_command();
     if (!native_blend) {
         vg_lite_vulkan_flush_render_pass();
@@ -665,8 +723,16 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
     if (native_blend) {
+        /* Push fragment data at offset 0 (80B), AABB at offset 80 (16B) */
         vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-            VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+        float blit_aabb[4] = {-1.0f, -1.0f, 3.0f, 3.0f};
+        if (g_vk_ctx.use_aabb_blit) {
+            compute_blit_aabb(matrix, source->width, source->height,
+                              target->width, target->height, blit_aabb);
+        }
+        vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 16, blit_aabb);
     } else {
         memcpy(g_vk_ctx.blit_ssbo_mapped, &pc, sizeof(pc));
     }
@@ -689,7 +755,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vkUpdateDescriptorSets(g_vk_ctx.device, 4, ws, 0, NULL);
     }
 
-    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        (native_blend && g_vk_ctx.use_aabb_blit) ? aabb_pipeline : pipeline);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
         native_blend ? g_vk_ctx.native_pipeline_layout : g_vk_ctx.blit_pipeline_layout,
         0, 1, &desc_set, 0, NULL);
@@ -869,3 +936,28 @@ vg_lite_error_t vg_lite_unmap(vg_lite_buffer_t *b) { (void)b; return VG_LITE_NOT
 vg_lite_error_t vg_lite_flush_mapped_buffer(vg_lite_buffer_t *b) { (void)b; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_dump_png(const char *fn, vg_lite_buffer_t *b) { (void)fn;(void)b; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_wrap_user_memory(vg_lite_buffer_t *b, vg_lite_uint8_t *m, vg_lite_uint32_t s, vg_lite_uint32_t w, vg_lite_uint32_t h, vg_lite_buffer_format_t f) { (void)b;(void)m;(void)s;(void)w;(void)h;(void)f; return VG_LITE_NOT_SUPPORT; }
+
+/* --- Blit AABB optimization and GPU timestamp public API --- */
+
+vg_lite_error_t vg_lite_set_blit_aabb_mode(vg_lite_uint32_t mode) {
+    g_vk_ctx.use_aabb_blit = (mode != 0) ? 1 : 0;
+    return VG_LITE_SUCCESS;
+}
+
+vg_lite_uint32_t vg_lite_get_blit_aabb_mode(void) {
+    return g_vk_ctx.use_aabb_blit;
+}
+
+vg_lite_uint32_t vg_lite_write_timestamp(vg_lite_uint32_t stage) {
+    /* Map vg_lite_uint32_t to VkPipelineStageFlagBits */
+    vg_lite_vulkan_write_timestamp((VkPipelineStageFlagBits)stage);
+    return g_vk_ctx.timestamp_slot_counter - 1;
+}
+
+vg_lite_uint64_t vg_lite_read_timestamp(vg_lite_uint32_t slot) {
+    return vg_lite_vulkan_read_timestamp(slot);
+}
+
+double vg_lite_get_elapsed_ns(vg_lite_uint32_t start_slot, vg_lite_uint32_t end_slot) {
+    return vg_lite_vulkan_get_elapsed_ns(start_slot, end_slot);
+}
