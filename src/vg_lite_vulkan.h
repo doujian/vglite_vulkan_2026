@@ -153,6 +153,10 @@ typedef struct {
     VkQueryPool timestamp_query_pool;
     float timestamp_period;             /* nanoseconds per timestamp tick */
     uint32_t timestamp_slot_counter;
+
+    /* Blit perf statistics (accumulated across blits within a batch) */
+    uint32_t blit_perf_count;           /* number of timed blits in current batch */
+    uint64_t blit_perf_total_ns;        /* sum of elapsed ns across all timed blits */
 } vk_context_t;
 
 /* Helper: set scissor at draw time — uses user scissor if enabled, else full framebuffer */

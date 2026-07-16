@@ -17,6 +17,18 @@
 #define VGLITE_BLIT_MSAA 1
 #endif
 
+/* Compile-time switch for blit GPU performance profiling.
+ * 1 = wrap every vkCmdDraw in vg_lite_blit() with GPU timestamps (default)
+ * 0 = disable, zero overhead
+ * Override with -DBLIT_PERF=0 on the compile command line. */
+#ifndef BLIT_PERF
+#define BLIT_PERF 1
+#endif
+
+#if BLIT_PERF
+#define BOTTOM_OF_PIPE_BIT 0x00002000
+#endif
+
 extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *t, vg_lite_path_t *p, 
                                          vg_lite_fill_t fl, vg_lite_matrix_t *m, 
                                          vg_lite_blend_t b, vg_lite_color_t c);
@@ -764,7 +776,21 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
     vg_lite_vulkan_apply_scissor(target->width, target->height);
+#if BLIT_PERF
+    uint32_t perf_slot0 = g_vk_ctx.timestamp_slot_counter;
+    if (perf_slot0 + 1 < 4096)
+        vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
+            g_vk_ctx.timestamp_query_pool, perf_slot0);
+#endif
     vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
+#if BLIT_PERF
+    if (perf_slot0 + 1 < 4096) {
+        vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
+            g_vk_ctx.timestamp_query_pool, perf_slot0 + 1);
+        g_vk_ctx.timestamp_slot_counter += 2;
+        g_vk_ctx.blit_perf_count++;
+    }
+#endif
 
     if (!native_blend) {
         /* Shader blend: immediate flush (temp copy lifecycle) */
@@ -798,6 +824,28 @@ vg_lite_error_t vg_lite_finish(void)
         vg_lite_vulkan_resolve_msaa_to_target(g_vk_ctx.current_fb_internal);
     vg_lite_vulkan_submit_command(1);
     vg_lite_draw_cleanup_pending_buffers();
+
+#if BLIT_PERF
+    /* Read back GPU timestamps and accumulate perf stats */
+    if (g_vk_ctx.blit_perf_count > 0 && g_vk_ctx.timestamp_query_pool) {
+        uint64_t batch_ns = 0;
+        for (uint32_t i = 0; i < g_vk_ctx.blit_perf_count; i++) {
+            uint32_t s0 = i * 2, s1 = i * 2 + 1;
+            uint64_t t0 = vg_lite_vulkan_read_timestamp(s0);
+            uint64_t t1 = vg_lite_vulkan_read_timestamp(s1);
+            if (t1 > t0)
+                batch_ns += (t1 - t0);
+        }
+        g_vk_ctx.blit_perf_total_ns += batch_ns;
+        printf("[BLIT_PERF] batch blits=%u  gpu_ns=%llu  avg_ns/blit=%.0f  total_ns=%llu\n",
+               g_vk_ctx.blit_perf_count,
+               (unsigned long long)batch_ns,
+               g_vk_ctx.blit_perf_count ? (double)batch_ns / g_vk_ctx.blit_perf_count : 0.0,
+               (unsigned long long)g_vk_ctx.blit_perf_total_ns);
+        g_vk_ctx.blit_perf_count = 0;
+        g_vk_ctx.timestamp_slot_counter = 0;
+    }
+#endif
     return VG_LITE_SUCCESS;
 }
 
