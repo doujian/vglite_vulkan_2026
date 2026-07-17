@@ -113,21 +113,29 @@ add_dependencies(test_blit_draw spirv_compilation)
 add_executable(test_bgr565_clear test_bgr565_clear/test_bgr565_clear.c)
 add_dependencies(test_bgr565_clear spirv_compilation)
 
-set(VSI_CTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../VGLite_Tests/VSI_CTS/samples")
-
 add_executable(test_vector vector/vector.c)
 add_dependencies(test_vector spirv_compilation)
-file(COPY ${VSI_CTS_DIR}/vector/vector.raw DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/vector/golden.h DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+add_custom_command(TARGET test_vector POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_CURRENT_SOURCE_DIR}/vector/vector.raw $<TARGET_FILE_DIR:test_vector>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_CURRENT_SOURCE_DIR}/vector/golden.h $<TARGET_FILE_DIR:test_vector>)
 
 add_executable(test_clock clock/main.c)
 add_dependencies(test_clock spirv_compilation)
-file(COPY ${VSI_CTS_DIR}/clock/clock.raw DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/clock/golden.h DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+add_custom_command(TARGET test_clock POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_CURRENT_SOURCE_DIR}/clock/clock.raw $<TARGET_FILE_DIR:test_clock>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_CURRENT_SOURCE_DIR}/clock/golden.h $<TARGET_FILE_DIR:test_clock>)
 
 add_executable(test_ui ui/main.c)
 add_dependencies(test_ui spirv_compilation)
-file(COPY ${VSI_CTS_DIR}/ui/ui.raw DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/ui/golden.h DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-file(COPY ${VSI_CTS_DIR}/ui/icons DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+add_custom_command(TARGET test_ui POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui/ui.raw $<TARGET_FILE_DIR:test_ui>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui/golden.h $<TARGET_FILE_DIR:test_ui>
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui/icons $<TARGET_FILE_DIR:test_ui>/icons)
 
