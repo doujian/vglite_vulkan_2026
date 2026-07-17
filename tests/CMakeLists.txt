@@ -139,3 +139,9 @@ add_custom_command(TARGET test_ui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_CURRENT_SOURCE_DIR}/ui/icons $<TARGET_FILE_DIR:test_ui>/icons)
 
+add_executable(test_glyphs2 glyphs2/glyphs2.c)
+add_dependencies(test_glyphs2 spirv_compilation)
+
+add_executable(test_multi_draw multi_draw/multi_draw.c)
+add_dependencies(test_multi_draw spirv_compilation)
+
