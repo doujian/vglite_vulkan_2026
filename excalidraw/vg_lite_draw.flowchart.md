@@ -16,6 +16,114 @@ tags: [excalidraw]
   "source": "https://github.com/zsviczian/obsidian-excalidraw-plugin",
   "elements": [
     {
+      "id": "p1-bg",
+      "type": "rectangle",
+      "x": 20,
+      "y": 65,
+      "width": 1060,
+      "height": 90,
+      "angle": 0,
+      "strokeColor": "#3b82f6",
+      "backgroundColor": "#dbe4ff",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "opacity": 30,
+      "groupIds": [],
+      "roundness": {
+        "type": 3
+      },
+      "seed": 510002,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false
+    },
+    {
+      "id": "p2-bg",
+      "type": "rectangle",
+      "x": 20,
+      "y": 175,
+      "width": 1060,
+      "height": 515,
+      "angle": 0,
+      "strokeColor": "#7c3aed",
+      "backgroundColor": "#e5dbff",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "opacity": 30,
+      "groupIds": [],
+      "roundness": {
+        "type": 3
+      },
+      "seed": 510010,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false
+    },
+    {
+      "id": "stencil-bg",
+      "type": "rectangle",
+      "x": 100,
+      "y": 710,
+      "width": 880,
+      "height": 73,
+      "angle": 0,
+      "strokeColor": "#f59e0b",
+      "backgroundColor": "#fff3bf",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "opacity": 30,
+      "groupIds": [],
+      "roundness": {
+        "type": 3
+      },
+      "seed": 510030,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false
+    },
+    {
+      "id": "cover-bg",
+      "type": "rectangle",
+      "x": 100,
+      "y": 793,
+      "width": 880,
+      "height": 73,
+      "angle": 0,
+      "strokeColor": "#15803d",
+      "backgroundColor": "#d3f9d8",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "dashed",
+      "roughness": 0,
+      "opacity": 30,
+      "groupIds": [],
+      "roundness": {
+        "type": 3
+      },
+      "seed": 510036,
+      "version": 1,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false
+    },
+    {
       "id": "title",
       "type": "text",
       "x": 300,
@@ -48,36 +156,6 @@ tags: [excalidraw]
       "originalText": "vg_lite_draw 内部实现流程",
       "autoResize": true,
       "lineHeight": 1.25
-    },
-    {
-      "id": "p1-bg",
-      "type": "rectangle",
-      "x": 20,
-      "y": 65,
-      "width": 1060,
-      "height": 90,
-      "angle": 0,
-      "strokeColor": "#3b82f6",
-      "backgroundColor": "#dbe4ff",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 0,
-      "opacity": 30,
-      "groupIds": [],
-      "roundness": {
-        "type": 3
-      },
-      "seed": 510002,
-      "version": 1,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1,
-      "link": null,
-      "locked": false,
-      "containerId": "p1-bg",
-      "textAlign": "center",
-      "verticalAlign": "middle"
     },
     {
       "id": "p1-label",
@@ -312,36 +390,6 @@ tags: [excalidraw]
       "lineHeight": 1.25
     },
     {
-      "id": "p2-bg",
-      "type": "rectangle",
-      "x": 20,
-      "y": 175,
-      "width": 1060,
-      "height": 515,
-      "angle": 0,
-      "strokeColor": "#7c3aed",
-      "backgroundColor": "#e5dbff",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 0,
-      "opacity": 30,
-      "groupIds": [],
-      "roundness": {
-        "type": 3
-      },
-      "seed": 510010,
-      "version": 1,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1,
-      "link": null,
-      "locked": false,
-      "containerId": "p2-bg",
-      "textAlign": "center",
-      "verticalAlign": "middle"
-    },
-    {
       "id": "p2-label",
       "type": "text",
       "x": 40,
@@ -511,7 +559,7 @@ tags: [excalidraw]
       "id": "d1-box",
       "type": "diamond",
       "x": 370,
-      "y": 325,
+      "y": 345,
       "width": 340,
       "height": 80,
       "angle": 0,
@@ -531,8 +579,8 @@ tags: [excalidraw]
       "isDeleted": false,
       "boundElements": [
         {
-          "id": "d1-text",
-          "type": "text"
+          "type": "text",
+          "id": "d1-text"
         }
       ],
       "updated": 1,
@@ -543,7 +591,7 @@ tags: [excalidraw]
       "id": "d1-text",
       "type": "text",
       "x": 420,
-      "y": 351,
+      "y": 371,
       "width": 240,
       "height": 28,
       "angle": 0,
@@ -579,7 +627,7 @@ tags: [excalidraw]
       "id": "s6-box",
       "type": "rectangle",
       "x": 790,
-      "y": 345,
+      "y": 365,
       "width": 270,
       "height": 40,
       "angle": 0,
@@ -611,7 +659,7 @@ tags: [excalidraw]
       "id": "s6-text",
       "type": "text",
       "x": 790,
-      "y": 345,
+      "y": 365,
       "width": 270,
       "height": 40,
       "angle": 0,
@@ -645,7 +693,7 @@ tags: [excalidraw]
       "id": "d2-box",
       "type": "diamond",
       "x": 370,
-      "y": 430,
+      "y": 450,
       "width": 340,
       "height": 80,
       "angle": 0,
@@ -665,8 +713,8 @@ tags: [excalidraw]
       "isDeleted": false,
       "boundElements": [
         {
-          "id": "d2-text",
-          "type": "text"
+          "type": "text",
+          "id": "d2-text"
         }
       ],
       "updated": 1,
@@ -677,7 +725,7 @@ tags: [excalidraw]
       "id": "d2-text",
       "type": "text",
       "x": 395,
-      "y": 449,
+      "y": 469,
       "width": 290,
       "height": 42,
       "angle": 0,
@@ -713,7 +761,7 @@ tags: [excalidraw]
       "id": "s7-box",
       "type": "rectangle",
       "x": 790,
-      "y": 450,
+      "y": 470,
       "width": 270,
       "height": 40,
       "angle": 0,
@@ -745,7 +793,7 @@ tags: [excalidraw]
       "id": "s7-text",
       "type": "text",
       "x": 790,
-      "y": 450,
+      "y": 470,
       "width": 270,
       "height": 40,
       "angle": 0,
@@ -779,7 +827,7 @@ tags: [excalidraw]
       "id": "d3-box",
       "type": "diamond",
       "x": 370,
-      "y": 535,
+      "y": 555,
       "width": 340,
       "height": 80,
       "angle": 0,
@@ -799,8 +847,8 @@ tags: [excalidraw]
       "isDeleted": false,
       "boundElements": [
         {
-          "id": "d3-text",
-          "type": "text"
+          "type": "text",
+          "id": "d3-text"
         }
       ],
       "updated": 1,
@@ -811,7 +859,7 @@ tags: [excalidraw]
       "id": "d3-text",
       "type": "text",
       "x": 395,
-      "y": 554,
+      "y": 574,
       "width": 290,
       "height": 42,
       "angle": 0,
@@ -847,7 +895,7 @@ tags: [excalidraw]
       "id": "s8-box",
       "type": "rectangle",
       "x": 20,
-      "y": 555,
+      "y": 575,
       "width": 270,
       "height": 40,
       "angle": 0,
@@ -879,7 +927,7 @@ tags: [excalidraw]
       "id": "s8-text",
       "type": "text",
       "x": 20,
-      "y": 555,
+      "y": 575,
       "width": 270,
       "height": 40,
       "angle": 0,
@@ -913,7 +961,7 @@ tags: [excalidraw]
       "id": "s9-box",
       "type": "rectangle",
       "x": 370,
-      "y": 640,
+      "y": 660,
       "width": 340,
       "height": 40,
       "angle": 0,
@@ -945,7 +993,7 @@ tags: [excalidraw]
       "id": "s9-text",
       "type": "text",
       "x": 370,
-      "y": 640,
+      "y": 660,
       "width": 340,
       "height": 40,
       "angle": 0,
@@ -976,40 +1024,10 @@ tags: [excalidraw]
       "lineHeight": 1.25
     },
     {
-      "id": "stencil-bg",
-      "type": "rectangle",
-      "x": 100,
-      "y": 710,
-      "width": 880,
-      "height": 90,
-      "angle": 0,
-      "strokeColor": "#f59e0b",
-      "backgroundColor": "#fff3bf",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 0,
-      "opacity": 30,
-      "groupIds": [],
-      "roundness": {
-        "type": 3
-      },
-      "seed": 510030,
-      "version": 1,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1,
-      "link": null,
-      "locked": false,
-      "containerId": "stencil-bg",
-      "textAlign": "center",
-      "verticalAlign": "middle"
-    },
-    {
       "id": "stencil-label",
       "type": "text",
       "x": 120,
-      "y": 715,
+      "y": 713,
       "width": 200,
       "height": 25,
       "angle": 0,
@@ -1043,7 +1061,7 @@ tags: [excalidraw]
       "id": "st1-box",
       "type": "rectangle",
       "x": 150,
-      "y": 750,
+      "y": 738,
       "width": 780,
       "height": 40,
       "angle": 0,
@@ -1075,7 +1093,7 @@ tags: [excalidraw]
       "id": "st1-text",
       "type": "text",
       "x": 150,
-      "y": 750,
+      "y": 738,
       "width": 780,
       "height": 40,
       "angle": 0,
@@ -1106,40 +1124,10 @@ tags: [excalidraw]
       "lineHeight": 1.25
     },
     {
-      "id": "cover-bg",
-      "type": "rectangle",
-      "x": 100,
-      "y": 820,
-      "width": 880,
-      "height": 90,
-      "angle": 0,
-      "strokeColor": "#15803d",
-      "backgroundColor": "#d3f9d8",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 0,
-      "opacity": 30,
-      "groupIds": [],
-      "roundness": {
-        "type": 3
-      },
-      "seed": 510036,
-      "version": 1,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1,
-      "link": null,
-      "locked": false,
-      "containerId": "cover-bg",
-      "textAlign": "center",
-      "verticalAlign": "middle"
-    },
-    {
       "id": "cover-label",
       "type": "text",
       "x": 120,
-      "y": 825,
+      "y": 796,
       "width": 200,
       "height": 25,
       "angle": 0,
@@ -1173,7 +1161,7 @@ tags: [excalidraw]
       "id": "cv1-box",
       "type": "rectangle",
       "x": 150,
-      "y": 860,
+      "y": 821,
       "width": 780,
       "height": 40,
       "angle": 0,
@@ -1205,7 +1193,7 @@ tags: [excalidraw]
       "id": "cv1-text",
       "type": "text",
       "x": 150,
-      "y": 860,
+      "y": 821,
       "width": 780,
       "height": 40,
       "angle": 0,
@@ -1239,7 +1227,7 @@ tags: [excalidraw]
       "id": "s10-box",
       "type": "rectangle",
       "x": 370,
-      "y": 935,
+      "y": 886,
       "width": 340,
       "height": 40,
       "angle": 0,
@@ -1271,7 +1259,7 @@ tags: [excalidraw]
       "id": "s10-text",
       "type": "text",
       "x": 370,
-      "y": 935,
+      "y": 886,
       "width": 340,
       "height": 40,
       "angle": 0,
@@ -1305,7 +1293,7 @@ tags: [excalidraw]
       "id": "lbl-y1",
       "type": "text",
       "x": 720,
-      "y": 350,
+      "y": 370,
       "width": 40,
       "height": 20,
       "angle": 0,
@@ -1339,7 +1327,7 @@ tags: [excalidraw]
       "id": "lbl-n1",
       "type": "text",
       "x": 555,
-      "y": 408,
+      "y": 428,
       "width": 40,
       "height": 20,
       "angle": 0,
@@ -1373,7 +1361,7 @@ tags: [excalidraw]
       "id": "lbl-y2",
       "type": "text",
       "x": 720,
-      "y": 455,
+      "y": 475,
       "width": 40,
       "height": 20,
       "angle": 0,
@@ -1407,7 +1395,7 @@ tags: [excalidraw]
       "id": "lbl-n2",
       "type": "text",
       "x": 555,
-      "y": 513,
+      "y": 533,
       "width": 120,
       "height": 20,
       "angle": 0,
@@ -1441,7 +1429,7 @@ tags: [excalidraw]
       "id": "lbl-y3",
       "type": "text",
       "x": 300,
-      "y": 560,
+      "y": 580,
       "width": 40,
       "height": 20,
       "angle": 0,
@@ -1475,7 +1463,7 @@ tags: [excalidraw]
       "id": "lbl-n3",
       "type": "text",
       "x": 555,
-      "y": 618,
+      "y": 638,
       "width": 100,
       "height": 20,
       "angle": 0,
@@ -1592,8 +1580,8 @@ tags: [excalidraw]
     {
       "id": "a3",
       "type": "arrow",
-      "x": 540,
-      "y": 155,
+      "x": 530,
+      "y": 145,
       "width": 0,
       "height": 55,
       "angle": 0,
@@ -1621,8 +1609,12 @@ tags: [excalidraw]
           0
         ],
         [
-          0,
-          55
+          10,
+          35
+        ],
+        [
+          10,
+          70
         ]
       ],
       "lastCommittedPoint": null,
@@ -1664,7 +1656,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          10
+          15
         ]
       ],
       "lastCommittedPoint": null,
@@ -1706,7 +1698,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          10
+          35
         ]
       ],
       "lastCommittedPoint": null,
@@ -1719,7 +1711,7 @@ tags: [excalidraw]
       "id": "a5y",
       "type": "arrow",
       "x": 710,
-      "y": 365,
+      "y": 385,
       "width": 75,
       "height": 0,
       "angle": 0,
@@ -1747,7 +1739,7 @@ tags: [excalidraw]
           0
         ],
         [
-          75,
+          80,
           0
         ]
       ],
@@ -1761,7 +1753,7 @@ tags: [excalidraw]
       "id": "a5yr",
       "type": "arrow",
       "x": 925,
-      "y": 385,
+      "y": 405,
       "width": -385,
       "height": 42,
       "angle": 0,
@@ -1789,12 +1781,20 @@ tags: [excalidraw]
           0
         ],
         [
-          0,
-          42
+          165,
+          0
+        ],
+        [
+          165,
+          22.5
         ],
         [
           -385,
-          42
+          22.5
+        ],
+        [
+          -385,
+          45
         ]
       ],
       "lastCommittedPoint": null,
@@ -1807,7 +1807,7 @@ tags: [excalidraw]
       "id": "a6n",
       "type": "arrow",
       "x": 540,
-      "y": 405,
+      "y": 425,
       "width": 0,
       "height": 20,
       "angle": 0,
@@ -1836,7 +1836,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          20
+          25
         ]
       ],
       "lastCommittedPoint": null,
@@ -1849,7 +1849,7 @@ tags: [excalidraw]
       "id": "a6y",
       "type": "arrow",
       "x": 710,
-      "y": 470,
+      "y": 490,
       "width": 75,
       "height": 0,
       "angle": 0,
@@ -1877,7 +1877,7 @@ tags: [excalidraw]
           0
         ],
         [
-          75,
+          80,
           0
         ]
       ],
@@ -1891,7 +1891,7 @@ tags: [excalidraw]
       "id": "a6yr",
       "type": "arrow",
       "x": 925,
-      "y": 490,
+      "y": 510,
       "width": -385,
       "height": 42,
       "angle": 0,
@@ -1920,11 +1920,15 @@ tags: [excalidraw]
         ],
         [
           0,
-          42
+          22.5
         ],
         [
           -385,
-          42
+          22.5
+        ],
+        [
+          -385,
+          45
         ]
       ],
       "lastCommittedPoint": null,
@@ -1937,7 +1941,7 @@ tags: [excalidraw]
       "id": "a7n",
       "type": "arrow",
       "x": 540,
-      "y": 510,
+      "y": 530,
       "width": 0,
       "height": 20,
       "angle": 0,
@@ -1966,7 +1970,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          20
+          25
         ]
       ],
       "lastCommittedPoint": null,
@@ -1979,7 +1983,7 @@ tags: [excalidraw]
       "id": "a7y",
       "type": "arrow",
       "x": 370,
-      "y": 575,
+      "y": 595,
       "width": -80,
       "height": 0,
       "angle": 0,
@@ -2021,7 +2025,7 @@ tags: [excalidraw]
       "id": "a7yr",
       "type": "arrow",
       "x": 155,
-      "y": 595,
+      "y": 615,
       "width": 385,
       "height": 42,
       "angle": 0,
@@ -2050,11 +2054,11 @@ tags: [excalidraw]
         ],
         [
           0,
-          42
+          65
         ],
         [
-          385,
-          42
+          215,
+          65
         ]
       ],
       "lastCommittedPoint": null,
@@ -2067,7 +2071,7 @@ tags: [excalidraw]
       "id": "a8n",
       "type": "arrow",
       "x": 540,
-      "y": 615,
+      "y": 635,
       "width": 0,
       "height": 20,
       "angle": 0,
@@ -2096,7 +2100,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          20
+          25
         ]
       ],
       "lastCommittedPoint": null,
@@ -2109,7 +2113,7 @@ tags: [excalidraw]
       "id": "a9",
       "type": "arrow",
       "x": 540,
-      "y": 680,
+      "y": 700,
       "width": 0,
       "height": 25,
       "angle": 0,
@@ -2138,7 +2142,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          25
+          38
         ]
       ],
       "lastCommittedPoint": null,
@@ -2151,7 +2155,7 @@ tags: [excalidraw]
       "id": "a10",
       "type": "arrow",
       "x": 540,
-      "y": 790,
+      "y": 778,
       "width": 0,
       "height": 25,
       "angle": 0,
@@ -2180,7 +2184,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          25
+          43
         ]
       ],
       "lastCommittedPoint": null,
@@ -2193,7 +2197,7 @@ tags: [excalidraw]
       "id": "a11",
       "type": "arrow",
       "x": 540,
-      "y": 900,
+      "y": 861,
       "width": 0,
       "height": 30,
       "angle": 0,
@@ -2222,7 +2226,7 @@ tags: [excalidraw]
         ],
         [
           0,
-          30
+          25
         ]
       ],
       "lastCommittedPoint": null,

@@ -979,7 +979,7 @@ tags: [excalidraw]
       "id": "stencil-bg",
       "type": "rectangle",
       "x": 100,
-      "y": 710,
+      "y": 720,
       "width": 880,
       "height": 90,
       "angle": 0,
@@ -1009,7 +1009,7 @@ tags: [excalidraw]
       "id": "stencil-label",
       "type": "text",
       "x": 120,
-      "y": 715,
+      "y": 725,
       "width": 200,
       "height": 25,
       "angle": 0,
@@ -1043,7 +1043,7 @@ tags: [excalidraw]
       "id": "st1-box",
       "type": "rectangle",
       "x": 150,
-      "y": 750,
+      "y": 760,
       "width": 780,
       "height": 40,
       "angle": 0,
@@ -1075,7 +1075,7 @@ tags: [excalidraw]
       "id": "st1-text",
       "type": "text",
       "x": 150,
-      "y": 750,
+      "y": 760,
       "width": 780,
       "height": 40,
       "angle": 0,
@@ -1109,7 +1109,7 @@ tags: [excalidraw]
       "id": "cover-bg",
       "type": "rectangle",
       "x": 100,
-      "y": 820,
+      "y": 830,
       "width": 1000,
       "height": 110,
       "angle": 0,
@@ -1139,7 +1139,7 @@ tags: [excalidraw]
       "id": "cover-label",
       "type": "text",
       "x": 120,
-      "y": 825,
+      "y": 835,
       "width": 250,
       "height": 25,
       "angle": 0,
@@ -1173,7 +1173,7 @@ tags: [excalidraw]
       "id": "cv2-box",
       "type": "rectangle",
       "x": 150,
-      "y": 860,
+      "y": 870,
       "width": 780,
       "height": 65,
       "angle": 0,
@@ -1205,7 +1205,7 @@ tags: [excalidraw]
       "id": "cv1-text",
       "type": "text",
       "x": 150,
-      "y": 860,
+      "y": 870,
       "width": 780,
       "height": 65,
       "angle": 0,
@@ -1239,7 +1239,7 @@ tags: [excalidraw]
       "id": "note-nocpu-box",
       "type": "rectangle",
       "x": 940,
-      "y": 870,
+      "y": 880,
       "width": 140,
       "height": 45,
       "angle": 0,
@@ -1271,7 +1271,7 @@ tags: [excalidraw]
       "id": "note-nocpu-text",
       "type": "text",
       "x": 940,
-      "y": 870,
+      "y": 880,
       "width": 140,
       "height": 45,
       "angle": 0,
@@ -1305,7 +1305,7 @@ tags: [excalidraw]
       "id": "s10-box",
       "type": "rectangle",
       "x": 370,
-      "y": 950,
+      "y": 960,
       "width": 340,
       "height": 40,
       "angle": 0,
@@ -1337,7 +1337,7 @@ tags: [excalidraw]
       "id": "s10-text",
       "type": "text",
       "x": 370,
-      "y": 950,
+      "y": 960,
       "width": 340,
       "height": 40,
       "angle": 0,
@@ -2175,7 +2175,7 @@ tags: [excalidraw]
       "id": "a9",
       "type": "arrow",
       "x": 540,
-      "y": 680,
+      "y": 695,
       "width": 0,
       "height": 25,
       "angle": 0,
@@ -2217,7 +2217,7 @@ tags: [excalidraw]
       "id": "a10",
       "type": "arrow",
       "x": 540,
-      "y": 790,
+      "y": 800,
       "width": 0,
       "height": 25,
       "angle": 0,
@@ -2242,11 +2242,11 @@ tags: [excalidraw]
       "points": [
         [
           0,
-          0
+          10
         ],
         [
           0,
-          25
+          35
         ]
       ],
       "lastCommittedPoint": null,
@@ -2259,7 +2259,7 @@ tags: [excalidraw]
       "id": "a11",
       "type": "arrow",
       "x": 540,
-      "y": 930,
+      "y": 940,
       "width": 0,
       "height": 20,
       "angle": 0,
@@ -2284,11 +2284,11 @@ tags: [excalidraw]
       "points": [
         [
           0,
-          0
+          10
         ],
         [
           0,
-          20
+          30
         ]
       ],
       "lastCommittedPoint": null,
