@@ -506,6 +506,7 @@ static void compute_blit_aabb(vg_lite_matrix_t *matrix,
     aabb[3] = 2.0f * max_y / dst_h - 1.0f;
 }
 
+/* Shader blend (mode 0) disabled — create_temp_copy_image no longer called.
 static vg_lite_error_t create_temp_copy_image(VkFormat vkfmt,
     vg_lite_buffer_t *target, buffer_internal_t *target_int,
     VkImage *out_image, VkDeviceMemory *out_memory, VkImageView *out_view)
@@ -611,6 +612,7 @@ static vg_lite_error_t create_temp_copy_image(VkFormat vkfmt,
     *out_view = tmp_view;
     return VG_LITE_SUCCESS;
 }
+*/
 
 vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
                              vg_lite_buffer_t *source,
@@ -627,24 +629,33 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
     int blend_group = vg_lite_blend_to_group(blend);
+    /* Shader blend (mode 0) disabled — all formats use native blend path.
     if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565
         && target->format != VG_LITE_RGBA8888 && target->format != VG_LITE_RGB565
         && target->format != VG_LITE_A8 && target->format != VG_LITE_L8)
         blend_group = BG_SHADER;
-    int native_blend = (blend_group != BG_SHADER);
+    */
+    int native_blend = 1; /* always native blend (was: blend_group != BG_SHADER) */
 
     VkPipeline pipeline;
+    /* Shader blend pipeline (mode 0) disabled
     if (native_blend)
+    */
+    {
 #if VGLITE_BLIT_MSAA
         pipeline = vg_lite_vulkan_get_pipeline_native_msaa(vkfmt, blend_group);
 #else
         pipeline = vg_lite_vulkan_get_pipeline_no_msaa(vkfmt, blend_group);
 #endif
+    }
+    /* Shader blend pipeline (mode 0) disabled
     else
         pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
+    */
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
     VkPipeline aabb_pipeline = VK_NULL_HANDLE;
-    if (native_blend && g_vk_ctx.use_aabb_blit) {
+    /* native_blend is always true — use_aabb_blit check simplified */
+    if (g_vk_ctx.use_aabb_blit) {
 #if VGLITE_BLIT_MSAA
         aabb_pipeline = vg_lite_vulkan_get_pipeline_aabb_native_msaa(vkfmt, blend_group);
 #else
@@ -653,11 +664,14 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         if (!aabb_pipeline) return VG_LITE_OUT_OF_MEMORY;
     }
     vg_lite_vulkan_begin_command();
+    /* Shader blend: no need to flush/end RP (native blend only)
     if (!native_blend) {
         vg_lite_vulkan_flush_render_pass();
         vg_lite_vulkan_end_render_pass();
     }
+    */
 
+    /* Shader blend temp image (mode 0) disabled
     VkImage tmp_image = VK_NULL_HANDLE;
     VkDeviceMemory tmp_memory = VK_NULL_HANDLE;
     VkImageView tmp_view = VK_NULL_HANDLE;
@@ -666,6 +680,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vg_lite_error_t err = create_temp_copy_image(vkfmt, target, target_int, &tmp_image, &tmp_memory, &tmp_view);
         if (err != VG_LITE_SUCCESS) return err;
     }
+    */
 
     VkSampler sampler = get_or_create_sampler(filter);
 
@@ -720,7 +735,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
     ds_alloc.descriptorSetCount = 1;
-    ds_alloc.pSetLayouts = native_blend ? &g_vk_ctx.native_descriptor_layout : &g_vk_ctx.blit_descriptor_layout;
+    ds_alloc.pSetLayouts = &g_vk_ctx.native_descriptor_layout; /* always native */
     VkDescriptorSet desc_set;
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
@@ -728,11 +743,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkImageView src_view = src_int->swizzle_view ? src_int->swizzle_view : src_int->view;
     VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo di;
-    if (native_blend) {
-        di = si;
-    } else {
-        di = (VkDescriptorImageInfo){sampler, tmp_view, VK_IMAGE_LAYOUT_GENERAL};
-    }
+    di = si; /* native blend: dst = src (same sampler+view). Shader blend used tmp_view. */
     
     struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; int pad[3]; } pc = {0};
     for (int col = 0; col < 3; col++) {
@@ -748,43 +759,33 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (source->format == VG_LITE_A8)  pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
-    if (native_blend) {
-        /* Push fragment data at offset 0 (80B), AABB at offset 80 (16B) */
-        vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-        float blit_aabb[4] = {-1.0f, -1.0f, 3.0f, 3.0f};
-        if (g_vk_ctx.use_aabb_blit) {
-            compute_blit_aabb(matrix, source->width, source->height,
-                              target->width, target->height, blit_aabb);
-        }
-        vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 16, blit_aabb);
-    } else {
-        memcpy(g_vk_ctx.blit_ssbo_mapped, &pc, sizeof(pc));
+    /* Push fragment data at offset 0 (80B), AABB at offset 80 (16B) */
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    float blit_aabb[4] = {-1.0f, -1.0f, 3.0f, 3.0f};
+    if (g_vk_ctx.use_aabb_blit) {
+        compute_blit_aabb(matrix, source->width, source->height,
+                          target->width, target->height, blit_aabb);
     }
-    
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 16, blit_aabb);
+
+    /* Shader blend SSBO path (mode 0) disabled
     VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};
     VkDescriptorBufferInfo clut_info = {g_vk_ctx.clut_buffer, 0, 256 * 4};
+    */
 
-    if (native_blend) {
+    {
         VkWriteDescriptorSet ws[1] = {
             {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
         };
         vkUpdateDescriptorSets(g_vk_ctx.device, 1, ws, 0, NULL);
-    } else {
-        VkWriteDescriptorSet ws[4] = {
-            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &si, NULL, NULL},
-            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &di, NULL, NULL},
-            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &ssbo_info, NULL},
-            {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, desc_set, 3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &clut_info, NULL},
-        };
-        vkUpdateDescriptorSets(g_vk_ctx.device, 4, ws, 0, NULL);
     }
 
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        (native_blend && g_vk_ctx.use_aabb_blit) ? aabb_pipeline : pipeline);
+        g_vk_ctx.use_aabb_blit ? aabb_pipeline : pipeline);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        native_blend ? g_vk_ctx.native_pipeline_layout : g_vk_ctx.blit_pipeline_layout,
+        g_vk_ctx.native_pipeline_layout,
         0, 1, &desc_set, 0, NULL);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
@@ -806,16 +807,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     }
 #endif
 
-    if (!native_blend) {
-        /* Shader blend: immediate flush (temp copy lifecycle) */
-        vg_lite_vulkan_end_render_pass();
-        vg_lite_vulkan_submit_command(1);
-        VK_CHECK(vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &desc_set));
-        vkDestroyImageView(g_vk_ctx.device, tmp_view, NULL);
-        vkDestroyImage(g_vk_ctx.device, tmp_image, NULL);
-        vkFreeMemory(g_vk_ctx.device, tmp_memory, NULL);
-    } else {
-        /* Native blend: defer �?RP stays open, desc set freed after submit */
+    /* Native blend: defer — RP stays open, desc set freed after submit */
+    {
         if (g_vk_ctx.pending_desc_count < MAX_PENDING_DESC) {
             g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = desc_set;
         } else {

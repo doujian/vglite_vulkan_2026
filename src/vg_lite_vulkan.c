@@ -866,6 +866,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.native_pipeline_layout));
         }
     } else {
+        /* Shader blend (mode 0) disabled — should never reach here.
         if (!g_vk_ctx.vert_shader) {
             g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
             g_vk_ctx.frag_shader = load_shader_module(g_vk_ctx.device, "blit_frag");
@@ -886,6 +887,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             pl_ci.pSetLayouts = &g_vk_ctx.blit_descriptor_layout;
             VK_CHECK(vkCreatePipelineLayout(g_vk_ctx.device, &pl_ci, NULL, &g_vk_ctx.blit_pipeline_layout));
         }
+        */
     }
 
     VkPipelineShaderStageCreateInfo stages[2] = {
@@ -937,10 +939,12 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     return pipeline;
 }
 
+/* Shader blend (mode 0) disabled — create_blit_pipeline never called.
 static VkPipeline create_blit_pipeline(VkFormat format, int blend_group)
 {
     return create_blit_pipeline_internal(format, blend_group, 0);
 }
+*/
 
 static VkPipeline create_blit_pipeline_no_msaa(VkFormat format, int blend_group)
 {
@@ -952,6 +956,7 @@ static VkPipeline create_blit_pipeline_native_msaa(VkFormat format, int blend_gr
     return create_blit_pipeline_internal(format, blend_group, 2);
 }
 
+/* Shader blend (mode 0) disabled — vg_lite_vulkan_get_pipeline never called.
 VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group)
 {
     for (int i = 0; i < g_vk_ctx.pipeline_cache_count; i++) {
@@ -971,6 +976,7 @@ VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group)
     }
     return pipeline;
 }
+*/
 
 static VkRenderPass create_render_pass_no_msaa(VkFormat format)
 {
