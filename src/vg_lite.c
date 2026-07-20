@@ -797,7 +797,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
             g_vk_ctx.timestamp_query_pool, perf_slot0);
 #endif
-    vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
+    vkCmdDraw(g_vk_ctx.cmd_buf, g_vk_ctx.use_aabb_blit ? 4 : 3, 1, 0, 0);
 #if VGLITE_BLIT_PERF
     if (perf_slot0 + 1 < VGLITE_TIMESTAMP_QUERY_COUNT) {
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
