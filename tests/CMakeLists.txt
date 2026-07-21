@@ -52,6 +52,10 @@ add_dependencies(test_sft_blit spirv_compilation)
 
 add_executable(test_tiger tiger/tiger.c tiger/tiger_paths.h)
 add_dependencies(test_tiger spirv_compilation)
+add_custom_command(TARGET test_tiger POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/tiger/golden
+    $<TARGET_FILE_DIR:test_tiger>/golden)
 
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/data DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
