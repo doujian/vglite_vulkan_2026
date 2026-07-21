@@ -19,7 +19,8 @@
 #define BG_ADDITIVE   3
 #define BG_SUBTRACT   4
 #define BG_NONE       5
-#define BG_COUNT      6
+#define BG_NORMAL_LVGL 6
+#define BG_COUNT      7
 void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachmentState *cba);
 
 typedef struct {

@@ -778,8 +778,9 @@ int vg_lite_blend_to_group(vg_lite_blend_t blend)
     case VG_LITE_BLEND_NONE:
         return BG_NONE;
     case VG_LITE_BLEND_SRC_OVER:
-    case VG_LITE_BLEND_NORMAL_LVGL:
         return BG_SRC_OVER;
+    case VG_LITE_BLEND_NORMAL_LVGL:
+        return BG_NORMAL_LVGL;
     case VG_LITE_BLEND_DST_OVER:
         return BG_DST_OVER;
     case VG_LITE_BLEND_ADDITIVE:
@@ -804,6 +805,14 @@ void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachm
         cba->blendEnable = VK_TRUE;
         cba->colorBlendOp = VK_BLEND_OP_ADD;
         cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
+    case BG_NORMAL_LVGL:
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;

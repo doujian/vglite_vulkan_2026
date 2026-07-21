@@ -5,11 +5,12 @@
  * generates a triangle strip covering exactly the rectangle (zero waste).
  * Uses 4 vertices = 2 triangles, rasterizing only the AABB area. */
 
-layout(push_constant) uniform AABBPC {
-    layout(offset = 80) vec4 aabb;  /* xy = min_ndc, zw = max_ndc; bytes 0-79 hold fragment data */
+layout(push_constant) uniform BlitParams {
+    layout(offset = 0)  mat3 matrix;   /* same layout as blit_native.frag */
+    layout(offset = 80) vec4 aabb;      /* xy = min_ndc, zw = max_ndc */
 } pc;
 
-layout(location = 0) out vec2 frag_pos;
+layout(location = 0) out vec2 src_uv;
 
 void main()
 {
@@ -19,7 +20,7 @@ void main()
     /* Triangle strip forming the AABB rectangle (4 vertices, 2 triangles).
      * Strip order: v0→v1→v2→v3 produces △(v0,v1,v2) + △(v2,v1,v3).
      *   v0 = bottom-left   v1 = bottom-right
-     *   v2 = top-left      v3 = top-right
+     *   v2 = top-left       v3 = top-right
      * Total rasterized area = rectangle area (no waste vs degenerate triangle's 2×). */
     vec2 positions[4] = vec2[4](
         vec2(minp.x, minp.y),   /* v0: bottom-left  */
@@ -30,5 +31,8 @@ void main()
 
     vec2 pos = positions[gl_VertexIndex];
     gl_Position = vec4(pos, 0.0, 1.0);
-    frag_pos = pos * 0.5 + 0.5;
+    vec2 frag_pos = pos * 0.5 + 0.5;
+    /* 2D affine: matrix*[frag_pos,1] has z==1, src_uv = xy directly.
+     * Linear transform commutes with interpolation: interp(M*p) == M*interp(p). */
+    src_uv = (pc.matrix * vec3(frag_pos, 1.0)).xy;
 }

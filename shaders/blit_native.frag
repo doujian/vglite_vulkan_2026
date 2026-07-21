@@ -11,7 +11,7 @@ layout(push_constant) uniform BlitParams {
 
 layout(set = 0, binding = 0) uniform sampler2D src_texture;
 
-layout(location = 0) in  vec2 frag_pos;
+layout(location = 0) in  vec2 src_uv;   /* precomputed by vertex shader */
 layout(location = 0) out vec4 out_color;
 
 #define IMAGE_MODE_NORMAL   0x1F00
@@ -23,8 +23,6 @@ layout(location = 0) out vec4 out_color;
 #define FLAG_OUTPUT_L8       1
 #define FLAG_OUTPUT_A8       2
 #define FLAG_SOURCE_A8       8
-
-#define BLEND_NORMAL_LVGL   11
 
 vec4 apply_image_mode(vec4 src, uint mix_color)
 {
@@ -55,31 +53,18 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
 
 void main()
 {
-    vec3 src_coords = params.matrix * vec3(frag_pos, 1.0);
-    vec2 src_uv;
-    if (abs(src_coords.z - 1.0) < 0.001) {
-        src_uv = src_coords.xy;
-    } else {
-        src_uv = src_coords.xy / src_coords.z;
-    }
+    /* src_uv interpolated from vertex shader's (matrix * frag_pos).
+     * 2D affine => z==1, interpolation is exact (linear transform commutes with interp). */
 
     if (src_uv.x < -0.001 || src_uv.x > 1.001 || src_uv.y < -0.001 || src_uv.y > 1.001) {
         discard;
     }
-    if (src_uv.x < 0.0) src_uv.x = 0.0;
-    else if (src_uv.x > 1.0) src_uv.x = 1.0;
-    if (src_uv.y < 0.0) src_uv.y = 0.0;
-    else if (src_uv.y > 1.0) src_uv.y = 1.0;
+    /* UV clamp removed: sampler addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+     * texture() clamps to edge automatically — no per-fragment clamp needed. */
 
     vec4 src = texture(src_texture, src_uv);
 
     src = apply_image_mode(src, params.color);
-
-    /* NORMAL_LVGL (PREMULTIPLY_SRC_OVER): source must be premultiplied before
-     * hardware blend, matching blit.frag L312-313 behavior. */
-    if (params.blend_mode == BLEND_NORMAL_LVGL) {
-        src = vec4(src.rgb * src.a, src.a);
-    }
 
     /* For A8/L8 targets (R8_UNORM), write the appropriate value to R channel.
      * Hardware blend uses src.A for blend factor, so we keep A = src.a for
