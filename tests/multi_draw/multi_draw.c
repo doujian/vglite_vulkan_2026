@@ -106,7 +106,13 @@ vg_lite_error_t multi_draw(int tsbuffer_size,int i)
     buffer.width  = ALIGN(fb_width,64);
     buffer.height = fb_height;
     buffer.format = VG_LITE_RGB565;
-    CHECK_ERROR(vg_lite_allocate(&buffer));
+    error = vg_lite_allocate(&buffer);
+    if (error == VG_LITE_NOT_SUPPORT) {
+        printf("[fallback] RGB565 (B5G6R5) unsupported, retry with BGR565 (R5G6B5)\n");
+        buffer.format = VG_LITE_BGR565;
+        error = vg_lite_allocate(&buffer);
+    }
+    CHECK_ERROR(error);
     fb = &buffer;
 
     printf("Render size: %d x %d\n", fb_width, fb_height);
@@ -131,6 +137,7 @@ vg_lite_error_t multi_draw(int tsbuffer_size,int i)
     CHECK_ERROR(vg_lite_finish());
     CHECK_ERROR(vg_lite_clear_grad(&gradient));
     vg_lite_save_png(name, fb);
+    vg_lite_free(&buffer);  /* free buffer before return — avoids leak across loop iterations */
 
     return VG_LITE_SUCCESS;
 ErrorHandler:
