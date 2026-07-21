@@ -31,7 +31,9 @@ int main() {
     for (int c = 0; c < 4; c++) {
         vg_lite_buffer_t target = {0};
         target.width = 2; target.height = 1; target.format = VG_LITE_RGB565;
-        err = vg_lite_allocate(&target); if (err) return 1;
+        err = vg_lite_allocate(&target);
+        if (err == VG_LITE_NOT_SUPPORT) { printf("RGB565 (B5G6R5) not supported on this GPU, skipped\n"); break; }
+        if (err) return 1;
         err = vg_lite_clear(&target, NULL, colors[c]); if (err) return 1;
         err = vg_lite_finish(); if (err) return 1;
         uint16_t *p = (uint16_t*)target.memory;
