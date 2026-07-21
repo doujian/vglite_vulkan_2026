@@ -299,3 +299,57 @@ Added `current_fb_internal` pointer to `vk_context_t` for reverse lookup from Vk
 - Tests use BGRA8888 target format (this GPU doesn't support B5G6R5 as linear color attachment). Golden tolerance: vector=100, clock=150, ui=300 (AA edge coverage differences vs reference RGB565 hardware, interior pixels exact match).
 
 **Files**: src/vg_lite_draw.c, src/vg_lite_vulkan.c, src/vg_lite_vulkan.h, util/util.c, util/util.h, tests/vector/vector.c, tests/clock/main.c, tests/ui/main.c, tests/CMakeLists.txt
+
+---
+
+## 16. test_tiger golden not copied to build directory
+
+**Date**: 2026-07-22
+
+**Symptom**: After a clean rebuild, `test_tiger` failed with `Failed to load golden image: golden/tiger.png` / `ERROR: Could not compare images` and exited non-zero, even though rendering itself succeeded (`tiger_output.png` was generated correctly). The golden file existed in the source tree at `tests/tiger/golden/tiger.png` but was never found at runtime because the test loads it via the hardcoded relative path `"golden/tiger.png"` (resolved against the executable's working directory `build/tests/`).
+
+**Root Cause**: `tests/CMakeLists.txt` defined the `test_tiger` target (lines 53-54) with only `add_executable` + `add_dependencies(spirv_compilation)`, but **no POST_BUILD command to copy the golden directory** into the build output. All comparable golden-using targets had such a copy step — `test_tiled` (lines 75-78) used `add_custom_command(TARGET test_tiled POST_BUILD COMMAND copy_directory tiled/golden -> $<TARGET_FILE_DIR:test_tiled>/golden)`, and `test_vector`/`test_clock`/`test_ui` used `copy_if_different` for their `.raw` + `golden.h`. `test_tiger` was the only golden-dependent target missing the copy, so clean rebuild always left `build/tests/golden/tiger.png` absent and the runtime lookup failed.
+
+**Solution**: Added a POST_BUILD `copy_directory` custom command to the `test_tiger` target in `tests/CMakeLists.txt`, mirroring the `test_tiled` pattern:
+```cmake
+add_custom_command(TARGET test_tiger POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_CURRENT_SOURCE_DIR}/tiger/golden
+    $<TARGET_FILE_DIR:test_tiger>/golden)
+```
+Verified: deleted `test_tiger.exe` + `build/tests/golden/tiger.png`, rebuilt, the POST_BUILD step auto-generated `tiger.png` (94389 bytes, matching source), and `test_tiger` now PASS (exit=0, 3.90% pixel diff within tolerance).
+
+**Files**: tests/CMakeLists.txt
+
+---
+
+## 17. test_multi_draw crash + buffer leak (Windows RGB565 unsupported + ErrorHandler unsafe)
+
+**Date**: 2026-07-22
+
+**Symptom**: `test_multi_draw` crashed with `0xC0000005` (access violation) on Windows. No stdout before crash. On Linux (README baseline) it was untested. Vulkan validation also reported `VkImage`/`VkPipeline` leaks on `vkDestroyDevice`.
+
+**Root Cause**:
+1. `multi_draw` allocated `buffer.format = VG_LITE_RGB565` (B5G6R5, unsupported as linear color-att on this GPU) → `vg_lite_allocate` returned `VG_LITE_NOT_SUPPORT` → `CHECK_ERROR` jumped to `ErrorHandler`.
+2. `ErrorHandler` called `vg_lite_clear_grad(&gradient)`, but `gradient` was an **uninitialized stack variable** (`memset` at L113 ran after `allocate`, never executed). `clear_grad` dereferences `grad->image.handle` (stack garbage, non-NULL) → `vg_lite_free` on wild pointer → crash.
+3. Normal return path (L135 `return SUCCESS`) did **not** `vg_lite_free(&buffer)` — each loop iteration leaked the previous `VkImage`/`VkDeviceMemory`/`VkImageView` (static `buffer` handle overwritten without free).
+
+**Solution**:
+- Added RGB565→BGR565 format fallback (allocate succeeds, avoids ErrorHandler entirely).
+- Added `vg_lite_free(&buffer)` before normal return (no leak across loop iterations).
+
+**Files**: tests/multi_draw/multi_draw.c
+
+---
+
+## 18. draw cover pipeline cache not destroyed on cleanup
+
+**Date**: 2026-07-22
+
+**Symptom**: After fixing #17 (multi_draw no longer crashes), Vulkan validation reported `VkPipeline OBJ ERROR` on `vkDestroyDevice` — a single pipeline leaked.
+
+**Root Cause**: `vg_lite_draw.c` has `s_draw_cover_cache[32]` (per-`(format, blend_group)` draw cover pipeline cache, added in fix #15). The cleanup function (`vg_lite_vulkan_destroy_pipelines` L621-659) destroyed the fixed `fill_pipeline`/`stencil_pipeline`/`cover_pipeline` but **not the `s_draw_cover_cache` array**. The dynamic cover pipelines (created by `get_draw_cover_pipeline`) were never freed.
+
+**Solution**: Added a loop in cleanup to destroy `s_draw_cover_cache[i].pipeline` for all cached entries, mirroring the `grad_pipeline_cache`/`pattern_pipeline_cache` destruction pattern.
+
+**Files**: src/vg_lite_draw.c

@@ -122,12 +122,16 @@ This allows shader modifications without recompiling C code — just rebuild sha
 | test_blit_mixed | Mixed format blits to shared target | PASS |
 | test_blit_switch | 9 blits to A, then blit A→B | PASS |
 | test_blit_perf | AABB vs fullscreen perf comparison (GPU timestamps) | PASS |
+| test_blit_draw | Blit→draw seed_msaa RP transition | PASS |
+| test_multi_draw | Multi-path draw with gradient (RGB565→BGR565 fallback on Windows) | PASS |
+| test_bgr565_clear | BGR565 color encoding self-check (skips RGB565 if unsupported) | PASS |
+| test_glyphs2 | CTS glyphs rendering | PASS |
 | test_sft_blit | Full blend mode coverage | FAIL (pre-existing, crash) |
 | test_vector | CTS vector polygon (256x256, golden .raw compare) | PASS (100%) |
 | test_clock | CTS clock face (320x480, golden .raw compare) | PASS (100%) |
 | test_ui | CTS ui icons + translucent highlight (golden .raw compare) | PASS (100%) |
 
-**Summary: 33 PASS / 1 FAIL**
+**Summary: 36 PASS / 1 FAIL**
 
 ## Expected Buffer Tracker
 
