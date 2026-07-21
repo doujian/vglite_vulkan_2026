@@ -630,6 +630,11 @@ void vg_lite_draw_cleanup(void)
         vkDestroyPipeline(g_vk_ctx.device, g_draw_pipeline.cover_pipeline, NULL);
         g_draw_pipeline.cover_pipeline = VK_NULL_HANDLE;
     }
+    for (int i = 0; i < s_draw_cover_cache_count; i++) {
+        if (s_draw_cover_cache[i].pipeline)
+            vkDestroyPipeline(g_vk_ctx.device, s_draw_cover_cache[i].pipeline, NULL);
+    }
+    s_draw_cover_cache_count = 0;
     if (g_draw_pipeline.cover_vbo) {
         vkDestroyBuffer(g_vk_ctx.device, g_draw_pipeline.cover_vbo, NULL);
         g_draw_pipeline.cover_vbo = VK_NULL_HANDLE;
