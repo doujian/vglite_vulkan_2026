@@ -20,8 +20,6 @@ layout(location = 0) out vec4 out_color;
 #define IMAGE_MODE_NONE     0x1F03
 #define IMAGE_MODE_RECOLOR  0x1F04
 
-#define FLAG_OUTPUT_L8       1
-#define FLAG_OUTPUT_A8       2
 #define FLAG_SOURCE_A8       8
 
 vec4 apply_image_mode(vec4 src, uint mix_color)
@@ -66,15 +64,5 @@ void main()
 
     src = apply_image_mode(src, params.color);
 
-    /* For A8/L8 targets (R8_UNORM), write the appropriate value to R channel.
-     * Hardware blend uses src.A for blend factor, so we keep A = src.a for
-     * SRC_OVER/ADDITIVE/SUBTRACT to work correctly on single-channel format. */
-    if ((params.flags & FLAG_OUTPUT_L8) != 0) {
-        float lum = 0.2126 * src.r + 0.7152 * src.g + 0.0722 * src.b;
-        out_color = vec4(lum, 0.0, 0.0, src.a);
-    } else if ((params.flags & FLAG_OUTPUT_A8) != 0) {
-        out_color = vec4(src.a, 0.0, 0.0, src.a);
-    } else {
-        out_color = src;
-    }
+    out_color = src;
 }

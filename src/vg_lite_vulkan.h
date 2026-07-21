@@ -27,6 +27,7 @@ typedef struct {
     VkImage image;
     VkImageView view;        /* identity swizzle - for framebuffer attachment */
     VkImageView swizzle_view; /* L8/A8 swizzle - for texture sampling */
+    VkImageView a_to_r_view;  /* A->R swizzle for A8 target blit (hardware writes src.a to R8) */
     VkDeviceMemory memory;
     VkRenderPass render_pass;
     VkSampler sampler;

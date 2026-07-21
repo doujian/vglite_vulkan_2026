@@ -209,6 +209,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 
     VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->view));
     internal->swizzle_view = VK_NULL_HANDLE;
+    internal->a_to_r_view = VK_NULL_HANDLE;
 
     if (buffer->format == VG_LITE_L8) {
         view_ci.components.r = VK_COMPONENT_SWIZZLE_R;
@@ -257,6 +258,13 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     }
+
+    view_ci.components.r = VK_COMPONENT_SWIZZLE_A;
+    view_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
+    view_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
+    view_ci.components.a = VK_COMPONENT_SWIZZLE_A;
+    VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->a_to_r_view));
+
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
     internal->mapped_base = NULL;
@@ -333,6 +341,7 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->resolve_memory) vkFreeMemory(g_vk_ctx.device, internal->resolve_memory, NULL);
     if (internal->view) vkDestroyImageView(g_vk_ctx.device, internal->view, NULL);
     if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
+    if (internal->a_to_r_view) vkDestroyImageView(g_vk_ctx.device, internal->a_to_r_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
     if (internal->image) vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
     if (internal->mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
@@ -740,7 +749,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
 
-    VkImageView src_view = src_int->swizzle_view ? src_int->swizzle_view : src_int->view;
+    VkImageView src_view = (target->format == VG_LITE_A8) ? src_int->a_to_r_view :
+        (src_int->swizzle_view ? src_int->swizzle_view : src_int->view);
     VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo di;
     di = si; /* native blend: dst = src (same sampler+view). Shader blend used tmp_view. */
