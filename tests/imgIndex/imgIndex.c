@@ -83,6 +83,11 @@ int main(int argc, const char *argv[])
     target.width  = 320;
     target.height = 480;
     error = vg_lite_allocate(&target);
+    if (error == VG_LITE_NOT_SUPPORT) {
+        printf("[fallback] RGB565 linear color-att unsupported on this GPU, retry with BGRA8888\n");
+        target.format = VG_LITE_BGRA8888;
+        error = vg_lite_allocate(&target);
+    }
     if (error != VG_LITE_SUCCESS) {
         printf("vg_lite_allocate target failed: %d\n", error);
         vg_lite_free(&src_index8);

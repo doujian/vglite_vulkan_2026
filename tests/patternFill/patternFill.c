@@ -76,6 +76,11 @@ int main(int argc, const char* argv[])
     buffer.format = VG_LITE_RGB565;
     
     error = vg_lite_allocate(&buffer);
+    if (error == VG_LITE_NOT_SUPPORT) {
+        printf("[fallback] RGB565 linear color-att unsupported on this GPU, retry with BGRA8888\n");
+        buffer.format = VG_LITE_BGRA8888;
+        error = vg_lite_allocate(&buffer);
+    }
     if (error != VG_LITE_SUCCESS) {
         printf("vg_lite_allocate failed: %d\n", error);
         cleanup();
