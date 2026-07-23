@@ -466,53 +466,32 @@ static void compute_blit_shader_matrix(vg_lite_matrix_t *matrix,
     mat3_multiply(s_inv, temp, shader_mat);
 }
 
-/* Compute AABB in NDC of the blit destination region.
+/* Compute OBB (oriented bounding box) of the blit destination region.
  * Transforms source 4 corners through blit matrix to target pixel space,
- * takes bounding box, clips to target bounds, converts to NDC.
- * Output: aabb[4] = {min_x_ndc, min_y_ndc, max_x_ndc, max_y_ndc} */
-static void compute_blit_aabb(vg_lite_matrix_t *matrix,
+ * adds 1px margin, converts to NDC.
+ * Output: corners_ndc[8] = 4 corner NDC xy pairs for TRIANGLE_LIST quad.
+ * UVs computed in vertex shader via shader matrix (same as fullscreen path). */
+static void compute_blit_obb(vg_lite_matrix_t *matrix,
     int src_w, int src_h, int dst_w, int dst_h,
-    float aabb[4])
+    float corners_ndc[8])
 {
-    float corners[4][2] = {
-        {0, 0}, {(float)src_w, 0}, {(float)src_w, (float)src_h}, {0, (float)src_h}
+    float m = 0.0f;
+    float corners_src[4][2] = {
+        {-m, -m}, {(float)src_w + m, -m}, {(float)src_w + m, (float)src_h + m}, {-m, (float)src_h + m}
     };
-    float min_x = (float)dst_w, min_y = (float)dst_h, max_x = 0, max_y = 0;
+    float px[4], py[4];
 
     for (int i = 0; i < 4; i++) {
-        float cx = corners[i][0], cy = corners[i][1];
-        float tx = matrix->m[0][0] * cx + matrix->m[0][1] * cy + matrix->m[0][2];
-        float ty = matrix->m[1][0] * cx + matrix->m[1][1] * cy + matrix->m[1][2];
-        if (tx < min_x) min_x = tx;
-        if (ty < min_y) min_y = ty;
-        if (tx > max_x) max_x = tx;
-        if (ty > max_y) max_y = ty;
+        float cx = corners_src[i][0], cy = corners_src[i][1];
+        px[i] = matrix->m[0][0] * cx + matrix->m[0][1] * cy + matrix->m[0][2];
+        py[i] = matrix->m[1][0] * cx + matrix->m[1][1] * cy + matrix->m[1][2];
     }
 
-    /* Clip to target bounds */
-    if (min_x < 0) min_x = 0;
-    if (min_y < 0) min_y = 0;
-    if (max_x > dst_w) max_x = (float)dst_w;
-    if (max_y > dst_h) max_y = (float)dst_h;
-
-    /* Expand by 1px margin to cover edge pixels that BI_LINEAR filtering
-     * needs. Without this, pixels just outside the AABB won't be rasterized,
-     * causing visible artifacts at the boundary of scaled blits. The fragment
-     * shader clamps/discards out-of-range UVs, so extra coverage is safe. */
-    min_x -= 1.0f;
-    min_y -= 1.0f;
-    max_x += 1.0f;
-    max_y += 1.0f;
-    if (min_x < 0) min_x = 0;
-    if (min_y < 0) min_y = 0;
-    if (max_x > dst_w) max_x = (float)dst_w;
-    if (max_y > dst_h) max_y = (float)dst_h;
-
     /* Convert to NDC: [0,dst] -> [-1,1] */
-    aabb[0] = 2.0f * min_x / dst_w - 1.0f;
-    aabb[1] = 2.0f * min_y / dst_h - 1.0f;
-    aabb[2] = 2.0f * max_x / dst_w - 1.0f;
-    aabb[3] = 2.0f * max_y / dst_h - 1.0f;
+    for (int i = 0; i < 4; i++) {
+        corners_ndc[i * 2 + 0] = 2.0f * px[i] / dst_w - 1.0f;
+        corners_ndc[i * 2 + 1] = 2.0f * py[i] / dst_h - 1.0f;
+    }
 }
 
 /* Shader blend (mode 0) disabled — create_temp_copy_image no longer called.
@@ -769,16 +748,16 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (source->format == VG_LITE_A8)  pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
-    /* Push fragment data at offset 0 (80B), AABB at offset 80 (16B) */
+    /* Push fragment data at offset 0 (80B), OBB corners at offset 80 (32B) */
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-    float blit_aabb[4] = {-1.0f, -1.0f, 3.0f, 3.0f};
+    float obb_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
     if (g_vk_ctx.use_aabb_blit) {
-        compute_blit_aabb(matrix, source->width, source->height,
-                          target->width, target->height, blit_aabb);
+        compute_blit_obb(matrix, source->width, source->height,
+                         target->width, target->height, obb_corners);
     }
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 16, blit_aabb);
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 32, obb_corners);
 
     /* Shader blend SSBO path (mode 0) disabled
     VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};
@@ -807,7 +786,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
             g_vk_ctx.timestamp_query_pool, perf_slot0);
 #endif
-    vkCmdDraw(g_vk_ctx.cmd_buf, g_vk_ctx.use_aabb_blit ? 4 : 3, 1, 0, 0);
+    vkCmdDraw(g_vk_ctx.cmd_buf, g_vk_ctx.use_aabb_blit ? 6 : 3, 1, 0, 0);
 #if VGLITE_BLIT_PERF
     if (perf_slot0 + 1 < VGLITE_TIMESTAMP_QUERY_COUNT) {
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,

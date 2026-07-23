@@ -51,14 +51,9 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
 
 void main()
 {
-    /* src_uv interpolated from vertex shader's (matrix * frag_pos).
-     * 2D affine => z==1, interpolation is exact (linear transform commutes with interp). */
-
-    if (src_uv.x < -0.001 || src_uv.x > 1.001 || src_uv.y < -0.001 || src_uv.y > 1.001) {
-        discard;
-    }
-    /* UV clamp removed: sampler addressMode = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-     * texture() clamps to edge automatically — no per-fragment clamp needed. */
+    /* OBB quad precisely covers source image footprint.
+     * UV computed via matrix in vertex shader, same as fullscreen path.
+     * CLAMP_TO_EDGE handles edge sampling for BI_LINEAR filter. */
 
     vec4 src = texture(src_texture, src_uv);
 
