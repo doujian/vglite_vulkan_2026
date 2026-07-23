@@ -7,8 +7,8 @@
 #include "util.h"
 
 #define DEFAULT_SIZE 320.0f;
-#define DEFAULT_WIDTH 480
-#define DEFAULT_HEIGHT 320
+#define DEFAULT_WIDTH 320
+#define DEFAULT_HEIGHT 480
 #define __func__ __FUNCTION__
 #define IS_ERROR(status)         (status > 0)
 #define CHECK_ERROR(Function) \

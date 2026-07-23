@@ -1094,14 +1094,9 @@ static vg_lite_error_t draw_grad_internal(
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
 
     /* Cover pass: path_matrix = identity, grad_matrix maps screen pixel coords to texture UV.
-     * Chain: screen_pixel -> path_coord (via inverse path_matrix) -> texture UV (via inverse grad_matrix / tex_size) */
-
+     */
+    
     if (!grad_matrix) grad_matrix = &identity;
-
-    float mat_inv[3][3] = {0};
-    if (!mat3_inverse(matrix->m, mat_inv)) {
-        mat_inv[0][0] = 1.0f; mat_inv[1][1] = 1.0f; mat_inv[2][2] = 1.0f;
-    }
 
     float grad_inv[3][3] = {0};
     float gm[3][3];
@@ -1120,7 +1115,7 @@ static vg_lite_error_t draw_grad_internal(
     grad_norm[2][2] = 1.0f;
 
     float combined_pattern[3][3] = {0};
-    mat3_multiply(grad_norm, mat_inv, combined_pattern);
+    memcpy(combined_pattern, grad_norm, sizeof(grad_norm));
 
     /* Compute bbox NDC corners using path_combined matrix for cover pass */
     float cover_verts[8];

@@ -952,7 +952,7 @@ void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
 
     /* combined_pattern = grad_norm * mat_inv */
     float combined_pattern[3][3];
-    mat3_multiply(grad_norm, mat_inv, combined_pattern);
+    memcpy(combined_pattern, grad_norm, sizeof(grad_norm));
 
     /* For each pixel in the expected buffer */
     for (int y = 0; y < eb->height; y++) {
@@ -1055,7 +1055,7 @@ void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
 
     /* combined_pattern = grad_norm * mat_inv */
     float combined_pattern[3][3];
-    mat3_multiply(grad_norm, mat_inv, combined_pattern);
+    memcpy(combined_pattern, grad_norm, sizeof(grad_norm));
 
     /* For each pixel in the expected buffer */
     for (int y = 0; y < eb->height; y++) {
