@@ -149,3 +149,6 @@ add_dependencies(test_glyphs2 spirv_compilation)
 add_executable(test_multi_draw multi_draw/multi_draw.c)
 add_dependencies(test_multi_draw spirv_compilation)
 
+add_executable(test_stroke stroke/stroke.c)
+add_dependencies(test_stroke spirv_compilation)
+
