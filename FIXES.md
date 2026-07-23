@@ -353,3 +353,137 @@ Verified: deleted `test_tiger.exe` + `build/tests/golden/tiger.png`, rebuilt, th
 **Solution**: Added a loop in cleanup to destroy `s_draw_cover_cache[i].pipeline` for all cached entries, mirroring the `grad_pipeline_cache`/`pattern_pipeline_cache` destruction pattern.
 
 **Files**: src/vg_lite_draw.c
+
+---
+
+## 19. vlc_parser only handled opcodes 0x00-0x09 (arcs/SQUAD/SCUBIC/HLINE/VLINE/BREAK skipped)
+
+**Date**: 2026-07-23
+
+**Symptom**: Path data containing VLC opcodes outside the 0x00-0x09 range (END..CUBIC_REL) was silently dropped by `vlc_parse_path`. The `vlc_op_arg_count` function returned 0 for all unknown opcodes via `default: return 0`, and the `switch` in `vlc_parse_path` had no cases for them, so they fell through to `default: break`. Concrete impact: `test_stroke` Tests 2 & 3 (fill+stroke / fill_stroke combined) used a path with 4 `VLC_OP_SCWARC` (0x15) arc segments for the "petal" shape — the **fill pass rendered nothing** (all arc segments skipped), only the stroke pass (which flattens arcs internally before emitting `stroke_path`) produced output. Any test using HLINE/VLINE/SQUAD/SCUBIC/arc opcodes in the original path would have the same incomplete fill.
+
+**Root cause**: The original `vlc_parser.c` was written before arc support was needed and only implemented the 10 basic opcodes (END/CLOSE/MOVE[+_REL]/LINE[+_REL]/QUAD[+_REL]/CUBIC[+_REL]). The remaining 17 opcodes defined in `inc/vg_lite.h` (BREAK, HLINE/VLINE + REL, SQUAD/SCUBIC + REL, 8 ARC variants) were never wired up. `vlc_op_arg_count`'s `default: return 0` made the parser skip both the dispatch AND the byte-advance (`cur += arg_count * fmt_size` with arg_count=0), so the parser would re-read the same opcode forever if it ever hit one — but in practice the stroke test's path had the arcs followed by END, and END=0 args terminated the loop, so it just produced an incomplete path rather than an infinite loop.
+
+**Solution**: Extended `vlc_parser.c` to handle all 27 VLC opcodes (0x00-0x1A). All new opcodes are converted in-place to the existing `VLC_CMD_MOVE/LINE/CUBIC/CLOSE` command types, so the downstream tessellator needs no changes:
+
+1. **`vlc_op_arg_count`**: Added all missing opcodes with their coordinate counts (BREAK=0, HLINE/VLINE=1, SQUAD=2, SCUBIC=4, all 8 ARC variants=5). Counts match `get_data_count` in `src/vg_lite_path.c`.
+
+2. **`VlcPath` struct** (`vlc_parser.h`): Added 3 fields for smooth-curve control-point reflection: `last_cmd_type`, `last_ctrl_x`, `last_ctrl_y`. Initialized in `vlc_path_init`.
+
+3. **`vlc_parse_path` switch**: Added cases for all new opcodes:
+   - **BREAK (0x0A)** → emit CLOSE (disconnects subpath without closing)
+   - **HLINE/VLINE (+_REL)** → emit LINE (preserves prev_y or prev_x)
+   - **SQUAD/SCUBIC (+_REL)** → reflect previous control point about current point (SVG smooth-curve rule), then emit as QUAD→cubic or cubic respectively. Reflection uses `last_cmd_type`/`last_ctrl_x/y`; if previous command wasn't a curve, control = current point (degenerate).
+   - **8 ARC variants** → call new `arc_to_cubics()` helper. Direction mapping: SCCWARC/LCCWARC = CCW (sweep=1), SCWARC/LCWARC = CW (sweep=0); SC*=small (large_arc=0), LC*=large (large_arc=1).
+
+4. **`arc_to_cubics()`** (new, ~80 lines): Implements the SVG 1.1 spec endpoint-to-center arc conversion (Appendix F.6.5). Steps: (1) degenerate check (zero radius or zero-length → line), (2) compute (x1',y1') in rotated frame, (3) scale up radii if too small (lambda check), (4) compute center (cx',cy') with sign from large_arc XOR sweep, (5) rotate center back, (6) compute theta1 and dtheta from dot products, normalize to [-2π, 2π] range based on sweep direction, (7) split into ≤90° segments, emit cubic bezier per segment using the standard k=(4/3)*tan(α/2) tangent approximation. Final segment's endpoint is snapped to exact (x2,y2) to avoid drift.
+
+5. **Helper refactor**: Extracted `emit_cubic()` and `emit_line()` helpers that both add the command AND update `last_cmd_type`/`last_ctrl_x/y` — ensuring smooth-curve reflection state is consistent across all emission paths (direct CUBIC, QUAD→cubic, SQUAD, SCUBIC, arc segments).
+
+**Verification**:
+- `gcc -Wall -Wextra -fsyntax-only` on vlc_parser.c: 0 errors, 0 warnings.
+- Full build: 38 test targets, 0 errors.
+- `test_stroke`: EXIT=0, all 13 cases ran, 12 PNGs generated. stroke3-5.png (fill+stroke combined) now 2823 bytes with 149 unique byte values (previously empty fill → smaller/different output). stroke_size values unchanged (268-1564 bytes) since stroke algorithm was already correct.
+- Regression: `test_clear`, `test_blit_draw`, `test_tiger` all PASS (exit 0).
+
+**Files**: src/vlc_parser.c, src/vlc_parser.h
+
+---
+
+## #20 — VG_LITE_DRAW_ZERO incorrectly treated as no-op
+
+**Date**: 2026-07-23
+
+**Symptom**: When `path_type == VG_LITE_DRAW_ZERO`, `vg_lite_draw` returned `VG_LITE_SUCCESS` immediately without rendering anything. This contradicts the official implementation where ZERO renders the fill path.
+
+**Root Cause**: My initial assumption was that `VG_LITE_DRAW_ZERO` (= 0 in the bitmask enum, where bit0=stroke, bit1=fill) means "render nothing". However, grep of the official source `gpu-vglite/VGLite/vg_lite_path.c` at **12 dispatch sites** (L1044, L1458, L1918, L2623, L2923, L3018, L3706, L3736, L4305, L4318, L5206, L5219) shows ZERO is ALWAYS grouped with FILL_PATH:
+
+```c
+if (path->path_type == VG_LITE_DRAW_FILL_PATH 
+    || path->path_type == VG_LITE_DRAW_ZERO               // ← treated as FILL
+    || path->path_type == VG_LITE_DRAW_FILL_STROKE_PATH)
+```
+
+The name "ZERO" refers to "bit0 (stroke) = 0" — i.e., zero stroke contribution — NOT "render nothing". Fill still renders.
+
+**Solution**: Removed the incorrect early-return in `src/vg_lite.c` `vg_lite_draw` (was L1018-1021). Now ZERO falls through to the fill pass exactly like FILL_PATH. Kept the validation fix in `src/vg_lite_path.c` `vg_lite_set_path_type` (L128) that correctly accepts all 4 enum values including ZERO.
+
+**Verification**:
+- Full build: 38 test targets, 0 errors.
+- `test_stroke`: EXIT=0, all 13 cases ran, 12 PNGs generated (unchanged behavior since test_stroke doesn't use ZERO).
+- Regression: `test_clear` (100% pixel match), `test_blit_draw` both PASS.
+
+**Files**: src/vg_lite.c
+
+---
+
+## 21. vg_lite_init_path rejected data=NULL, breaking stroke rendering
+
+**Date**: 2026-07-23
+
+**Symptom**: `test_stroke` PNGs showed only the background color with a few black dots near the top-left corner. The stroke geometry (petal shape spanning [0,250]×[0,150]) was entirely missing.
+
+**Root Cause**: `vg_lite_init_path` in `src/vg_lite.c` L1046 had `if (path == NULL || data == NULL) return VG_LITE_INVALID_ARGUMENT;`. The stroke test (and the official CTS pattern) calls `vg_lite_init_path(..., data=NULL)` first, then allocates `path->path = malloc(...)` afterward. With the NULL-data check, `init_path` returned early with `VG_LITE_INVALID_ARGUMENT` before setting any path fields. Since the path was `memset` to 0 beforehand, `path->format` remained `0` (= `VG_LITE_S8`), not the intended `VG_LITE_FP32`. When `vg_lite_append_path` later wrote coordinates, it interpreted them as 1-byte signed integers (S8 format) instead of 4-byte floats — all coordinates collapsed to 0. The stroke algorithm then generated a tiny degenerate cluster at the origin instead of the petal outline.
+
+The official `gpu-vglite/VGLite/vg_lite_path.c` L198 only validates `path != NULL`; it does NOT check `data != NULL` because deferred path allocation (init_path → malloc → append_path) is a supported usage pattern.
+
+**Solution**: Changed `src/vg_lite.c` L1046 from `if (path == NULL || data == NULL)` to `if (path == NULL)`, matching the official source. Now `init_path` records the format/quality/bounding_box/path_length even when `data` is NULL, and `append_path` later writes coordinates in the correct format.
+
+**Verification**:
+- Full build: 38 test targets, 0 errors.
+- `test_stroke`: EXIT=0, 13 PNGs generated. `stroke0_0.png` now has 252 unique byte values (was ~218/empty before). Pixel histogram: 63989 background, 1265 stroke pixels, 282 AA-transition pixels.
+- Regression: `test_clear` (100% pixel match), `test_tiger`, `test_blit_draw` all PASS.
+
+**Files**: src/vg_lite.c
+
+---
+
+## 22. CTS stroke test passed color=0 to vg_lite_set_stroke (source bug)
+
+**Date**: 2026-07-23
+
+**Symptom**: After fix #21, stroke geometry rendered correctly but the stroke color was always BLACK regardless of the `color` parameter passed to `vg_lite_draw`.
+
+**Root Cause**: The original VeriSilicon CTS source `VGLite_Tests/VSI_CTS/samples/stroke/stroke.c` passes `0` as the 9th parameter (`color`) to all three `vg_lite_set_stroke` calls (L125, L144, L162 in the original). In the official VGLite driver, stroke rendering uses `path->stroke_color` (set by `vg_lite_set_stroke`) — NOT the `color` parameter from `vg_lite_draw`. Confirmed at `gpu-vglite/VGLite/vg_lite_path.c` L1030 (fill uses `color` param) vs L1080 (stroke uses `path->stroke_color`). So the intended stroke color in `vg_lite_draw(0xFF0000FF)` was ignored for strokes; `set_stroke(color=0)` won, producing black strokes. This is a bug in the CTS test source itself.
+
+**Solution**: Updated `tests/stroke/stroke.c` to pass the intended stroke colors to `vg_lite_set_stroke`:
+- Test 1 (stroke-only): `0xFF0000FF` (matches the `vg_lite_draw` color for red stroke).
+- Test 2 (fill+stroke overlay): `0xFF00FFFF` (yellow stroke, matching the second `vg_lite_draw` pass).
+- Test 3 (fill+stroke combined): `0xFF0000FF` (red stroke, matching the `vg_lite_draw` color).
+
+**Verification**:
+- Full build: 38 test targets, 0 errors.
+- `test_stroke`: EXIT=0, 13 PNGs. `stroke0_0.png` pixel histogram: ARGB=FF0000FF (blue bg) 63989px, ARGB=FFFF0000 (red stroke) 1265px, plus 282 AA-transition pixels. Stroke now renders in the intended red color (was black before).
+
+**Files**: tests/stroke/stroke.c
+
+---
+
+## 23. FILL_STROKE render order reversed + stroke bbox not expanded
+
+**Date**: 2026-07-23
+
+**Symptom**: For `VG_LITE_DRAW_FILL_STROKE_PATH`, the stroke was partially hidden by the fill (fill covered the stroke's internal line width). Additionally, strokes with thick `line_width` or `VG_LITE_JOIN_MITER` + large `miter_limit` had their edges clipped at the path bounding box.
+
+**Root Cause**: Two issues in `src/vg_lite.c` `vg_lite_draw`:
+
+1. **Render order reversed**: Our port rendered stroke-first then fill (the fill pass was the last statement, L1029). The official `gpu-vglite/VGLite/vg_lite_path.c` does the opposite at L1044 (fill tessellation loop) then L1065 (stroke tessellation loop) — fill-first, stroke-second, so stroke overlays fill.
+
+2. **Stroke bbox not expanded**: The `stroke_tmp` path used the raw `p->bounding_box` (L1009-1012, comment claimed "safe over-estimate"). The official source (`vg_lite_path.c` L973-982) expands the bbox for stroke paths:
+   ```c
+   add_width = 1.5 * (line_width + (join==MITER ? miter_limit : 0));
+   bbox[0,1] -= add_width;  bbox[2,3] += add_width;
+   ```
+   Without this, the Vulkan cover quad (built from bbox) clipped stroke edges that extended beyond the original path outline.
+
+**Solution**: Rewrote `vg_lite_draw` dispatch in `src/vg_lite.c`:
+- Computed `has_fill` / `has_stroke` flags from `path_type` bitmask (ZERO/FILL_PATH/FILL_STROKE → fill; STROKE_PATH/FILL_STROKE → stroke).
+- Fill pass runs FIRST (calls `vg_lite_draw_impl` with original path + draw color), then stroke pass runs SECOND.
+- For the stroke pass, expanded `stroke_tmp.bounding_box` by `1.5 * (line_width + miter_limit_if_miter)` on all 4 sides, matching the official formula.
+
+**Verification**:
+- Full build: 38 test targets, 0 errors.
+- `test_stroke`: EXIT=0, 13 PNGs. `fill_stroke.png` pixel histogram: blue bg 34588px, red fill 28172px, black stroke 2017px (was 1265px before fix — stroke now fully visible over fill). `stroke0_0.png` unchanged (stroke-only, not affected by order).
+- Regression: `test_clear` (100% pixel match), `test_tiger` (3.90% diff, PASS) both PASS.
+
+**Files**: src/vg_lite.c

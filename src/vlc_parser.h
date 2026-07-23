@@ -1,7 +1,15 @@
 /*
  * VLC Path Parser - decodes VLC-encoded paths from vg_lite_path_t
- * 
- * Parses opcodes: MOVE (0x02), LINE (0x04), QUAD (0x06), CUBIC (0x08), CLOSE (0x01), END (0x00)
+ *
+ * Parses all 27 VLC opcodes (0x00-0x1A):
+ *   END/CLOSE/BREAK, MOVE/LINE/QUAD/CUBIC (+ REL),
+ *   HLINE/VLINE (+ REL),
+ *   SQUAD/SCUBIC (+ REL)  [smooth: reflected control point],
+ *   SCCWARC/SCWARC/LCCWARC/LCWARC (+ REL) [SVG-style elliptic arcs].
+ *
+ * Arcs and smooth curves are converted to cubic beziers in-place, so the
+ * downstream tessellator only ever sees MOVE/LINE/CUBIC/CLOSE commands.
+ *
  * Handles coordinate formats: VG_LITE_S8, VG_LITE_S16, VG_LITE_S32, VG_LITE_FP32
  */
 
@@ -38,6 +46,11 @@ typedef struct {
     int cmd_capacity;       /* Capacity of commands array */
     VlcPoint bbox_min;      /* Bounding box minimum */
     VlcPoint bbox_max;      /* Bounding box maximum */
+    /* Smooth-curve state: previous command type and the control point used
+     * for reflection by SQUAD / SCUBIC. Updated on every emitted command. */
+    int   last_cmd_type;    /* VLC_CMD_* of the last emitted command, or -1 */
+    float last_ctrl_x;      /* Reflector control X (previous control point) */
+    float last_ctrl_y;      /* Reflector control Y (previous control point) */
 } VlcPath;
 
 /* Initialize VlcPath structure */

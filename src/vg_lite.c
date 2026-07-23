@@ -970,42 +970,91 @@ vg_lite_error_t vg_lite_blit2(vg_lite_buffer_t *t, vg_lite_buffer_t *s0, vg_lite
     vg_lite_matrix_t *m0, vg_lite_matrix_t *m1, vg_lite_blend_t b, vg_lite_filter_t f)
 { (void)t;(void)s0;(void)s1;(void)m0;(void)m1;(void)b;(void)f; return VG_LITE_NOT_SUPPORT; }
 
+/* Forward declaration — full implementation now in vg_lite_draw.c */
+extern vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path,
+                                         vg_lite_fill_t fill_rule, vg_lite_matrix_t *matrix,
+                                         vg_lite_blend_t blend, vg_lite_color_t color);
+
 vg_lite_error_t vg_lite_draw(vg_lite_buffer_t *t, vg_lite_path_t *p, vg_lite_fill_t fl,
     vg_lite_matrix_t *m, vg_lite_blend_t b, vg_lite_color_t c)
 {
-    printf("[DRAW] target=%dx%d fmt=%d  path={fmt=%d qual=%d bb=[%g,%g,%g,%g] len=%d  data=",
-           t ? t->width : 0, t ? t->height : 0, t ? (int)t->format : -1,
-           p ? (int)p->format : -1, p ? (int)p->quality : -1,
-           p ? p->bounding_box[0] : 0, p ? p->bounding_box[1] : 0,
-           p ? p->bounding_box[2] : 0, p ? p->bounding_box[3] : 0,
-           p ? (int)p->path_length : 0);
+    vg_lite_error_t error = VG_LITE_SUCCESS;
 
-    /* Dump path data as raw bytes (opcode + coordinates) */
-    if (p && p->path && p->path_length > 0) {
-        printf("[");
-        for (vg_lite_uint32_t i = 0; i < p->path_length; i++) {
-            unsigned char byte = ((unsigned char*)p->path)[i];
-            if (i > 0) printf(" ");
-            /* Print opcodes (0-4) as decimal, others as signed value */
-            printf("%d", (signed char)byte);
-        }
-        printf("]");
-    } else {
-        printf("(null)");
+    if (!t || !p)
+        return VG_LITE_INVALID_ARGUMENT;
+
+    /* Dispatch by path_type.
+     * Bitmask semantics (vg_lite_path_type_t): bit0=stroke, bit1=fill.
+     *   VG_LITE_DRAW_ZERO             = 0  → fill only (matches official: ZERO is treated as FILL_PATH)
+     *   VG_LITE_DRAW_FILL_PATH        = 2  → fill only
+     *   VG_LITE_DRAW_STROKE_PATH      = 1  → stroke only
+     *   VG_LITE_DRAW_FILL_STROKE_PATH = 3  → fill then stroke (official order: fill-first)
+     * NOTE: Official gpu-vglite treats ZERO identically to FILL_PATH at all 12 dispatch
+     * sites (gpu-vglite/VGLite/vg_lite_path.c L1044/1458/2623/2923/3018/etc.). The name
+     * "ZERO" refers to bit0(stroke)=0, NOT "render nothing". Do NOT early-return on ZERO.
+     *
+     * ORDER: Official does FILL loop first (vg_lite_path.c L1044), then STROKE loop (L1065).
+     * We match this: for FILL_STROKE_PATH, call fill draw_impl first, then stroke.
+     */
+    int has_fill   = (p->path_type == VG_LITE_DRAW_ZERO ||
+                      p->path_type == VG_LITE_DRAW_FILL_PATH ||
+                      p->path_type == VG_LITE_DRAW_FILL_STROKE_PATH);
+    int has_stroke = (p->path_type == VG_LITE_DRAW_STROKE_PATH ||
+                      p->path_type == VG_LITE_DRAW_FILL_STROKE_PATH);
+
+    /* ---- FILL pass (first, matches official order) ---- */
+    if (has_fill) {
+        error = vg_lite_draw_impl(t, p, fl, m, b, c);
+        if (error != VG_LITE_SUCCESS)
+            return error;
     }
 
-    printf("}  fill=%d  blend=%d  color=0x%08X  "
-           "mat=[%g %g %g; %g %g %g; %g %g %g]\n",
-           (int)fl, (int)b, c,
-           m ? m->m[0][0] : 0, m ? m->m[0][1] : 0, m ? m->m[0][2] : 0,
-           m ? m->m[1][0] : 0, m ? m->m[1][1] : 0, m ? m->m[1][2] : 0,
-           m ? m->m[2][0] : 0, m ? m->m[2][1] : 0, m ? m->m[2][2] : 0);
-    return vg_lite_draw_impl(t, p, fl, m, b, c);
+    /* ---- STROKE pass (second) ---- */
+    if (has_stroke) {
+        if (p->stroke_path && p->stroke_size > 0) {
+            vg_lite_path_t stroke_tmp;
+            memset(&stroke_tmp, 0, sizeof(stroke_tmp));
+            stroke_tmp.format      = VG_LITE_FP32;
+            stroke_tmp.quality     = p->quality;
+            stroke_tmp.path_length = p->stroke_size;
+            stroke_tmp.path        = p->stroke_path;
+            stroke_tmp.path_changed = 1;
+
+            /* Expand stroke bbox by 1.5*(line_width + miter_limit_if_miter).
+             * Official formula: gpu-vglite/VGLite/vg_lite_path.c L973-982.
+             * Without this, the Vulkan cover quad (built from bbox) clips stroke
+             * edges that extend beyond the original path outline. */
+            if (p->stroke) {
+                float add_w = p->stroke->line_width;
+                if (p->stroke->join_style == VG_LITE_JOIN_MITER)
+                    add_w += p->stroke->miter_limit;
+                add_w = 1.5f * add_w;
+                stroke_tmp.bounding_box[0] = p->bounding_box[0] - add_w;
+                stroke_tmp.bounding_box[1] = p->bounding_box[1] - add_w;
+                stroke_tmp.bounding_box[2] = p->bounding_box[2] + add_w;
+                stroke_tmp.bounding_box[3] = p->bounding_box[3] + add_w;
+            } else {
+                stroke_tmp.bounding_box[0] = p->bounding_box[0];
+                stroke_tmp.bounding_box[1] = p->bounding_box[1];
+                stroke_tmp.bounding_box[2] = p->bounding_box[2];
+                stroke_tmp.bounding_box[3] = p->bounding_box[3];
+            }
+
+            error = vg_lite_draw_impl(t, &stroke_tmp, fl, m, b, p->stroke_color);
+            if (error != VG_LITE_SUCCESS)
+                return error;
+        } else {
+            fprintf(stderr, "[DRAW] WARNING: STROKE requested but stroke_path is NULL/empty "
+                    "(did you call vg_lite_update_stroke?)\n");
+        }
+    }
+
+    return error;
 }
 
 vg_lite_error_t vg_lite_set_color_key(vg_lite_color_key4_t ck) { (void)ck; return VG_LITE_NOT_SUPPORT; }
 
-vg_lite_error_t vg_lite_clear_path(vg_lite_path_t *path) { (void)path; return VG_LITE_SUCCESS; }
+/* vg_lite_clear_path is now implemented in vg_lite_path.c (full stroke cleanup). */
 
 vg_lite_error_t vg_lite_init_path(vg_lite_path_t *path,
                                   vg_lite_format_t format,
@@ -1017,7 +1066,7 @@ vg_lite_error_t vg_lite_init_path(vg_lite_path_t *path,
                                   vg_lite_float_t max_x,
                                   vg_lite_float_t max_y)
 {
-    if (path == NULL || data == NULL)
+    if (path == NULL)
         return VG_LITE_INVALID_ARGUMENT;
 
     memset(path, 0, sizeof(vg_lite_path_t));

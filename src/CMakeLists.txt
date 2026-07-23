@@ -2,6 +2,8 @@ add_library(vg_lite
     vg_lite.c
     vg_lite_vulkan.c
     vg_lite_format.c
+    vg_lite_path.c
+    vg_lite_stroke.c
     vlc_parser.c
     tessellator.c
     vg_lite_draw.c
