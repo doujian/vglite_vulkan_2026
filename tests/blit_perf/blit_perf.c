@@ -1,6 +1,6 @@
 /*
  * test_blit_perf: A/B performance comparison between original fullscreen
- * blit triangle and AABB-optimized blit triangle.
+ * blit triangle and OBB-optimized blit quad.
  *
  * Phase 1: Correctness — blit same source to two targets with mode=0 and
  *          mode=1, verify pixel-identical output.
@@ -74,7 +74,7 @@ int main() {
         if (!src.handle) { error = VG_LITE_OUT_OF_MEMORY; goto ErrorHandler; }
 
         /* Mode 0: original fullscreen triangle */
-        vg_lite_set_blit_aabb_mode(0);
+        vg_lite_set_blit_obb_mode(0);
         vg_lite_clear(&target_ref, NULL, 0xFF000000);
         {
             vg_lite_matrix_t m; vg_lite_identity(&m);
@@ -83,8 +83,8 @@ int main() {
         }
         vg_lite_finish();
 
-        /* Mode 1: AABB triangle */
-        vg_lite_set_blit_aabb_mode(1);
+        /* Mode 1: OBB triangle */
+        vg_lite_set_blit_obb_mode(1);
         vg_lite_clear(&target, NULL, 0xFF000000);
         {
             vg_lite_matrix_t m; vg_lite_identity(&m);
@@ -97,14 +97,14 @@ int main() {
          * Outside it, mode 0 (fullscreen, no discard) fills with CLAMP_TO_EDGE edge color,
          * while mode 1 (OBB) doesn't rasterize at all. Both are correct behaviors. */
         uint32_t *p_ref = (uint32_t*)target_ref.memory;
-        uint32_t *p_aabb = (uint32_t*)target.memory;
+        uint32_t *p_obb = (uint32_t*)target.memory;
         int mismatch = 0;
         int checked = 0;
         for (int y = 0; y < 256; y++) {
             for (int x = 0; x < 256; x++) {
                 int idx = y * TW + x;
                 checked++;
-                if (p_ref[idx] != p_aabb[idx]) mismatch++;
+                if (p_ref[idx] != p_obb[idx]) mismatch++;
             }
         }
         double pct = checked > 0 ? 100.0 * mismatch / checked : 0;
@@ -115,7 +115,7 @@ int main() {
             printf("Correctness: FAIL (%d/%d pixels differ = %.2f%% within source rect)\n",
                    mismatch, checked, pct);
             printf("  ref pixel(0,0)   = 0x%08X\n", p_ref[0]);
-            printf("  aabb pixel(0,0)  = 0x%08X\n", p_aabb[0]);
+            printf("  aabb pixel(0,0)  = 0x%08X\n", p_obb[0]);
             fail = 1;
         }
         vg_lite_free(&src);
@@ -132,7 +132,7 @@ int main() {
         if (!src.handle) { error = VG_LITE_OUT_OF_MEMORY; goto ErrorHandler; }
 
         /* Measure mode 0 (original fullscreen) */
-        vg_lite_set_blit_aabb_mode(0);
+        vg_lite_set_blit_obb_mode(0);
         vg_lite_clear(&target, NULL, 0xFF000000);
         {
             uint32_t start_slot = vg_lite_write_timestamp(BOTTOM_OF_PIPE_BIT);
@@ -149,8 +149,8 @@ int main() {
                    sw, sh, elapsed, per_blit);
         }
 
-        /* Measure mode 1 (AABB optimized) */
-        vg_lite_set_blit_aabb_mode(1);
+        /* Measure mode 1 (OBB optimized) */
+        vg_lite_set_blit_obb_mode(1);
         vg_lite_clear(&target, NULL, 0xFF000000);
         {
             uint32_t start_slot = vg_lite_write_timestamp(BOTTOM_OF_PIPE_BIT);
@@ -163,7 +163,7 @@ int main() {
             vg_lite_finish();
             double elapsed = vg_lite_get_elapsed_ns(start_slot, end_slot);
             double per_blit = elapsed / BLIT_ITERATIONS;
-            printf("[PERF] src=%dx%d mode=1 aabb       total=%.0f ns  per_blit=%.0f ns\n",
+            printf("[PERF] src=%dx%d mode=1 obb        total=%.0f ns  per_blit=%.0f ns\n",
                    sw, sh, elapsed, per_blit);
         }
 

@@ -5,7 +5,7 @@
  * vg_lite_config.h — central compile-time configuration for VGLite Vulkan backend.
  *
  * Override any macro with -D on the compile command line, e.g.:
- *   cmake -DCMAKE_C_FLAGS="-DVGLITE_BLIT_MSAA=0 -DVGLITE_BLIT_AABB=0" ...
+ *   cmake -DCMAKE_C_FLAGS="-DVGLITE_BLIT_MSAA=0 -DVGLITE_BLIT_OBB=0" ...
  */
 
 /* =========================================================================
@@ -18,12 +18,12 @@
 #define VGLITE_BLIT_MSAA 1
 #endif
 
-/* Use AABB-driven vertex shader for blit (tight triangle instead of fullscreen).
- * 1 = enable AABB optimization (default), 0 = original fullscreen triangle.
- * This controls the initial value of g_vk_ctx.use_aabb_blit.
- * Runtime switching is still available via vg_lite_set_blit_aabb_mode(). */
-#ifndef VGLITE_BLIT_AABB
-#define VGLITE_BLIT_AABB 1
+/* Use OBB-driven vertex shader for blit (oriented bounding box quad instead of fullscreen triangle).
+ * 1 = enable OBB optimization (default), 0 = original fullscreen triangle.
+ * This controls the initial value of g_vk_ctx.use_obb_blit.
+ * Runtime switching is still available via vg_lite_set_blit_obb_mode(). */
+#ifndef VGLITE_BLIT_OBB
+#define VGLITE_BLIT_OBB 1
 #endif
 
 /* =========================================================================

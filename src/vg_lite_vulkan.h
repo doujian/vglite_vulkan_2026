@@ -99,7 +99,8 @@ typedef struct {
     /* Native blend pipeline (1-binding: sampler, push constants for params) */
     VkPipelineLayout native_pipeline_layout;
     VkDescriptorSetLayout native_descriptor_layout;
-    VkShaderModule native_frag_shader;
+    VkShaderModule native_frag_shader;       /* OBB path: no discard */
+    VkShaderModule native_fs_frag_shader;    /* Fullscreen path: with discard */
     /* SSBO for blit shader parameters */
     VkBuffer blit_ssbo_buffer;
     VkDeviceMemory blit_ssbo_memory;
@@ -142,11 +143,11 @@ typedef struct {
     int scissor_count;
     int scissor_enabled;
 
-    /* AABB blit optimization */
-    VkShaderModule blit_aabb_vert_shader;
-    uint8_t use_aabb_blit;              /* 0 = original fullscreen, 1 = AABB pipeline */
-    pipeline_cache_entry_t blit_aabb_pipeline_cache[MAX_PIPELINE_CACHE];
-    int blit_aabb_pipeline_cache_count;
+/* OBB blit optimization */
+VkShaderModule blit_obb_vert_shader;
+uint8_t use_obb_blit;                /* 0 = original fullscreen, 1 = OBB pipeline */
+pipeline_cache_entry_t blit_obb_pipeline_cache[MAX_PIPELINE_CACHE];
+int blit_obb_pipeline_cache_count;
 
     /* GPU timestamp query pool */
     VkQueryPool timestamp_query_pool;
@@ -185,8 +186,8 @@ int vg_lite_blend_to_group(vg_lite_blend_t blend);
 VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group);
 VkPipeline vg_lite_vulkan_get_pipeline_no_msaa(VkFormat format, int blend_group);
 VkPipeline vg_lite_vulkan_get_pipeline_native_msaa(VkFormat format, int blend_group);
-VkPipeline vg_lite_vulkan_get_pipeline_aabb_no_msaa(VkFormat format, int blend_group);
-VkPipeline vg_lite_vulkan_get_pipeline_aabb_native_msaa(VkFormat format, int blend_group);
+VkPipeline vg_lite_vulkan_get_pipeline_obb_no_msaa(VkFormat format, int blend_group);
+VkPipeline vg_lite_vulkan_get_pipeline_obb_native_msaa(VkFormat format, int blend_group);
 
 /* GPU timestamp utilities */
 void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage);

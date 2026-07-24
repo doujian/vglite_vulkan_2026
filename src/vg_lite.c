@@ -641,15 +641,15 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         pipeline = vg_lite_vulkan_get_pipeline(vkfmt, blend_group);
     */
     if (!pipeline) return VG_LITE_OUT_OF_MEMORY;
-    VkPipeline aabb_pipeline = VK_NULL_HANDLE;
-    /* native_blend is always true — use_aabb_blit check simplified */
-    if (g_vk_ctx.use_aabb_blit) {
+    VkPipeline obb_pipeline = VK_NULL_HANDLE;
+    /* native_blend is always true — use_obb_blit check simplified */
+    if (g_vk_ctx.use_obb_blit) {
 #if VGLITE_BLIT_MSAA
-        aabb_pipeline = vg_lite_vulkan_get_pipeline_aabb_native_msaa(vkfmt, blend_group);
+        obb_pipeline = vg_lite_vulkan_get_pipeline_obb_native_msaa(vkfmt, blend_group);
 #else
-        aabb_pipeline = vg_lite_vulkan_get_pipeline_aabb_no_msaa(vkfmt, blend_group);
+        obb_pipeline = vg_lite_vulkan_get_pipeline_obb_no_msaa(vkfmt, blend_group);
 #endif
-        if (!aabb_pipeline) return VG_LITE_OUT_OF_MEMORY;
+        if (!obb_pipeline) return VG_LITE_OUT_OF_MEMORY;
     }
     vg_lite_vulkan_begin_command();
     /* Shader blend: no need to flush/end RP (native blend only)
@@ -752,7 +752,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     float obb_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
-    if (g_vk_ctx.use_aabb_blit) {
+    if (g_vk_ctx.use_obb_blit) {
         compute_blit_obb(matrix, source->width, source->height,
                          target->width, target->height, obb_corners);
     }
@@ -772,7 +772,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     }
 
     vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        g_vk_ctx.use_aabb_blit ? aabb_pipeline : pipeline);
+        g_vk_ctx.use_obb_blit ? obb_pipeline : pipeline);
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
         g_vk_ctx.native_pipeline_layout,
         0, 1, &desc_set, 0, NULL);
@@ -786,7 +786,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
             g_vk_ctx.timestamp_query_pool, perf_slot0);
 #endif
-    vkCmdDraw(g_vk_ctx.cmd_buf, g_vk_ctx.use_aabb_blit ? 6 : 3, 1, 0, 0);
+    vkCmdDraw(g_vk_ctx.cmd_buf, g_vk_ctx.use_obb_blit ? 6 : 3, 1, 0, 0);
 #if VGLITE_BLIT_PERF
     if (perf_slot0 + 1 < VGLITE_TIMESTAMP_QUERY_COUNT) {
         vkCmdWriteTimestamp(g_vk_ctx.cmd_buf, BOTTOM_OF_PIPE_BIT,
@@ -1086,15 +1086,15 @@ vg_lite_error_t vg_lite_flush_mapped_buffer(vg_lite_buffer_t *b) { (void)b; retu
 vg_lite_error_t vg_lite_dump_png(const char *fn, vg_lite_buffer_t *b) { (void)fn;(void)b; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_wrap_user_memory(vg_lite_buffer_t *b, vg_lite_uint8_t *m, vg_lite_uint32_t s, vg_lite_uint32_t w, vg_lite_uint32_t h, vg_lite_buffer_format_t f) { (void)b;(void)m;(void)s;(void)w;(void)h;(void)f; return VG_LITE_NOT_SUPPORT; }
 
-/* --- Blit AABB optimization and GPU timestamp public API --- */
+/* --- Blit OBB optimization and GPU timestamp public API --- */
 
-vg_lite_error_t vg_lite_set_blit_aabb_mode(vg_lite_uint32_t mode) {
-    g_vk_ctx.use_aabb_blit = (mode != 0) ? 1 : 0;
+vg_lite_error_t vg_lite_set_blit_obb_mode(vg_lite_uint32_t mode) {
+    g_vk_ctx.use_obb_blit = (mode != 0) ? 1 : 0;
     return VG_LITE_SUCCESS;
 }
 
-vg_lite_uint32_t vg_lite_get_blit_aabb_mode(void) {
-    return g_vk_ctx.use_aabb_blit;
+vg_lite_uint32_t vg_lite_get_blit_obb_mode(void) {
+    return g_vk_ctx.use_obb_blit;
 }
 
 vg_lite_uint32_t vg_lite_write_timestamp(vg_lite_uint32_t stage) {
