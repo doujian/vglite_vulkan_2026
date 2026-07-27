@@ -1,13 +1,16 @@
 #version 450
 
-/* Fragment-side view of the shared 96B push constant block.
- * Only declares the members this shader reads (color/image_mode/flags at
- * offsets 48/52/56). Vertex fields (matrix@0, corners@64) are not declared.
- * blend_mode and filter_mode removed: handled by pipeline/sampler state. */
+/* Shared push constant block (96B, one vkCmdPushConstants call).
+ * Declares full block so compiler auto-layouts offsets. This shader
+ * only reads color/image_mode/flags; vertex shader reads matrix/corners.
+ * blend_mode/filter_mode removed: handled by pipeline/sampler state. */
 layout(push_constant) uniform BlitParams {
-    layout(offset = 48) uint color;
-    layout(offset = 52) int  image_mode;
-    layout(offset = 56) int  flags;
+    mat3 matrix;
+    uint color;
+    int  image_mode;
+    int  flags;
+    int  pad;
+    vec4 corners[2];
 } params;
 
 layout(set = 0, binding = 0) uniform sampler2D src_texture;

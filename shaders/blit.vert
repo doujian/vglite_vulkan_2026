@@ -1,12 +1,17 @@
 #version 450
 
-/* Push constant: matrix at offset 0. This shader is part of a shared 96B
- * block on native_pipeline_layout (VERTEX|FRAGMENT). Fragment fields at
- * offsets 48/52/56 (color/image_mode/flags) are declared in blit_native_fs.frag.
+/* Shared push constant block (96B, one vkCmdPushConstants call).
+ * Declares full block so compiler auto-layouts offsets. This shader
+ * only reads matrix; fragment shader reads color/image_mode/flags.
  * Vertex precomputes src_uv so the fragment shader skips the per-fragment
  * 3x3 matrix multiply. */
 layout(push_constant) uniform BlitParams {
-    layout(offset = 0) mat3 matrix;
+    mat3 matrix;
+    uint color;
+    int  image_mode;
+    int  flags;
+    int  pad;
+    vec4 corners[2];
 } pc;
 
 const vec2 positions[3] = vec2[3](

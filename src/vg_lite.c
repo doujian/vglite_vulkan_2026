@@ -734,10 +734,10 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkDescriptorImageInfo di;
     di = si; /* native blend: dst = src (same sampler+view). Shader blend used tmp_view. */
     
-    /* Push constant struct (64B): matrix@0(48B) + color@48 + image_mode@52 +
-     * flags@56 + pad@60. blend/filter removed — handled by pipeline/sampler state.
-     * OBB corners pushed separately at offset 64 (32B). Total range = 96B. */
-    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; } pc = {0};
+    /* Push constant struct (96B): matrix@0(48B) + color@48 + image_mode@52 +
+     * flags@56 + pad@60 + corners@64(32B). One vkCmdPushConstants call.
+     * blend/filter removed — handled by pipeline/sampler state. */
+    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; float corners[8]; } pc = {0};
     for (int col = 0; col < 3; col++) {
         for (int row = 0; row < 3; row++) {
             pc.m[col * 4 + row] = shader_mat[row][col];
@@ -751,16 +751,17 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (source->format == VG_LITE_A8)  pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
-    /* Push matrix+fragment data at offset 0 (64B), OBB corners at offset 64 (32B) */
-    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-    float obb_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
+    /* Default fullscreen triangle corners; OBB path overrides below */
+    float default_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
+    memcpy(pc.corners, default_corners, sizeof(default_corners));
     if (g_vk_ctx.use_obb_blit) {
         compute_blit_obb(matrix, source->width, source->height,
-                         target->width, target->height, obb_corners);
+                         target->width, target->height, pc.corners);
     }
+    
+    /* Single push: 96B covering vertex (matrix+corners) + fragment (color/im_mode/flags) */
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 64, 32, obb_corners);
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
 
     /* Shader blend SSBO path (mode 0) disabled
     VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};

@@ -536,3 +536,40 @@ Out of scope (verified): `vg_lite_draw.c:598-599` `cover_pc` uses a SEPARATE dra
 Zero regressions across all 4 configs. `test_sft_blit` is the only non-PASS test (AGENTS.md explicitly allows this as pre-existing known-bad).
 
 **Files**: shaders/blit_obb.vert, shaders/blit.vert, shaders/blit_native.frag, shaders/blit_native_fs.frag, src/vg_lite.c, src/vg_lite_vulkan.c
+
+---
+
+## 25. Merge two vkCmdPushConstants calls into one, remove explicit shader offsets
+
+**Symptom**: After fix #24, the 96B push constant block was still written by **two** `vkCmdPushConstants` calls: `64B@0` (matrix+color+image_mode+flags+pad) and `32B@64` (corners). Additionally, each shader stage declared its block members with explicit `layout(offset=N)` annotations, which is verbose and fragile — if the C-side struct changes, every shader's offset literals must be manually updated.
+
+**Root Cause**: The two-push pattern originated from the C-side struct splitting `corners` into a separate array written in a second call. The explicit `layout(offset=N)` was necessary because each shader stage declared only a *subset* of the full block — without explicit offsets, the compiler would auto-layout each stage's subset starting at offset 0, causing vertex and fragment stages to disagree on where `corners` lived.
+
+**Solution**: Changed to a **single** `vkCmdPushConstants` call and removed all explicit offset annotations by having **both stages declare the identical full 96B block**:
+
+```glsl
+layout(push_constant) uniform BlitParams {
+    mat3 matrix;       // offset 0  (48B, auto-layouted)
+    uint color;        // offset 48
+    int  image_mode;   // offset 52
+    int  flags;        // offset 56
+    int  pad;          // offset 60
+    vec4 corners[2];   // offset 64 (32B)
+} pc;
+```
+
+Since both stages declare the same block in the same order, the compiler auto-layouts identical offsets for both — no explicit `layout(offset=N)` needed. Each stage still only *reads* the members it uses (vertex: matrix+corners; fragment: color+image_mode+flags).
+
+C-side: merged the 64B struct + separate corners into a single 96B struct `{ float m[12]; unsigned color; int im_mode; int flags; int pad; float corners[8]; }`. Default fullscreen corners memcpy'd in at struct init; OBB path writes directly to `pc.corners` via `compute_blit_obb`. Deleted the second `vkCmdPushConstants` call — now one call: `vkCmdPushConstants(layout, VERTEX|FRAGMENT, 0, sizeof(pc), &pc)`.
+
+Files changed:
+- **shaders/blit_obb.vert, blit.vert, blit_native.frag, blit_native_fs.frag**: removed all `layout(offset=N)`, each now declares the full 96B block identically.
+- **src/vg_lite.c** (`vg_lite_blit`): struct extended to 96B with inline `float corners[8]`; second `vkCmdPushConstants` deleted.
+- **src/vg_lite_vulkan.c** (seed_msaa clear): same struct change, second push deleted.
+
+**Verification**:
+- All 4 shaders compile clean via `glslangValidator -V` (no alignment errors — auto-layout produces identical offsets).
+- Full build: 0 errors.
+- Blit test matrix (AGENTS.md) — all 4 configs: 37 PASS / 1 FAIL (test_sft_blit pre-existing). Zero regressions.
+
+**Files**: shaders/blit_obb.vert, shaders/blit.vert, shaders/blit_native.frag, shaders/blit_native_fs.frag, src/vg_lite.c, src/vg_lite_vulkan.c

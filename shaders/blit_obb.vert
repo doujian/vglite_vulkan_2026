@@ -5,20 +5,23 @@
  * via TRIANGLE_STRIP (4 vertices).
  * UVs computed from frag_pos using the same shader matrix as blit.vert. */
 
-/* Shared push constant layout (96B total, written by vg_lite.c as two
- * vkCmdPushConstants calls on native_pipeline_layout):
- *   offset 0:  mat3 matrix      (48B, col-major) — VERTEX reads
- *   offset 48: uint color       (4B)             — FRAGMENT reads
- *   offset 52: int  image_mode  (4B)             — FRAGMENT reads
- *   offset 56: int  flags       (4B)             — FRAGMENT reads
- *   offset 60: int  pad         (4B, align corners to 16)
- *   offset 64: vec4 corners[2]  (32B)            — VERTEX reads
- * Each stage declares only the members it reads.
- * blend_mode and filter_mode were removed: blend is handled by pipeline
- * blend state, filter by sampler state — neither is a shader uniform. */
+/* Shared push constant block (96B, one vkCmdPushConstants call).
+ * All stages declare the full block so the compiler auto-layouts
+ * offsets by declaration order — no explicit layout(offset=N) needed.
+ *   matrix     @0   (48B, col-major)
+ *   color      @48  (FRAGMENT reads)
+ *   image_mode @52  (FRAGMENT reads)
+ *   flags      @56  (FRAGMENT reads)
+ *   pad        @60  (aligns corners to vec4/16)
+ *   corners    @64  (32B, VERTEX reads)
+ * blend_mode/filter_mode removed: handled by pipeline/sampler state. */
 layout(push_constant) uniform BlitParams {
-    layout(offset = 0)  mat3 matrix;     /* shader matrix: screen[0,1] -> source UV */
-    layout(offset = 64) vec4 corners[2]; /* 4 corners as NDC xy pairs: 8 floats = 32B */
+    mat3 matrix;
+    uint color;
+    int  image_mode;
+    int  flags;
+    int  pad;
+    vec4 corners[2];
 } pc;
 
 layout(location = 0) out vec2 src_uv;

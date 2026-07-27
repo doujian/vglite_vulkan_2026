@@ -523,13 +523,12 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
         g_vk_ctx.native_pipeline_layout, 0, 1, &ds, 0, NULL);
 
-    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; } pc = {0};
+    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; float corners[8]; } pc = {0};
     pc.m[0] = 1.0f; pc.m[5] = 1.0f; pc.m[10] = 1.0f;
+    float fullscreen_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
+    memcpy(pc.corners, fullscreen_corners, sizeof(fullscreen_corners));
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-    float fullscreen_obb[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
-    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 64, 32, fullscreen_obb);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
