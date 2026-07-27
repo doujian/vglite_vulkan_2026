@@ -1,8 +1,10 @@
 #version 450
 
-/* Push constant: matrix at offset 0 (same block as blit_native.frag, written
- * by vg_lite.c with stage = VERTEX|FRAGMENT). Vertex precomputes src_uv so the
- * fragment shader skips the per-fragment 3x3 matrix multiply. */
+/* Push constant: matrix at offset 0. This shader is part of a shared 96B
+ * block on native_pipeline_layout (VERTEX|FRAGMENT). Fragment fields at
+ * offsets 48/52/56 (color/image_mode/flags) are declared in blit_native_fs.frag.
+ * Vertex precomputes src_uv so the fragment shader skips the per-fragment
+ * 3x3 matrix multiply. */
 layout(push_constant) uniform BlitParams {
     layout(offset = 0) mat3 matrix;
 } pc;

@@ -523,14 +523,13 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
         g_vk_ctx.native_pipeline_layout, 0, 1, &ds, 0, NULL);
 
-    struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; int pad[3]; } pc = {0};
+    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; } pc = {0};
     pc.m[0] = 1.0f; pc.m[5] = 1.0f; pc.m[10] = 1.0f;
-    pc.blend = (int)VG_LITE_BLEND_NONE;
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     float fullscreen_obb[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 32, fullscreen_obb);
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 64, 32, fullscreen_obb);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
@@ -866,7 +865,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             VkPushConstantRange pc_range = {0};
             pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             pc_range.offset = 0;
-            pc_range.size = 112;  /* 80B fragment data at offset 0 + 32B OBB corners at offset 80 */
+            pc_range.size = 96;  /* 64B vertex+fragment data at offset 0 + 32B OBB corners at offset 64 */
             VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
@@ -1082,7 +1081,7 @@ static VkPipeline create_blit_obb_pipeline_internal(VkFormat format, int blend_g
         VkPushConstantRange pc_range = {0};
         pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pc_range.offset = 0;
-        pc_range.size = 112;  /* 80B fragment data at offset 0 + 32B OBB corners at offset 80 */
+        pc_range.size = 96;  /* 64B vertex+fragment data at offset 0 + 32B OBB corners at offset 64 */
         VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pl_ci.setLayoutCount = 1;
         pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;

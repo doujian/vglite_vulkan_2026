@@ -734,21 +734,24 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkDescriptorImageInfo di;
     di = si; /* native blend: dst = src (same sampler+view). Shader blend used tmp_view. */
     
-    struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; int pad[3]; } pc = {0};
+    /* Push constant struct (64B): matrix@0(48B) + color@48 + image_mode@52 +
+     * flags@56 + pad@60. blend/filter removed — handled by pipeline/sampler state.
+     * OBB corners pushed separately at offset 64 (32B). Total range = 96B. */
+    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; } pc = {0};
     for (int col = 0; col < 3; col++) {
         for (int row = 0; row < 3; row++) {
             pc.m[col * 4 + row] = shader_mat[row][col];
         }
     }
-    pc.blend = (int)blend; pc.color = color;
-    pc.im_mode = (int)source->image_mode; pc.filt = (int)filter;
+    pc.color = color;
+    pc.im_mode = (int)source->image_mode;
     pc.flags = 0;
     if (target->format == VG_LITE_L8)  pc.flags |= 1;
     if (target->format == VG_LITE_A8)  pc.flags |= 2;
     if (source->format == VG_LITE_A8)  pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
-    /* Push fragment data at offset 0 (80B), OBB corners at offset 80 (32B) */
+    /* Push matrix+fragment data at offset 0 (64B), OBB corners at offset 64 (32B) */
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     float obb_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
@@ -757,7 +760,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
                          target->width, target->height, obb_corners);
     }
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 32, obb_corners);
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 64, 32, obb_corners);
 
     /* Shader blend SSBO path (mode 0) disabled
     VkDescriptorBufferInfo ssbo_info = {g_vk_ctx.blit_ssbo_buffer, 0, sizeof(pc)};
