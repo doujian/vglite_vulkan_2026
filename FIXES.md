@@ -573,3 +573,40 @@ Files changed:
 - Blit test matrix (AGENTS.md) — all 4 configs: 37 PASS / 1 FAIL (test_sft_blit pre-existing). Zero regressions.
 
 **Files**: shaders/blit_obb.vert, shaders/blit.vert, shaders/blit_native.frag, shaders/blit_native_fs.frag, src/vg_lite.c, src/vg_lite_vulkan.c
+
+---
+
+## 26. Enable scalar block layout to eliminate pad, shrink push constants to 80B
+
+**Symptom**: After fix #25, the 96B push constant block still contained an `int pad` at offset 60 — a 4-byte gap needed solely to align `vec4 corners[2]` to 16 (std140/scalar-aligned layout for push constants). The `mat3 matrix` also wasted 12 bytes per column (3 floats used, 4 floats allocated = MatrixStride 16), consuming 48B for 36B of real data. Total waste: 16B of padding in a 96B block.
+
+**Root Cause**: Push constant blocks default to std140 alignment rules: `mat3` uses MatrixStride=16 (column-major, 4 floats per column, 3 used), and `vec4` requires 16-byte alignment. This forces:
+- `matrix`: 48B (3 cols × 16B, 12B padding total)
+- `pad`: 4B (gap between `flags@56` and `corners@64`)
+
+**Solution**: Enabled `VK_EXT_scalar_block_layout` (Vulkan 1.2 core feature `scalarBlockLayout`) which aligns members by their **scalar component size** (e.g. `vec4` → align=4, not 16; `mat3` → MatrixStride=12). This eliminates all padding:
+
+New layout (80B total, verified via `glslangValidator -H`):
+```
+offset 0:  mat3 matrix      (36B, MatrixStride 12) — VERTEX reads
+offset 36: uint color       (4B)                   — FRAGMENT reads
+offset 40: int  image_mode  (4B)                   — FRAGMENT reads
+offset 44: int  flags       (4B)                   — FRAGMENT reads
+offset 48: vec4 corners[2]  (32B)                  — VERTEX reads
+```
+
+16B saved vs #25's 96B (17% reduction).
+
+**Device support**: Queried `VkPhysicalDeviceVulkan12Features.scalarBlockLayout` at startup — supported (Vulkan 1.2 core). Device creation enables it via `pNext` chain (1.2 core path) or `VK_EXT_scalar_block_layout` extension name (fallback for pre-1.2).
+
+Files changed:
+- **shaders/blit_obb.vert, blit.vert, blit_native.frag, blit_native_fs.frag**: added `#extension GL_EXT_scalar_block_layout : enable`, changed to `layout(push_constant, scalar)`, removed `int pad` member.
+- **src/vg_lite.c** (`vg_lite_blit`): struct `float m[12]` → `float m[9]` (col*4+row → col*3+row indexing), removed `int pad`. Now 80B: `{ float m[9]; unsigned color; int im_mode; int flags; float corners[8]; }`.
+- **src/vg_lite_vulkan.c**: device creation queries + enables `scalarBlockLayout`; seed_msaa struct synced to 80B (identity: `m[0]=m[4]=m[8]=1`); two `pc_range.size` 96 → 80.
+
+**Verification**:
+- All 4 shaders compile clean via `glslangValidator -V` with scalar layout.
+- Full build: 0 errors.
+- Blit test matrix (AGENTS.md) — all 4 configs: 37 PASS / 1 FAIL (test_sft_blit pre-existing). Zero regressions.
+
+**Files**: shaders/blit_obb.vert, shaders/blit.vert, shaders/blit_native.frag, shaders/blit_native_fs.frag, src/vg_lite.c, src/vg_lite_vulkan.c

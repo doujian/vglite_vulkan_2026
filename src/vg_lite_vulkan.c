@@ -152,8 +152,50 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     dev_ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dev_ci.queueCreateInfoCount = 1;
     dev_ci.pQueueCreateInfos = &q_ci;
-    dev_ci.enabledExtensionCount = 0;
-    dev_ci.ppEnabledExtensionNames = NULL;
+
+    /* Scalar block layout: allows push constant vec4 alignment = scalar size (4B)
+     * instead of std140 (16B), eliminating the 4B pad before corners[].
+     * Vulkan 1.2 core feature; falls back to VK_EXT_scalar_block_layout on 1.0/1.1. */
+    VkPhysicalDeviceVulkan12Features vk12_features_query = {0};
+    vk12_features_query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceFeatures2 pd_features2 = {0};
+    pd_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    pd_features2.pNext = &vk12_features_query;
+    vkGetPhysicalDeviceFeatures2(g_vk_ctx.physical_device, &pd_features2);
+
+    const char *dev_exts[8];
+    uint32_t dev_ext_count = 0;
+    VkPhysicalDeviceVulkan12Features vk12_features = {0};
+    vk12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vk12_features.scalarBlockLayout = VK_TRUE;
+
+    if (vk12_features_query.scalarBlockLayout) {
+        /* Vulkan 1.2 core: enable via pNext chain */
+        dev_ci.pNext = &vk12_features;
+        fprintf(stderr, "[vglite] scalarBlockLayout: supported (Vulkan 1.2 core)\n");
+    } else {
+        /* Fallback: try VK_EXT_scalar_block_layout device extension */
+        uint32_t dext_count = 0;
+        vkEnumerateDeviceExtensionProperties(g_vk_ctx.physical_device, NULL, &dext_count, NULL);
+        VkExtensionProperties *dexts = malloc(sizeof(VkExtensionProperties) * dext_count);
+        vkEnumerateDeviceExtensionProperties(g_vk_ctx.physical_device, NULL, &dext_count, dexts);
+        int has_scalar = 0;
+        for (uint32_t i = 0; i < dext_count; i++) {
+            if (strcmp(dexts[i].extensionName, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME) == 0) {
+                has_scalar = 1;
+                break;
+            }
+        }
+        free(dexts);
+        if (has_scalar) {
+            dev_exts[dev_ext_count++] = VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME;
+            dev_ci.enabledExtensionCount = dev_ext_count;
+            dev_ci.ppEnabledExtensionNames = dev_exts;
+            fprintf(stderr, "[vglite] scalarBlockLayout: supported (VK_EXT_scalar_block_layout)\n");
+        } else {
+            fprintf(stderr, "[vglite] WARNING: scalarBlockLayout NOT supported — push constant pad field is mandatory\n");
+        }
+    }
 
     /* Timestamp queries supported by default in Vulkan 1.0 — no feature flag needed.
      * timestampPeriod is queried from VkPhysicalDeviceProperties.limits. */
@@ -523,8 +565,8 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
         g_vk_ctx.native_pipeline_layout, 0, 1, &ds, 0, NULL);
 
-    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; float corners[8]; } pc = {0};
-    pc.m[0] = 1.0f; pc.m[5] = 1.0f; pc.m[10] = 1.0f;
+    struct { float m[9]; unsigned color; int im_mode; int flags; float corners[8]; } pc = {0};
+    pc.m[0] = 1.0f; pc.m[4] = 1.0f; pc.m[8] = 1.0f;
     float fullscreen_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
     memcpy(pc.corners, fullscreen_corners, sizeof(fullscreen_corners));
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
@@ -864,7 +906,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             VkPushConstantRange pc_range = {0};
             pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             pc_range.offset = 0;
-            pc_range.size = 96;  /* 64B vertex+fragment data at offset 0 + 32B OBB corners at offset 64 */
+            pc_range.size = 80;  /* scalar layout: 36B matrix + 12B color/im_mode/flags + 32B corners */
             VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
@@ -1066,7 +1108,7 @@ static VkPipeline create_blit_obb_pipeline_internal(VkFormat format, int blend_g
     if (!g_vk_ctx.native_frag_shader)
         g_vk_ctx.native_frag_shader = load_shader_module(g_vk_ctx.device, "blit_native_frag");
 
-    /* Ensure native_pipeline_layout exists (it has the 96B VERTEX|FRAGMENT range) */
+    /* Ensure native_pipeline_layout exists (it has the 80B VERTEX|FRAGMENT range) */
     if (!g_vk_ctx.native_pipeline_layout) {
         if (!g_vk_ctx.vert_shader)
             g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
@@ -1080,7 +1122,7 @@ static VkPipeline create_blit_obb_pipeline_internal(VkFormat format, int blend_g
         VkPushConstantRange pc_range = {0};
         pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pc_range.offset = 0;
-        pc_range.size = 96;  /* 64B vertex+fragment data at offset 0 + 32B OBB corners at offset 64 */
+        pc_range.size = 80;  /* scalar layout: 36B matrix + 12B color/im_mode/flags + 32B corners */
         VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pl_ci.setLayoutCount = 1;
         pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;

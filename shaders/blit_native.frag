@@ -1,15 +1,16 @@
 #version 450
+#extension GL_EXT_scalar_block_layout : enable
 
-/* Shared push constant block (96B, one vkCmdPushConstants call).
- * Declares full block so compiler auto-layouts offsets. This shader
- * only reads color/image_mode/flags; vertex shader reads matrix/corners.
+/* Shared push constant block (92B, one vkCmdPushConstants call).
+ * Uses scalar block layout. Declares full block so compiler auto-layouts
+ * offsets. This shader only reads color/image_mode/flags; vertex shader
+ * reads matrix/corners.
  * blend_mode/filter_mode removed: handled by pipeline/sampler state. */
-layout(push_constant) uniform BlitParams {
+layout(push_constant, scalar) uniform BlitParams {
     mat3 matrix;
     uint color;
     int  image_mode;
     int  flags;
-    int  pad;
     vec4 corners[2];
 } params;
 

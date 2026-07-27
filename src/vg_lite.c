@@ -734,13 +734,13 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkDescriptorImageInfo di;
     di = si; /* native blend: dst = src (same sampler+view). Shader blend used tmp_view. */
     
-    /* Push constant struct (96B): matrix@0(48B) + color@48 + image_mode@52 +
-     * flags@56 + pad@60 + corners@64(32B). One vkCmdPushConstants call.
-     * blend/filter removed — handled by pipeline/sampler state. */
-    struct { float m[12]; unsigned color; int im_mode; int flags; int pad; float corners[8]; } pc = {0};
+    /* Push constant struct (80B, scalar layout): matrix@0(36B, stride 12) +
+     * color@36 + image_mode@40 + flags@44 + corners@48(32B).
+     * One vkCmdPushConstants call. blend/filter removed — handled by pipeline/sampler state. */
+    struct { float m[9]; unsigned color; int im_mode; int flags; float corners[8]; } pc = {0};
     for (int col = 0; col < 3; col++) {
         for (int row = 0; row < 3; row++) {
-            pc.m[col * 4 + row] = shader_mat[row][col];
+            pc.m[col * 3 + row] = shader_mat[row][col];
         }
     }
     pc.color = color;
@@ -759,7 +759,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
                          target->width, target->height, pc.corners);
     }
     
-    /* Single push: 96B covering vertex (matrix+corners) + fragment (color/im_mode/flags) */
+    /* Single push: 80B covering vertex (matrix+corners) + fragment (color/im_mode/flags) */
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
 

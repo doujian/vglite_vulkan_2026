@@ -1,26 +1,25 @@
 #version 450
+#extension GL_EXT_scalar_block_layout : enable
 
 /* OBB-driven blit vertex shader.
  * Reads 4 corner NDC positions via push constants and generates a quad
  * via TRIANGLE_STRIP (4 vertices).
  * UVs computed from frag_pos using the same shader matrix as blit.vert. */
 
-/* Shared push constant block (96B, one vkCmdPushConstants call).
- * All stages declare the full block so the compiler auto-layouts
- * offsets by declaration order — no explicit layout(offset=N) needed.
+/* Shared push constant block (92B, one vkCmdPushConstants call).
+ * Uses scalar block layout: vec4 aligns to its scalar component (4B),
+ * so no pad field needed — corners follows flags immediately.
  *   matrix     @0   (48B, col-major)
  *   color      @48  (FRAGMENT reads)
  *   image_mode @52  (FRAGMENT reads)
  *   flags      @56  (FRAGMENT reads)
- *   pad        @60  (aligns corners to vec4/16)
- *   corners    @64  (32B, VERTEX reads)
+ *   corners    @60  (32B, VERTEX reads)
  * blend_mode/filter_mode removed: handled by pipeline/sampler state. */
-layout(push_constant) uniform BlitParams {
+layout(push_constant, scalar) uniform BlitParams {
     mat3 matrix;
     uint color;
     int  image_mode;
     int  flags;
-    int  pad;
     vec4 corners[2];
 } pc;
 
