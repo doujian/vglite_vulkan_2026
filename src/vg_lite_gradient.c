@@ -208,6 +208,53 @@ static void sort_color_ramp(vg_lite_color_ramp_t *ramp, uint32_t count)
     }
 }
 
+/* Apply OpenVG spread mode to t in the radial-t domain.
+ * PAD/FILL: clamp t to [ramp[0].stop, ramp[last].stop] (sample_ramp handles it).
+ * REPEAT: t = fract(t/range) * range + ramp[0].stop (cyclic over ramp range).
+ * REFLECT: t mirrored at the ramp boundaries (sawtooth × 2).
+ * Reference: OpenVG 1.1 spec §9.1.2.(f) "Radial Gradient Spreading Mode". */
+static float apply_spread_t(float t, vg_lite_color_ramp_t *ramp, uint32_t count,
+                             vg_lite_gradient_spreadmode_t mode)
+{
+    if (count == 0) return 0.0f;
+    float lo = ramp[0].stop;
+    float hi = ramp[count - 1].stop;
+    float range = hi - lo;
+    if (range <= 0.0f) return lo;
+
+    /* Below lo: bring into [lo, hi] via spread */
+    if (t < lo) {
+        float dt = lo - t;              /* distance below lo */
+        if (mode == VG_LITE_GRADIENT_SPREAD_REPEAT) {
+            float m = fmodf(dt, range);
+            t = hi - m;                  /* cycle backwards from hi */
+        } else if (mode == VG_LITE_GRADIENT_SPREAD_REFLECT) {
+            float cycle = fmodf(dt, (2.0f * range));
+            if (cycle <= range) t = lo + cycle;
+            else                t = hi - (cycle - range);
+        } else {
+            t = lo;                      /* PAD/FILL */
+        }
+        return t;
+    }
+    /* Above hi */
+    if (t > hi) {
+        float dt = t - hi;              /* distance above hi */
+        if (mode == VG_LITE_GRADIENT_SPREAD_REPEAT) {
+            float m = fmodf(dt, range);
+            t = lo + m;                  /* cycle forward from lo */
+        } else if (mode == VG_LITE_GRADIENT_SPREAD_REFLECT) {
+            float cycle = fmodf(dt, (2.0f * range));
+            if (cycle <= range) t = hi - cycle;
+            else                t = lo + (cycle - range);
+        } else {
+            t = hi;                      /* PAD/FILL */
+        }
+        return t;
+    }
+    return t;
+}
+
 static uint32_t sample_ramp(vg_lite_color_ramp_t *ramp, uint32_t count, float t)
 {
     if (count == 0) return 0xFF000000;
@@ -310,6 +357,11 @@ vg_lite_error_t vg_lite_update_radial_grad(vg_lite_radial_gradient_t *grad)
             float dy = (float)y - fy;
             float dist = sqrtf(dx * dx + dy * dy);
             float t = dist / r;
+
+            /* Apply OpenVG spread in radial-t domain so that pre-rendered
+             * texture correctly encodes the spread behavior (REPEAT/REFLECT
+             * produce ring bands, not 2D UV tiling). */
+            t = apply_spread_t(t, grad->color_ramp, grad->ramp_length, grad->spread_mode);
 
             uint32_t c = sample_ramp(grad->color_ramp, grad->ramp_length, t);
 

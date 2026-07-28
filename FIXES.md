@@ -487,3 +487,83 @@ The official `gpu-vglite/VGLite/vg_lite_path.c` L198 only validates `path != NUL
 - Regression: `test_clear` (100% pixel match), `test_tiger` (3.90% diff, PASS) both PASS.
 
 **Files**: src/vg_lite.c
+---
+
+## #24: ARGB8888 内存字节序假设错误（save_png / read_pixel / pack_pixel）
+
+**Symptom**: 
+- `test_radialGrad` 4 个帧 CPU-vs-GPU 验证全部报告 57600 mismatches（19% fail），全部落在 path 区域（240x240）。
+- 每个 mismatch pixel 都是 `got R=230 G=230 B=255 A=230, exp R=230 G=230 B=230 A=255`（B 与 A 完全互换）。
+- 生成的 radialGrad_*.png 视觉暗色偏蓝（ramp[4] 期望浅灰 R=230 G=230 B=230 A=255，实际显示 R=230 G=230 B=255 A=230）。
+- 影响所有使用 VG_LITE_ARGB8888 target 的测试（CTS 原版很多用例）。
+- BGRA8888 target 不受影响。
+
+**Root Cause**: 
+util/vg_lite_util.c L116-126 (save_png) 和 util/util.c L200-208 (read_pixel)、L130-135 (pack_pixel) 的注释和实现假设 ARGB8888 内存布局是 `[A,R,G,B]`（"Official: 31:24=B, 23:16=G, 15:8=R, 7:0=A"）。
+但 `vg_lite_format_to_vk(VG_LITE_ARGB8888)` 返回 `VK_FORMAT_R8G8B8A8_UNORM`（src/vg_lite_format.c L47），即 GPU 实际写入的内存布局是 `[R,G,B,A]`。
+两套假设不一致导致：save_png/read_pixel 把 byte0 (实际R) 当成 A，把 byte3 (实际A) 当成 B，结果 B/A 通道互换。
+（Vulkan 的 VkFormat 命名规则：第一个字母对应最低字节。R8G8B8A8 → byte0=R, byte3=A。这与 VGLite 的命名习惯相反 — VGLite 是 MSB-first，Vulkan PACK 是 LSB-first。）
+
+**Solution**:
+- `util/vg_lite_util.c` L116-120: ARGB8888 save_png 改为 identity 复制 (src[si+0..3] → rgba[di+0..3])，注释改为 `mem [R,G,B,A]`。
+- `util/util.c` L200-208: read_pixel ARGB8888 改为 `r=p&0xFF, g=(p>>8), b=(p>>16), a=(p>>24)`，注释改为 `mem [R,G,B,A]`。
+- `util/util.c` L130-135: pack_pixel ARGB8888 改为 `r | (g<<8) | (b<<16) | (a<<24)`（与 read_pixel 配套），ABGR8888 改为 `a | (b<<8) | (g<<16) | (r<<24)`（与 VK_FORMAT_A8B8G8R8_PACK32 一致）。
+- 注：ABGR8888 → VK_FORMAT_A8B8G8R8_PACK32 实际内存就是 `[A,B,G,R]`，原代码注释是对的，但 packing 公式错了，一并修复。
+
+**Verification**:
+- Rebuild + run `test_radialGrad`: 4 个帧全部 `0 mismatches out of 307200 pixels (100% pass rate)`（修复前 57600 mismatches）。
+- PNG 像素采样验证：
+  - (5,5) 浅灰：修复前 `R=230 G=230 B=255 A=230` → 修复后 `R=230 G=230 B=230 A=255` OK
+  - (100,100) 暗红：修复前 `R=65 G=57 B=255 A=211` → 修复后 `R=211 G=65 B=57 A=255` OK（红色，符合 ramp 设计）
+  - (150,150) 红：修复前 `R=33 G=73 B=255 A=195` → 修复后 `R=195 G=33 B=73 A=255` OK
+
+**Files**: util/vg_lite_util.c, util/util.c
+---
+
+## #25 — Radial gradient REPEAT/REFLECT spread mode produces wrong output
+
+**Symptom**: `test_radialGrad` reports CPU-vs-GPU 0 mismatches, but PNG output
+for REPEAT and REFLECT spread modes looks visually identical to PAD/FILL.
+The expected ring-band effect (ramp colors cycling outside the radius r)
+is missing.
+
+**Root Cause**: Two layers incorrectly implemented spread mode as 2D UV
+texture wrap rather than OpenVG radial-t spread:
+
+1. `src/vg_lite_gradient.c vg_lite_update_radial_grad` pre-renders the 2r x 2r
+   gradient texture with `sample_ramp(t)`. `sample_ramp` internally clamps
+   t > 1 to `ramp[last]` (PAD behavior baked into the texture).
+2. `shaders/gradient.frag` then applies UV-domain `fract(uv)` for REPEAT or
+   `mod(uv,2)` for REFLECT. With PAD-baked texture edges, tiling the texture
+   only repeats the last-stop color — never re-triggers ramp[0].
+
+OpenVG spec (sec 9.1.2.(f)) requires spread to apply in the radial-t
+domain: REPEAT cycles the ramp color sequence, REFLECT mirrors it.
+
+**Solution**: Modified `update_radial_grad` to bake OpenVG-correct spread
+into the pre-rendered texture. Added `apply_spread_t(t, ramp, count, mode)`
+helper (vg_lite_gradient.c) which maps raw t (potentially > 1 or < 0)
+back into the ramp stop range according to mode:
+- PAD / FILL: clamp to {ramp[0].stop, ramp[last].stop}
+- REPEAT: cycle, `t = lo + (t - lo) mod range`
+- REFLECT: mirror at boundaries, `cycle mod (2*range)`, fold back if > range
+
+The shader's UV-domain spread remains in place (harmless — only affects
+sampling outside the 2r x 2r texture, where PAD-style clamp is still
+correct).
+
+**Verification**:
+- `test_radialGrad`: 4/4 frames 0 mismatches (CPU ref uses same texture
+  lookup, naturally consistent with GPU).
+- Pixel sample at (x=232, y=120), t=0.974 on path edge:
+  - PAD/FILL: (230, 229, 229, 255)  - clamp to light gray
+  - REPEAT:   (233,  61,  19, 239)  - cycled back to ramp[0] dark red
+  - REFLECT:  (230, 221, 221, 255)  - mirrored near ramp end
+- MD5 prefixes: FILL == PAD (OpenVG), REPEAT distinct, REFLECT distinct.
+- Regression: `test_linearGrad` still 0 mismatches (update_grad path
+  untouched — linear uses 1D LUT, UV-domain fract already OpenVG-correct).
+
+**Files**:
+- `src/vg_lite_gradient.c`: added `apply_spread_t` helper (~50 lines)
+  + call site in `vg_lite_update_radial_grad` texture loop.
+- `src/vg_lite_draw.c`: removed 2 debug printf added during diagnosis.

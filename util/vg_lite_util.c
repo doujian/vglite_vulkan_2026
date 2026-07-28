@@ -112,12 +112,13 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
                     rgba[di+2] = src[si+0];
                     rgba[di+3] = src[si+3];
                 } else if (is_argb) {
-                    /* ARGB8888 mem [A,R,G,B], ABGR8888 mem [A,B,G,R] */
+                    /* ARGB8888 maps to VK_FORMAT_R8G8B8A8 → mem [R,G,B,A] (identity).
+                     * ABGR8888 maps to VK_FORMAT_A8B8G8R8 → mem [A,B,G,R]. */
                     if (buffer->format == VG_LITE_ARGB8888) {
-                        rgba[di+0] = src[si+1]; /* R */
-                        rgba[di+1] = src[si+2]; /* G */
-                        rgba[di+2] = src[si+3]; /* B */
-                        rgba[di+3] = src[si+0]; /* A */
+                        rgba[di+0] = src[si+0]; /* R */
+                        rgba[di+1] = src[si+1]; /* G */
+                        rgba[di+2] = src[si+2]; /* B */
+                        rgba[di+3] = src[si+3]; /* A */
                     } else { /* ABGR8888 mem [A,B,G,R] */
                         rgba[di+0] = src[si+3]; /* R */
                         rgba[di+1] = src[si+2]; /* G */

@@ -128,10 +128,10 @@ uint32_t pack_pixel(vg_lite_buffer_format_t format, uint32_t r, uint32_t g, uint
     case VG_LITE_BGRX8888:
         return b | (g << 8) | (r << 16);
     case VG_LITE_ARGB8888:
-        /* Official: 31:24=B, 23:16=G, 15:8=R, 7:0=A → mem [A,R,G,B] */
-        return a | (r << 8) | (g << 16) | (b << 24);
+        /* ARGB8888 → VK_FORMAT_R8G8B8A8_UNORM: mem [R,G,B,A] */
+        return r | (g << 8) | (b << 16) | (a << 24);
     case VG_LITE_ABGR8888:
-        /* Official: 31:24=R, 23:16=G, 15:8=B, 7:0=A → mem [A,B,G,R] */
+        /* ABGR8888 → VK_FORMAT_A8B8G8R8_PACK32: mem [A,B,G,R] */
         return a | (b << 8) | (g << 16) | (r << 24);
     default:
         return r | (g << 8) | (b << 16) | (a << 24);
@@ -198,12 +198,12 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
         return r | (g << 8) | (b << 16) | (a << 24);
     }
     case VG_LITE_ARGB8888: {
-        /* Official: 31:24=B, 23:16=G, 15:8=R, 7:0=A → mem [A,R,G,B] */
+        /* ARGB8888 → VK_FORMAT_R8G8B8A8_UNORM: mem [R,G,B,A] */
         uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t a = p & 0xFF;
-        uint8_t r = (p >> 8) & 0xFF;
-        uint8_t g = (p >> 16) & 0xFF;
-        uint8_t b = (p >> 24) & 0xFF;
+        uint8_t r = p & 0xFF;
+        uint8_t g = (p >> 8) & 0xFF;
+        uint8_t b = (p >> 16) & 0xFF;
+        uint8_t a = (p >> 24) & 0xFF;
         return r | (g << 8) | (b << 16) | (a << 24);
     }
     case VG_LITE_ABGR8888: {

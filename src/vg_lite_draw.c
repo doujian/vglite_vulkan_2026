@@ -1142,6 +1142,7 @@ static vg_lite_error_t draw_grad_internal(
     pc_data.grad_width = grad_image->width;
     pc_data.grad_height = grad_image->height;
     pc_data.spread_mode = pattern_mode;
+    /* Cover pass */
     pc_data.path_m[0] = 1.0f;  /* identity col0 */
     pc_data.path_m[5] = 1.0f;  /* identity col1 */
     pc_data.path_m[10] = 1.0f; /* identity col2 */
@@ -1208,6 +1209,7 @@ vg_lite_error_t vg_lite_draw_radial_grad(vg_lite_buffer_t *target,
         case VG_LITE_GRADIENT_SPREAD_REFLECT: shader_mode = 3; break;
         default: shader_mode = 1; break;
     }
+
     return draw_grad_internal(target, path, fill_rule, matrix,
                               &grad->image, &grad->matrix, blend, shader_mode, paint_color);
 }
