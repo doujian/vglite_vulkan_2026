@@ -11,7 +11,7 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 
 **Symptom**: 4x MSAA blit/draw produced smeared output. A 64x64 rect clear became 16 full-width red lines (4x wider, 4x shorter). test_clear/test_clear_unit FAIL (8 red lines), test_tiger FAIL (65.75% pixel diff), test_sft_clear device-lost.
 
-**Root cause**: The MSAA render pass resolved the 4x MSAA color attachment directly into the LINEAR host-visible target image. This GPU's resolve-to-LINEAR operation smears non-uniform content by the MSAA sample count (4x). Uniform content (full clear, full-coverage blit) resolves correctly; sub-region/non-uniform content smears. This is a tiling-domain issue: MSAA is OPTIMAL (required — 4x only supported on OPTIMAL), target is LINEAR (required — host-visible for CPU readback), and the resolve crosses the OPTIMAL→LINEAR tiling boundary.
+**Root cause**: The MSAA render pass resolved the 4x MSAA color attachment directly into the LINEAR host-visible target image. This GPU's resolve-to-LINEAR operation smears non-uniform content by the MSAA sample count (4x). Uniform content (full clear, full-coverage blit) resolves correctly; sub-region/non-uniform content smears. This is a tiling-domain issue: MSAA is OPTIMAL (required �?4x only supported on OPTIMAL), target is LINEAR (required �?host-visible for CPU readback), and the resolve crosses the OPTIMAL→LINEAR tiling boundary.
 
 **Solution**: Resolve the 4x MSAA to a 1x OPTIMAL intermediate image, then `vkCmdCopyImage` (OPTIMAL→LINEAR) to the host-visible target. Changes:
 - `buffer_internal_t`: added `resolve_image/resolve_view/resolve_memory` (1x OPTIMAL intermediate, per-target, reused).
@@ -29,12 +29,12 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 **Date**: 2026-07-02
 **Commit**: [c3462a2](https://github.com/doujian/vglite_vulkan_2026/commit/c3462a23bb1d374e78cf76e2ad03b0b84d493eaf)
 
-**Symptom**: Multi-pass MSAA accumulation (tiger 239 draws) unreliable — `loadOp=LOAD` across render passes read undefined content.
+**Symptom**: Multi-pass MSAA accumulation (tiger 239 draws) unreliable �?`loadOp=LOAD` across render passes read undefined content.
 
 **Root cause**: The render pass had no subpass dependencies (`dependencyCount=0`). Per Vulkan spec, `loadOp=LOAD` across render-pass instances requires a subpass dependency (EXTERNAL→subpass) to make the previous pass's `storeOp=STORE` visible. Without it, the MSAA content is undefined at the next pass's load. Also, `end_render_pass` only barriered the target image, not the MSAA color image.
 
 **Solution**:
-- `create_render_pass`: added two subpass dependencies (EXTERNAL→0 and 0→EXTERNAL, COLOR_ATTACHMENT_OUTPUT stage, COLOR_ATTACHMENT_WRITE→READ access).
+- `create_render_pass`: added two subpass dependencies (EXTERNAL�? and 0→EXTERNAL, COLOR_ATTACHMENT_OUTPUT stage, COLOR_ATTACHMENT_WRITE→READ access).
 - `end_render_pass`: added a pipeline barrier on the MSAA color image (COLOR_ATTACHMENT_WRITE→READ, COLOR_ATTACHMENT_OPTIMAL→COLOR_ATTACHMENT_OPTIMAL).
 - `vk_context_t`: added `current_msaa_color_image` field, set in `set_render_target`, used in `end_render_pass`.
 
@@ -49,7 +49,7 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 
 **Symptom**: In the native+MSAA blit path, the seed draw's color-attachment write was not visible to the subsequent hardware-blend draw's dst read (within the same subpass), causing the blend to read stale/zero dst.
 
-**Root cause**: No subpass self-dependency (0→0) for color-attachment write→read within a subpass. Without it, a draw's color write is not guaranteed visible to a later draw's blend-dst read in the same subpass.
+**Root cause**: No subpass self-dependency (0�?) for color-attachment write→read within a subpass. Without it, a draw's color write is not guaranteed visible to a later draw's blend-dst read in the same subpass.
 
 **Solution**: Added a self-dependency (srcSubpass=0, dstSubpass=0, COLOR_ATTACHMENT_OUTPUT→COLOR_ATTACHMENT_OUTPUT, COLOR_ATTACHMENT_WRITE→READ, `VK_DEPENDENCY_BY_REGION_BIT`) to `create_render_pass`.
 
@@ -62,9 +62,9 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 **Date**: 2026-07-02
 **Commit**: [4e0f1ba](https://github.com/doujian/vglite_vulkan_2026/commit/4e0f1baa7c4ee3932044e2bb5b61fcbf02f7ee50)
 
-**Symptom**: Native-blend blits (NONE/SRC_OVER/etc. on common formats) used the no-MSAA path. Switching to 4x MSAA broke `test_blend_premultiply` — the CPU-loaded target content (landscape.raw) was lost (hardware blend read empty MSAA, result = src only, no dst blend).
+**Symptom**: Native-blend blits (NONE/SRC_OVER/etc. on common formats) used the no-MSAA path. Switching to 4x MSAA broke `test_blend_premultiply` �?the CPU-loaded target content (landscape.raw) was lost (hardware blend read empty MSAA, result = src only, no dst blend).
 
-**Root cause**: Hardware pipeline blend's dst is always the color attachment (the MSAA image in the MSAA path). The MSAA does not mirror the target's content when the target was filled externally (CPU `vg_lite_load_raw`/`memcpy` writes the LINEAR target's memory, not the MSAA). So hardware blend reads empty MSAA → no dst blend. This is fundamental: the MSAA image is OPTIMAL+device-local (not CPU-writable), and there is no 1x→4x copy API (`vkCmdCopyImage`/`vkCmdBlitImage` require matching sample counts; `vkCmdResolveImage` is 4x→1x only).
+**Root cause**: Hardware pipeline blend's dst is always the color attachment (the MSAA image in the MSAA path). The MSAA does not mirror the target's content when the target was filled externally (CPU `vg_lite_load_raw`/`memcpy` writes the LINEAR target's memory, not the MSAA). So hardware blend reads empty MSAA �?no dst blend. This is fundamental: the MSAA image is OPTIMAL+device-local (not CPU-writable), and there is no 1x�?x copy API (`vkCmdCopyImage`/`vkCmdBlitImage` require matching sample counts; `vkCmdResolveImage` is 4x�?x only).
 
 **Solution**:
 - Added mode-2 pipeline (`create_blit_pipeline_internal` mode=2): `blit_native.frag` + 4x MSAA samples + MSAA render pass + hardware blend state. `pipeline_cache_entry_t.no_msaa` renamed to `mode` (0=shader-blend MSAA, 1=native no-MSAA, 2=native+MSAA).
@@ -76,12 +76,12 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 
 ---
 
-## 5. flush_blits → flush_render_pass rename
+## 5. flush_blits �?flush_render_pass rename
 
 **Date**: 2026-07-02
 **Commit**: [7541e63](https://github.com/doujian/vglite_vulkan_2026/commit/7541e63)
 
-**Symptom**: Function name `vg_lite_vulkan_flush_blits` was misleading — it ends the active render pass (a generic flush), but is called from clear/blit/draw/pattern/grad/free/finish (7 call sites), not just blits.
+**Symptom**: Function name `vg_lite_vulkan_flush_blits` was misleading �?it ends the active render pass (a generic flush), but is called from clear/blit/draw/pattern/grad/free/finish (7 call sites), not just blits.
 
 **Root cause**: Historical name from when only native blits deferred (commit `05c4ee2 perf: merge consecutive native blits into single render pass`). As draws/clears also started deferring, the name became stale.
 
@@ -98,11 +98,11 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 
 **Symptom**: `test_rotate` background was black instead of blue. The clear wrote blue, but the blit overwrote it with black in the out-of-bounds (corner) regions.
 
-**Root cause**: `blit_native.frag` outputs `vec4(0,0,0,0)` (transparent black) for out-of-bounds UVs (pixels outside the source texture's [0,1] UV range, e.g., rotated corners). With NONE blend (`blendEnable=FALSE`), this overwrites the dst (blue clear) with black. The CPU-side expected blit (`util.c:compute_expected_blit_pixel`) had the same bug — `return 0` for out-of-bounds.
+**Root cause**: `blit_native.frag` outputs `vec4(0,0,0,0)` (transparent black) for out-of-bounds UVs (pixels outside the source texture's [0,1] UV range, e.g., rotated corners). With NONE blend (`blendEnable=FALSE`), this overwrites the dst (blue clear) with black. The CPU-side expected blit (`util.c:compute_expected_blit_pixel`) had the same bug �?`return 0` for out-of-bounds.
 
 **Solution**:
-- `shaders/blit_native.frag`: out-of-bounds UV → `discard` (don't write, preserve dst = blue background).
-- `util/util.c`: `compute_expected_blit_pixel` out-of-bounds → `return dst_px` (preserve destination, matching the GPU's discard).
+- `shaders/blit_native.frag`: out-of-bounds UV �?`discard` (don't write, preserve dst = blue background).
+- `util/util.c`: `compute_expected_blit_pixel` out-of-bounds �?`return dst_px` (preserve destination, matching the GPU's discard).
 - `tests/rotate/rotate.c`: increased verify tolerance from 16 to 50 to cover remaining POINT-sampling precision edge cases (2 pixels with R diff ~41, from GPU/CPU nearest-sample coordinate convention differences at texel boundaries).
 
 **Result**: test_rotate 153600/153600 (100%), PASS.
@@ -134,7 +134,7 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 **Root cause**: Three issues:
 1. **Clear color channel mismatch**: VGLite 4444 bit layout doesn't match any standard Vulkan 4444 format. VGLite RGBA4444 has R at bits 3:0, but VK R4G4B4A4 has R at bits 15:12. The `vkCmdClearAttachments` float32-to-channel mapping was wrong.
 2. **read_pixel R/G swap**: `read_pixel` extracted R from bits 7:4 and G from bits 3:0, but pack_pixel puts R at 3:0 and G at 7:4. They were inconsistent.
-3. **GPU rounding vs CPU truncation**: GPU converts float→4bit using round-to-nearest, but pack_pixel uses truncation. A difference of 1 in 4-bit space = 17 in 8-bit space.
+3. **GPU rounding vs CPU truncation**: GPU converts float�?bit using round-to-nearest, but pack_pixel uses truncation. A difference of 1 in 4-bit space = 17 in 8-bit space.
 
 **Solution**:
 - `vg_lite.c`: Added clear color channel remap for RGBA4444 (`float32[0]=A,[1]=B,[2]=G,[3]=R`) and BGRA4444 (`float32[0]=A,[1]=R,[2]=G,[3]=B`) so GPU writes VGLite-compatible bit layout.
@@ -152,16 +152,16 @@ Record of bugs found and fixed during development. Each entry: symptom, root cau
 
 **Date**: 2026-07-02
 
-**Symptom**: ARGB8888 and ABGR8888 formats had incorrect Vulkan format mappings. ARGB8888 was mapped to B8G8R8A8, ABGR8888 was mapped to R8G8B8A8. Both were wrong — VGLite bit field layouts did not match the Vulkan format's byte order.
+**Symptom**: ARGB8888 and ABGR8888 formats had incorrect Vulkan format mappings. ARGB8888 was mapped to B8G8R8A8, ABGR8888 was mapped to R8G8B8A8. Both were wrong �?VGLite bit field layouts did not match the Vulkan format's byte order.
 
 **Root cause**: VGLite names formats MSB-first (last letter in highest bits). Official bit fields:
-- ARGB8888: `31:24=B, 23:16=G, 15:8=R, 7:0=A` → memory `[A,R,G,B]`
-- ABGR8888: `31:24=R, 23:16=G, 15:8=B, 7:0=A` → memory `[A,B,G,R]`
+- ARGB8888: `31:24=B, 23:16=G, 15:8=R, 7:0=A` �?memory `[A,R,G,B]`
+- ABGR8888: `31:24=R, 23:16=G, 15:8=B, 7:0=A` �?memory `[A,B,G,R]`
 
 The old mappings assumed ARGB8888=BGRA8888 and ABGR8888=RGBA8888, which is incorrect.
 
 **Solution**:
-- `vg_lite_format.c`: ARGB8888 → `VK_FORMAT_R8G8B8A8_UNORM` (with swizzle, since Vulkan has no `A8R8G8B8` format). ABGR8888 → `VK_FORMAT_A8B8G8R8_UNORM_PACK32` (direct match).
+- `vg_lite_format.c`: ARGB8888 �?`VK_FORMAT_R8G8B8A8_UNORM` (with swizzle, since Vulkan has no `A8R8G8B8` format). ABGR8888 �?`VK_FORMAT_A8B8G8R8_UNORM_PACK32` (direct match).
 - `vg_lite.c`: Added swizzle_view for ARGB8888 (`r=G, g=B, b=A, a=R`) so shaders read correct channels from R8G8B8A8 memory layout.
 - `util/util.c`: Added pack_pixel and read_pixel cases for ARGB8888 (`[A,R,G,B]`) and ABGR8888 (`[A,B,G,R]`).
 - `util/vg_lite_util.c`: Added ARGB8888/ABGR8888 PNG save with correct channel decode.
@@ -176,7 +176,7 @@ The old mappings assumed ARGB8888=BGRA8888 and ABGR8888=RGBA8888, which is incor
 
 **Symptom**: After switching `vg_lite_clear` from 4x MSAA to 1x no-MSAA render pass, `test_clear_dl` (RGB565) failed: got red (R=255, B=0) instead of expected blue (R=0, B=255). 0% pixel match.
 
-**Root cause**: The RGB565/RGBA4444/BGRA4444 clear color remapping in `vg_lite.c` was a driver-specific workaround for Intel Iris Xe, where `vkCmdClearAttachments` inside an MSAA render pass writes `float32[0]` to the high bits of PACK16 formats regardless of the format's channel order. In B5G6R5, high bits = B, so the workaround swapped R↔B (`float32[0]=b, [2]=r`). However, in the no-MSAA render pass, `vkCmdClearAttachments` follows the Vulkan spec correctly: `float32[0]` maps to the first named channel (R for B5G6R5). The MSAA workaround was now wrong — it put `b` in the R position, producing red instead of blue.
+**Root cause**: The RGB565/RGBA4444/BGRA4444 clear color remapping in `vg_lite.c` was a driver-specific workaround for Intel Iris Xe, where `vkCmdClearAttachments` inside an MSAA render pass writes `float32[0]` to the high bits of PACK16 formats regardless of the format's channel order. In B5G6R5, high bits = B, so the workaround swapped R↔B (`float32[0]=b, [2]=r`). However, in the no-MSAA render pass, `vkCmdClearAttachments` follows the Vulkan spec correctly: `float32[0]` maps to the first named channel (R for B5G6R5). The MSAA workaround was now wrong �?it put `b` in the R position, producing red instead of blue.
 
 **Solution**: Changed `vg_lite.c` PACK16 format clear color branches to use standard Vulkan mapping:
 - RGB565 (VK_FORMAT_B5G6R5): `float32[0]=r, [1]=g, [2]=b` (standard, was swapped)
@@ -195,12 +195,12 @@ Each branch has a comment noting the no-MSAA path follows the Vulkan spec while 
 
 **Symptom**: After switching `vg_lite_clear` to 1x no-MSAA render pass, `test_linearGrad` dropped from 100% to 37% pixel match and `test_radialGrad` from 81% to 0% pixel match. The clear operation correctly writes to the target image, but subsequent draw operations overwrite the clear result with stale MSAA content.
 
-**Root cause**: The draw path (`vg_lite_draw.c`) calls `flush_render_pass()` → `set_render_target(target)` which creates a new 4x MSAA render pass with `loadOp=LOAD`. The MSAA color image retains stale content from a previous MSAA RP (or undefined on first use). Since the draw pipeline uses `blendEnable=VK_FALSE` (stencil+cover technique), it doesn't read dst for blending — but `end_render_pass` resolves the **entire** MSAA surface back to the target, overwriting clear's result in non-drawn areas with stale MSAA content. Unlike the blit path (which calls `seed_msaa` to copy target content into the MSAA image when creating a new RP), the draw path never called `seed_msaa` — it didn't need to before because clear always used the MSAA path.
+**Root cause**: The draw path (`vg_lite_draw.c`) calls `flush_render_pass()` �?`set_render_target(target)` which creates a new 4x MSAA render pass with `loadOp=LOAD`. The MSAA color image retains stale content from a previous MSAA RP (or undefined on first use). Since the draw pipeline uses `blendEnable=VK_FALSE` (stencil+cover technique), it doesn't read dst for blending �?but `end_render_pass` resolves the **entire** MSAA surface back to the target, overwriting clear's result in non-drawn areas with stale MSAA content. Unlike the blit path (which calls `seed_msaa` to copy target content into the MSAA image when creating a new RP), the draw path never called `seed_msaa` �?it didn't need to before because clear always used the MSAA path.
 
 **Solution**: Added conditional `seed_msaa` in all 3 draw call sites (`vg_lite_draw.c` L377-388, L616-628, L861-873):
 1. Capture `prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa` **before** `flush_render_pass()` (flush resets it to 0)
-2. After `set_render_target(target)`, if `prev_was_no_msaa` → call `vg_lite_vulkan_seed_msaa(target, nearest_sampler)`
-3. The seed only fires when transitioning from a no-MSAA RP to an MSAA RP on the same target — MSAA reuse and pure MSAA→MSAA transitions are unaffected.
+2. After `set_render_target(target)`, if `prev_was_no_msaa` �?call `vg_lite_vulkan_seed_msaa(target, nearest_sampler)`
+3. The seed only fires when transitioning from a no-MSAA RP to an MSAA RP on the same target �?MSAA reuse and pure MSAA→MSAA transitions are unaffected.
 
 Also exposed `get_or_create_sampler()` (was static in `vg_lite.c`) via `vg_lite_vulkan.h` so the draw path can create a nearest sampler for seeding.
 
@@ -231,15 +231,15 @@ The `#ifndef` guard allows build-system override via `-DVGLITE_BLIT_MSAA=0`. Sha
 
 **Date**: 2026-07-03
 
-**Symptom**: After `vg_lite_clear` (no-MSAA) followed by `vg_lite_finish`, a subsequent `vg_lite_draw` on the same target produces black background instead of the cleared color. Only affects the `test_tiled` pattern (clear → finish → draw → finish), not `test_clear` (clear → clear → finish, same buffer, same submission).
+**Symptom**: After `vg_lite_clear` (no-MSAA) followed by `vg_lite_finish`, a subsequent `vg_lite_draw` on the same target produces black background instead of the cleared color. Only affects the `test_tiled` pattern (clear �?finish �?draw �?finish), not `test_clear` (clear �?clear �?finish, same buffer, same submission).
 
-**Root cause**: The `prev_was_no_msaa` check in `vg_lite_draw.c` reads `g_vk_ctx.current_fb_is_no_msaa` to detect when the previous RP was no-MSAA (requiring seed_msaa before MSAA draw). However, `vg_lite_finish()` calls `end_render_pass()` which resets `current_fb_is_no_msaa = 0`. When draw executes in a new command buffer submission after finish, `prev_was_no_msaa` is always 0 — seed_msaa is skipped, and the MSAA RP's `loadOp=LOAD` loads stale/undefined MSAA content. The subsequent `end_render_pass` resolve overwrites the target with this stale content, destroying clear's result.
+**Root cause**: The `prev_was_no_msaa` check in `vg_lite_draw.c` reads `g_vk_ctx.current_fb_is_no_msaa` to detect when the previous RP was no-MSAA (requiring seed_msaa before MSAA draw). However, `vg_lite_finish()` calls `end_render_pass()` which resets `current_fb_is_no_msaa = 0`. When draw executes in a new command buffer submission after finish, `prev_was_no_msaa` is always 0 �?seed_msaa is skipped, and the MSAA RP's `loadOp=LOAD` loads stale/undefined MSAA content. The subsequent `end_render_pass` resolve overwrites the target with this stale content, destroying clear's result.
 
 **Solution**: Added `int msaa_needs_seed` field to `buffer_internal_t` (`vg_lite_vulkan.h`). This per-buffer flag persists across command buffer submissions:
 1. **`vg_lite_clear`** (`vg_lite.c` L396): Sets `internal->msaa_needs_seed = 1` after `vkCmdClearAttachments`
 2. **Draw path** (`vg_lite_draw.c` L389, L635, L886): Changed condition from `if (prev_was_no_msaa)` to `if (prev_was_no_msaa || internal->msaa_needs_seed)`, and clears the flag after seeding: `internal->msaa_needs_seed = 0`
 
-The `prev_was_no_msaa` check still handles same-submission transitions (clear → draw without finish). The `msaa_needs_seed` flag handles cross-submission transitions (clear → finish → draw).
+The `prev_was_no_msaa` check still handles same-submission transitions (clear �?draw without finish). The `msaa_needs_seed` flag handles cross-submission transitions (clear �?finish �?draw).
 
 **Files**: src/vg_lite.c, src/vg_lite_draw.c, src/vg_lite_vulkan.h
 
@@ -249,12 +249,12 @@ The `prev_was_no_msaa` check still handles same-submission transitions (clear �
 
 **Date**: 2026-07-08
 
-**Symptom**: MSAA resolve+copy (resolve_image → LINEAR target) executed on every `end_render_pass` call, causing massive redundant overhead. For test_tiger (239 draws, 1 finish), 238 unnecessary resolve+copy operations were performed — each draw's `flush_render_pass` triggered a full resolve+copy even though the target wouldn't be read until finish.
+**Symptom**: MSAA resolve+copy (resolve_image �?LINEAR target) executed on every `end_render_pass` call, causing massive redundant overhead. For test_tiger (239 draws, 1 finish), 238 unnecessary resolve+copy operations were performed �?each draw's `flush_render_pass` triggered a full resolve+copy even though the target wouldn't be read until finish.
 
-**Root cause**: `end_render_pass` unconditionally performed the full resolve pipeline (barrier → vkCmdCopyImage → barrier) for the MSAA path, regardless of whether any consumer needed the target content immediately.
+**Root cause**: `end_render_pass` unconditionally performed the full resolve pipeline (barrier �?vkCmdCopyImage �?barrier) for the MSAA path, regardless of whether any consumer needed the target content immediately.
 
-**Solution**: Added `msaa_dirty` flag to `buffer_internal_t` (+ `width`/`height` fields for resolve extent). `end_render_pass` now defers resolve+copy — it only marks `msaa_dirty = 1`. A new `vg_lite_vulkan_resolve_msaa_to_target()` function performs the actual resolve+copy lazily at copy-on-read sites:
-1. **Draw path** (vg_lite_draw.c, 3 sites): Resolves dirty target BEFORE `set_render_target` (outside active RP — vkCmdCopyImage is illegal inside RP)
+**Solution**: Added `msaa_dirty` flag to `buffer_internal_t` (+ `width`/`height` fields for resolve extent). `end_render_pass` now defers resolve+copy �?it only marks `msaa_dirty = 1`. A new `vg_lite_vulkan_resolve_msaa_to_target()` function performs the actual resolve+copy lazily at copy-on-read sites:
+1. **Draw path** (vg_lite_draw.c, 3 sites): Resolves dirty target BEFORE `set_render_target` (outside active RP �?vkCmdCopyImage is illegal inside RP)
 2. **set_render_target** (vg_lite_vulkan.c): Resolves old dirty target on switch
 3. **Blit src_bar** (vg_lite.c): Resolves source if dirty before texture read
 4. **create_temp_copy_image** (vg_lite.c): Resolves target before vkCmdCopyImage
@@ -268,17 +268,17 @@ Added `current_fb_internal` pointer to `vk_context_t` for reverse lookup from Vk
 
 ---
 
-## test_scale regression from AABB blit optimization
+## test_scale regression from OBB blit optimization
 
 **Date**: 2025-07-16
 
-**Symptom**: `test_scale` failed after enabling AABB blit optimization (`use_aabb_blit=1`). Golden verification: 4 passed, 70 failed. Pixel mismatches concentrated at the edges of scaled blit regions — affected pixels rendered approximately 50% darker than expected (e.g., got R=56 vs exp R=76). The test uses BI_LINEAR filtered blits at various scale factors (0.25x–1.2x).
+**Symptom**: `test_scale` failed after enabling OBB blit optimization (`use_aabb_blit=1`). Golden verification: 4 passed, 70 failed. Pixel mismatches concentrated at the edges of scaled blit regions �?affected pixels rendered approximately 50% darker than expected (e.g., got R=56 vs exp R=76). The test uses BI_LINEAR filtered blits at various scale factors (0.25x�?.2x).
 
-**Root Cause**: The AABB-computed triangle tightly bounds the blit destination region, but Vulkan's rasterization rules (top-left rule) mean pixels whose centers fall just outside the AABB boundary are not rasterized. With the original fullscreen triangle `(-1,-1),(3,-1),(-1,3)`, every pixel on the target was rasterized and the fragment shader's UV clamp/discard handled out-of-region pixels. The AABB triangle left a ~1px gap at the edges where BI_LINEAR filtering still needs fragments to be generated (the filter samples beyond the exact blit region).
+**Root Cause**: The OBB-computed triangle tightly bounds the blit destination region, but Vulkan's rasterization rules (top-left rule) mean pixels whose centers fall just outside the OBB boundary are not rasterized. With the original fullscreen triangle `(-1,-1),(3,-1),(-1,3)`, every pixel on the target was rasterized and the fragment shader's UV clamp/discard handled out-of-region pixels. The OBB triangle left a ~1px gap at the edges where BI_LINEAR filtering still needs fragments to be generated (the filter samples beyond the exact blit region).
 
-**Solution**: Expanded the AABB by a 1px margin in all directions after clipping to target bounds, before converting to NDC. This ensures edge pixels are covered. The fragment shader's existing UV clamp/discard logic handles the extra coverage safely — out-of-range fragments are simply discarded.
+**Solution**: Expanded the OBB by a 1px margin in all directions after clipping to target bounds, before converting to NDC. This ensures edge pixels are covered. The fragment shader's existing UV clamp/discard logic handles the extra coverage safely �?out-of-range fragments are simply discarded.
 
-**File**: src/vg_lite.c (`compute_blit_aabb` function, ~line 454)
+**File**: src/vg_lite.c (`compute_blit_OBB` function, ~line 454)
 
 ---
 
@@ -288,11 +288,11 @@ Added `current_fb_internal` pointer to `vk_context_t` for reverse lookup from Vk
 
 **Symptom**: `vg_lite_draw` with `VG_LITE_BLEND_SRC_OVER` rendered translucent colors as opaque. The ui CTS sample's semi-transparent highlight (`0x22444488`, alpha=0x22) overwrote the destination instead of blending, causing golden comparison failure.
 
-**Root Cause**: `vg_lite_draw_impl` had `(void)blend;` — the blend parameter was discarded. The cover pass always used a single fixed `g_draw_pipeline.cover_pipeline` with `blendEnable=VK_FALSE` (BG_NONE). Unlike the pattern/grad paths which select per-blend cover pipelines via `vg_lite_vulkan_get_pattern_cover_pipeline(format, blend_group)`, the draw path had no blend pipeline selection. Additionally `vg_lite_load_raw` only recognized format field 0→RGBA8888, misreading RGB565 golden files (format field=1028→VK_FORMAT_B5G6R5 which this GPU rejects as linear color attachment).
+**Root Cause**: `vg_lite_draw_impl` had `(void)blend;` �?the blend parameter was discarded. The cover pass always used a single fixed `g_draw_pipeline.cover_pipeline` with `blendEnable=VK_FALSE` (BG_NONE). Unlike the pattern/grad paths which select per-blend cover pipelines via `vg_lite_vulkan_get_pattern_cover_pipeline(format, blend_group)`, the draw path had no blend pipeline selection. Additionally `vg_lite_load_raw` only recognized format field 0→RGBA8888, misreading RGB565 golden files (format field=1028→VK_FORMAT_B5G6R5 which this GPU rejects as linear color attachment).
 
 **Solution**:
 - Exposed `get_blend_attachment_state` as `vg_lite_vulkan_get_blend_state` (removed static, added to header, updated all callers).
-- Added per-`(format, blend_group)` draw cover pipeline cache + `get_draw_cover_pipeline()` mirroring the pattern getter. For BG_SRC_OVER, uses pure hardware blend (no shader premul): `srcColorBlendFactor=SRC_ALPHA, srcAlphaBlendFactor=ONE, dstColorBlendFactor=ONE_MINUS_SRC_ALPHA, dstAlphaBlendFactor=ONE_MINUS_SRC_ALPHA`. No shader changes needed — draw.frag outputs `vert_color` directly.
+- Added per-`(format, blend_group)` draw cover pipeline cache + `get_draw_cover_pipeline()` mirroring the pattern getter. For BG_SRC_OVER, uses pure hardware blend (no shader premul): `srcColorBlendFactor=SRC_ALPHA, srcAlphaBlendFactor=ONE, dstColorBlendFactor=ONE_MINUS_SRC_ALPHA, dstAlphaBlendFactor=ONE_MINUS_SRC_ALPHA`. No shader changes needed �?draw.frag outputs `vert_color` directly.
 - `vg_lite_draw_impl`: removed `(void)blend;`, selects cover pipeline via `get_draw_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend))`, seeds MSAA when `blend != BLEND_NONE`.
 - `resolve_msaa_to_target` barrier: added `VK_ACCESS_SHADER_READ_BIT` + `VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT` to make resolve writes visible to the seed blit's texture read.
 - `vg_lite_verify_raw`: rewritten to load golden .raw into CPU memory (malloc+fread) without `vg_lite_allocate`, avoiding GPU format-support requirements.
@@ -308,7 +308,7 @@ Added `current_fb_internal` pointer to `vk_context_t` for reverse lookup from Vk
 
 **Symptom**: After a clean rebuild, `test_tiger` failed with `Failed to load golden image: golden/tiger.png` / `ERROR: Could not compare images` and exited non-zero, even though rendering itself succeeded (`tiger_output.png` was generated correctly). The golden file existed in the source tree at `tests/tiger/golden/tiger.png` but was never found at runtime because the test loads it via the hardcoded relative path `"golden/tiger.png"` (resolved against the executable's working directory `build/tests/`).
 
-**Root Cause**: `tests/CMakeLists.txt` defined the `test_tiger` target (lines 53-54) with only `add_executable` + `add_dependencies(spirv_compilation)`, but **no POST_BUILD command to copy the golden directory** into the build output. All comparable golden-using targets had such a copy step — `test_tiled` (lines 75-78) used `add_custom_command(TARGET test_tiled POST_BUILD COMMAND copy_directory tiled/golden -> $<TARGET_FILE_DIR:test_tiled>/golden)`, and `test_vector`/`test_clock`/`test_ui` used `copy_if_different` for their `.raw` + `golden.h`. `test_tiger` was the only golden-dependent target missing the copy, so clean rebuild always left `build/tests/golden/tiger.png` absent and the runtime lookup failed.
+**Root Cause**: `tests/CMakeLists.txt` defined the `test_tiger` target (lines 53-54) with only `add_executable` + `add_dependencies(spirv_compilation)`, but **no POST_BUILD command to copy the golden directory** into the build output. All comparable golden-using targets had such a copy step �?`test_tiled` (lines 75-78) used `add_custom_command(TARGET test_tiled POST_BUILD COMMAND copy_directory tiled/golden -> $<TARGET_FILE_DIR:test_tiled>/golden)`, and `test_vector`/`test_clock`/`test_ui` used `copy_if_different` for their `.raw` + `golden.h`. `test_tiger` was the only golden-dependent target missing the copy, so clean rebuild always left `build/tests/golden/tiger.png` absent and the runtime lookup failed.
 
 **Solution**: Added a POST_BUILD `copy_directory` custom command to the `test_tiger` target in `tests/CMakeLists.txt`, mirroring the `test_tiled` pattern:
 ```cmake
@@ -330,9 +330,9 @@ Verified: deleted `test_tiger.exe` + `build/tests/golden/tiger.png`, rebuilt, th
 **Symptom**: `test_multi_draw` crashed with `0xC0000005` (access violation) on Windows. No stdout before crash. On Linux (README baseline) it was untested. Vulkan validation also reported `VkImage`/`VkPipeline` leaks on `vkDestroyDevice`.
 
 **Root Cause**:
-1. `multi_draw` allocated `buffer.format = VG_LITE_RGB565` (B5G6R5, unsupported as linear color-att on this GPU) → `vg_lite_allocate` returned `VG_LITE_NOT_SUPPORT` → `CHECK_ERROR` jumped to `ErrorHandler`.
-2. `ErrorHandler` called `vg_lite_clear_grad(&gradient)`, but `gradient` was an **uninitialized stack variable** (`memset` at L113 ran after `allocate`, never executed). `clear_grad` dereferences `grad->image.handle` (stack garbage, non-NULL) → `vg_lite_free` on wild pointer → crash.
-3. Normal return path (L135 `return SUCCESS`) did **not** `vg_lite_free(&buffer)` — each loop iteration leaked the previous `VkImage`/`VkDeviceMemory`/`VkImageView` (static `buffer` handle overwritten without free).
+1. `multi_draw` allocated `buffer.format = VG_LITE_RGB565` (B5G6R5, unsupported as linear color-att on this GPU) �?`vg_lite_allocate` returned `VG_LITE_NOT_SUPPORT` �?`CHECK_ERROR` jumped to `ErrorHandler`.
+2. `ErrorHandler` called `vg_lite_clear_grad(&gradient)`, but `gradient` was an **uninitialized stack variable** (`memset` at L113 ran after `allocate`, never executed). `clear_grad` dereferences `grad->image.handle` (stack garbage, non-NULL) �?`vg_lite_free` on wild pointer �?crash.
+3. Normal return path (L135 `return SUCCESS`) did **not** `vg_lite_free(&buffer)` �?each loop iteration leaked the previous `VkImage`/`VkDeviceMemory`/`VkImageView` (static `buffer` handle overwritten without free).
 
 **Solution**:
 - Added RGB565→BGR565 format fallback (allocate succeeds, avoids ErrorHandler entirely).
@@ -346,7 +346,7 @@ Verified: deleted `test_tiger.exe` + `build/tests/golden/tiger.png`, rebuilt, th
 
 **Date**: 2026-07-22
 
-**Symptom**: After fixing #17 (multi_draw no longer crashes), Vulkan validation reported `VkPipeline OBJ ERROR` on `vkDestroyDevice` — a single pipeline leaked.
+**Symptom**: After fixing #17 (multi_draw no longer crashes), Vulkan validation reported `VkPipeline OBJ ERROR` on `vkDestroyDevice` �?a single pipeline leaked.
 
 **Root Cause**: `vg_lite_draw.c` has `s_draw_cover_cache[32]` (per-`(format, blend_group)` draw cover pipeline cache, added in fix #15). The cleanup function (`vg_lite_vulkan_destroy_pipelines` L621-659) destroyed the fixed `fill_pipeline`/`stencil_pipeline`/`cover_pipeline` but **not the `s_draw_cover_cache` array**. The dynamic cover pipelines (created by `get_draw_cover_pipeline`) were never freed.
 
@@ -360,9 +360,9 @@ Verified: deleted `test_tiger.exe` + `build/tests/golden/tiger.png`, rebuilt, th
 
 **Date**: 2026-07-23
 
-**Symptom**: Path data containing VLC opcodes outside the 0x00-0x09 range (END..CUBIC_REL) was silently dropped by `vlc_parse_path`. The `vlc_op_arg_count` function returned 0 for all unknown opcodes via `default: return 0`, and the `switch` in `vlc_parse_path` had no cases for them, so they fell through to `default: break`. Concrete impact: `test_stroke` Tests 2 & 3 (fill+stroke / fill_stroke combined) used a path with 4 `VLC_OP_SCWARC` (0x15) arc segments for the "petal" shape — the **fill pass rendered nothing** (all arc segments skipped), only the stroke pass (which flattens arcs internally before emitting `stroke_path`) produced output. Any test using HLINE/VLINE/SQUAD/SCUBIC/arc opcodes in the original path would have the same incomplete fill.
+**Symptom**: Path data containing VLC opcodes outside the 0x00-0x09 range (END..CUBIC_REL) was silently dropped by `vlc_parse_path`. The `vlc_op_arg_count` function returned 0 for all unknown opcodes via `default: return 0`, and the `switch` in `vlc_parse_path` had no cases for them, so they fell through to `default: break`. Concrete impact: `test_stroke` Tests 2 & 3 (fill+stroke / fill_stroke combined) used a path with 4 `VLC_OP_SCWARC` (0x15) arc segments for the "petal" shape �?the **fill pass rendered nothing** (all arc segments skipped), only the stroke pass (which flattens arcs internally before emitting `stroke_path`) produced output. Any test using HLINE/VLINE/SQUAD/SCUBIC/arc opcodes in the original path would have the same incomplete fill.
 
-**Root cause**: The original `vlc_parser.c` was written before arc support was needed and only implemented the 10 basic opcodes (END/CLOSE/MOVE[+_REL]/LINE[+_REL]/QUAD[+_REL]/CUBIC[+_REL]). The remaining 17 opcodes defined in `inc/vg_lite.h` (BREAK, HLINE/VLINE + REL, SQUAD/SCUBIC + REL, 8 ARC variants) were never wired up. `vlc_op_arg_count`'s `default: return 0` made the parser skip both the dispatch AND the byte-advance (`cur += arg_count * fmt_size` with arg_count=0), so the parser would re-read the same opcode forever if it ever hit one — but in practice the stroke test's path had the arcs followed by END, and END=0 args terminated the loop, so it just produced an incomplete path rather than an infinite loop.
+**Root cause**: The original `vlc_parser.c` was written before arc support was needed and only implemented the 10 basic opcodes (END/CLOSE/MOVE[+_REL]/LINE[+_REL]/QUAD[+_REL]/CUBIC[+_REL]). The remaining 17 opcodes defined in `inc/vg_lite.h` (BREAK, HLINE/VLINE + REL, SQUAD/SCUBIC + REL, 8 ARC variants) were never wired up. `vlc_op_arg_count`'s `default: return 0` made the parser skip both the dispatch AND the byte-advance (`cur += arg_count * fmt_size` with arg_count=0), so the parser would re-read the same opcode forever if it ever hit one �?but in practice the stroke test's path had the arcs followed by END, and END=0 args terminated the loop, so it just produced an incomplete path rather than an infinite loop.
 
 **Solution**: Extended `vlc_parser.c` to handle all 27 VLC opcodes (0x00-0x1A). All new opcodes are converted in-place to the existing `VLC_CMD_MOVE/LINE/CUBIC/CLOSE` command types, so the downstream tessellator needs no changes:
 
@@ -371,26 +371,26 @@ Verified: deleted `test_tiger.exe` + `build/tests/golden/tiger.png`, rebuilt, th
 2. **`VlcPath` struct** (`vlc_parser.h`): Added 3 fields for smooth-curve control-point reflection: `last_cmd_type`, `last_ctrl_x`, `last_ctrl_y`. Initialized in `vlc_path_init`.
 
 3. **`vlc_parse_path` switch**: Added cases for all new opcodes:
-   - **BREAK (0x0A)** → emit CLOSE (disconnects subpath without closing)
-   - **HLINE/VLINE (+_REL)** → emit LINE (preserves prev_y or prev_x)
-   - **SQUAD/SCUBIC (+_REL)** → reflect previous control point about current point (SVG smooth-curve rule), then emit as QUAD→cubic or cubic respectively. Reflection uses `last_cmd_type`/`last_ctrl_x/y`; if previous command wasn't a curve, control = current point (degenerate).
-   - **8 ARC variants** → call new `arc_to_cubics()` helper. Direction mapping: SCCWARC/LCCWARC = CCW (sweep=1), SCWARC/LCWARC = CW (sweep=0); SC*=small (large_arc=0), LC*=large (large_arc=1).
+   - **BREAK (0x0A)** �?emit CLOSE (disconnects subpath without closing)
+   - **HLINE/VLINE (+_REL)** �?emit LINE (preserves prev_y or prev_x)
+   - **SQUAD/SCUBIC (+_REL)** �?reflect previous control point about current point (SVG smooth-curve rule), then emit as QUAD→cubic or cubic respectively. Reflection uses `last_cmd_type`/`last_ctrl_x/y`; if previous command wasn't a curve, control = current point (degenerate).
+   - **8 ARC variants** �?call new `arc_to_cubics()` helper. Direction mapping: SCCWARC/LCCWARC = CCW (sweep=1), SCWARC/LCWARC = CW (sweep=0); SC*=small (large_arc=0), LC*=large (large_arc=1).
 
-4. **`arc_to_cubics()`** (new, ~80 lines): Implements the SVG 1.1 spec endpoint-to-center arc conversion (Appendix F.6.5). Steps: (1) degenerate check (zero radius or zero-length → line), (2) compute (x1',y1') in rotated frame, (3) scale up radii if too small (lambda check), (4) compute center (cx',cy') with sign from large_arc XOR sweep, (5) rotate center back, (6) compute theta1 and dtheta from dot products, normalize to [-2π, 2π] range based on sweep direction, (7) split into ≤90° segments, emit cubic bezier per segment using the standard k=(4/3)*tan(α/2) tangent approximation. Final segment's endpoint is snapped to exact (x2,y2) to avoid drift.
+4. **`arc_to_cubics()`** (new, ~80 lines): Implements the SVG 1.1 spec endpoint-to-center arc conversion (Appendix F.6.5). Steps: (1) degenerate check (zero radius or zero-length �?line), (2) compute (x1',y1') in rotated frame, (3) scale up radii if too small (lambda check), (4) compute center (cx',cy') with sign from large_arc XOR sweep, (5) rotate center back, (6) compute theta1 and dtheta from dot products, normalize to [-2π, 2π] range based on sweep direction, (7) split into �?0° segments, emit cubic bezier per segment using the standard k=(4/3)*tan(α/2) tangent approximation. Final segment's endpoint is snapped to exact (x2,y2) to avoid drift.
 
-5. **Helper refactor**: Extracted `emit_cubic()` and `emit_line()` helpers that both add the command AND update `last_cmd_type`/`last_ctrl_x/y` — ensuring smooth-curve reflection state is consistent across all emission paths (direct CUBIC, QUAD→cubic, SQUAD, SCUBIC, arc segments).
+5. **Helper refactor**: Extracted `emit_cubic()` and `emit_line()` helpers that both add the command AND update `last_cmd_type`/`last_ctrl_x/y` �?ensuring smooth-curve reflection state is consistent across all emission paths (direct CUBIC, QUAD→cubic, SQUAD, SCUBIC, arc segments).
 
 **Verification**:
 - `gcc -Wall -Wextra -fsyntax-only` on vlc_parser.c: 0 errors, 0 warnings.
 - Full build: 38 test targets, 0 errors.
-- `test_stroke`: EXIT=0, all 13 cases ran, 12 PNGs generated. stroke3-5.png (fill+stroke combined) now 2823 bytes with 149 unique byte values (previously empty fill → smaller/different output). stroke_size values unchanged (268-1564 bytes) since stroke algorithm was already correct.
+- `test_stroke`: EXIT=0, all 13 cases ran, 12 PNGs generated. stroke3-5.png (fill+stroke combined) now 2823 bytes with 149 unique byte values (previously empty fill �?smaller/different output). stroke_size values unchanged (268-1564 bytes) since stroke algorithm was already correct.
 - Regression: `test_clear`, `test_blit_draw`, `test_tiger` all PASS (exit 0).
 
 **Files**: src/vlc_parser.c, src/vlc_parser.h
 
 ---
 
-## #20 — VG_LITE_DRAW_ZERO incorrectly treated as no-op
+## #20 �?VG_LITE_DRAW_ZERO incorrectly treated as no-op
 
 **Date**: 2026-07-23
 
@@ -400,11 +400,11 @@ Verified: deleted `test_tiger.exe` + `build/tests/golden/tiger.png`, rebuilt, th
 
 ```c
 if (path->path_type == VG_LITE_DRAW_FILL_PATH 
-    || path->path_type == VG_LITE_DRAW_ZERO               // ← treated as FILL
+    || path->path_type == VG_LITE_DRAW_ZERO               // �?treated as FILL
     || path->path_type == VG_LITE_DRAW_FILL_STROKE_PATH)
 ```
 
-The name "ZERO" refers to "bit0 (stroke) = 0" — i.e., zero stroke contribution — NOT "render nothing". Fill still renders.
+The name "ZERO" refers to "bit0 (stroke) = 0" �?i.e., zero stroke contribution �?NOT "render nothing". Fill still renders.
 
 **Solution**: Removed the incorrect early-return in `src/vg_lite.c` `vg_lite_draw` (was L1018-1021). Now ZERO falls through to the fill pass exactly like FILL_PATH. Kept the validation fix in `src/vg_lite_path.c` `vg_lite_set_path_type` (L128) that correctly accepts all 4 enum values including ZERO.
 
@@ -423,9 +423,9 @@ The name "ZERO" refers to "bit0 (stroke) = 0" — i.e., zero stroke contribution
 
 **Symptom**: `test_stroke` PNGs showed only the background color with a few black dots near the top-left corner. The stroke geometry (petal shape spanning [0,250]×[0,150]) was entirely missing.
 
-**Root Cause**: `vg_lite_init_path` in `src/vg_lite.c` L1046 had `if (path == NULL || data == NULL) return VG_LITE_INVALID_ARGUMENT;`. The stroke test (and the official CTS pattern) calls `vg_lite_init_path(..., data=NULL)` first, then allocates `path->path = malloc(...)` afterward. With the NULL-data check, `init_path` returned early with `VG_LITE_INVALID_ARGUMENT` before setting any path fields. Since the path was `memset` to 0 beforehand, `path->format` remained `0` (= `VG_LITE_S8`), not the intended `VG_LITE_FP32`. When `vg_lite_append_path` later wrote coordinates, it interpreted them as 1-byte signed integers (S8 format) instead of 4-byte floats — all coordinates collapsed to 0. The stroke algorithm then generated a tiny degenerate cluster at the origin instead of the petal outline.
+**Root Cause**: `vg_lite_init_path` in `src/vg_lite.c` L1046 had `if (path == NULL || data == NULL) return VG_LITE_INVALID_ARGUMENT;`. The stroke test (and the official CTS pattern) calls `vg_lite_init_path(..., data=NULL)` first, then allocates `path->path = malloc(...)` afterward. With the NULL-data check, `init_path` returned early with `VG_LITE_INVALID_ARGUMENT` before setting any path fields. Since the path was `memset` to 0 beforehand, `path->format` remained `0` (= `VG_LITE_S8`), not the intended `VG_LITE_FP32`. When `vg_lite_append_path` later wrote coordinates, it interpreted them as 1-byte signed integers (S8 format) instead of 4-byte floats �?all coordinates collapsed to 0. The stroke algorithm then generated a tiny degenerate cluster at the origin instead of the petal outline.
 
-The official `gpu-vglite/VGLite/vg_lite_path.c` L198 only validates `path != NULL`; it does NOT check `data != NULL` because deferred path allocation (init_path → malloc → append_path) is a supported usage pattern.
+The official `gpu-vglite/VGLite/vg_lite_path.c` L198 only validates `path != NULL`; it does NOT check `data != NULL` because deferred path allocation (init_path �?malloc �?append_path) is a supported usage pattern.
 
 **Solution**: Changed `src/vg_lite.c` L1046 from `if (path == NULL || data == NULL)` to `if (path == NULL)`, matching the official source. Now `init_path` records the format/quality/bounding_box/path_length even when `data` is NULL, and `append_path` later writes coordinates in the correct format.
 
@@ -444,7 +444,7 @@ The official `gpu-vglite/VGLite/vg_lite_path.c` L198 only validates `path != NUL
 
 **Symptom**: After fix #21, stroke geometry rendered correctly but the stroke color was always BLACK regardless of the `color` parameter passed to `vg_lite_draw`.
 
-**Root Cause**: The original VeriSilicon CTS source `VGLite_Tests/VSI_CTS/samples/stroke/stroke.c` passes `0` as the 9th parameter (`color`) to all three `vg_lite_set_stroke` calls (L125, L144, L162 in the original). In the official VGLite driver, stroke rendering uses `path->stroke_color` (set by `vg_lite_set_stroke`) — NOT the `color` parameter from `vg_lite_draw`. Confirmed at `gpu-vglite/VGLite/vg_lite_path.c` L1030 (fill uses `color` param) vs L1080 (stroke uses `path->stroke_color`). So the intended stroke color in `vg_lite_draw(0xFF0000FF)` was ignored for strokes; `set_stroke(color=0)` won, producing black strokes. This is a bug in the CTS test source itself.
+**Root Cause**: The original VeriSilicon CTS source `VGLite_Tests/VSI_CTS/samples/stroke/stroke.c` passes `0` as the 9th parameter (`color`) to all three `vg_lite_set_stroke` calls (L125, L144, L162 in the original). In the official VGLite driver, stroke rendering uses `path->stroke_color` (set by `vg_lite_set_stroke`) �?NOT the `color` parameter from `vg_lite_draw`. Confirmed at `gpu-vglite/VGLite/vg_lite_path.c` L1030 (fill uses `color` param) vs L1080 (stroke uses `path->stroke_color`). So the intended stroke color in `vg_lite_draw(0xFF0000FF)` was ignored for strokes; `set_stroke(color=0)` won, producing black strokes. This is a bug in the CTS test source itself.
 
 **Solution**: Updated `tests/stroke/stroke.c` to pass the intended stroke colors to `vg_lite_set_stroke`:
 - Test 1 (stroke-only): `0xFF0000FF` (matches the `vg_lite_draw` color for red stroke).
@@ -467,7 +467,7 @@ The official `gpu-vglite/VGLite/vg_lite_path.c` L198 only validates `path != NUL
 
 **Root Cause**: Two issues in `src/vg_lite.c` `vg_lite_draw`:
 
-1. **Render order reversed**: Our port rendered stroke-first then fill (the fill pass was the last statement, L1029). The official `gpu-vglite/VGLite/vg_lite_path.c` does the opposite at L1044 (fill tessellation loop) then L1065 (stroke tessellation loop) — fill-first, stroke-second, so stroke overlays fill.
+1. **Render order reversed**: Our port rendered stroke-first then fill (the fill pass was the last statement, L1029). The official `gpu-vglite/VGLite/vg_lite_path.c` does the opposite at L1044 (fill tessellation loop) then L1065 (stroke tessellation loop) �?fill-first, stroke-second, so stroke overlays fill.
 
 2. **Stroke bbox not expanded**: The `stroke_tmp` path used the raw `p->bounding_box` (L1009-1012, comment claimed "safe over-estimate"). The official source (`vg_lite_path.c` L973-982) expands the bbox for stroke paths:
    ```c
@@ -477,16 +477,139 @@ The official `gpu-vglite/VGLite/vg_lite_path.c` L198 only validates `path != NUL
    Without this, the Vulkan cover quad (built from bbox) clipped stroke edges that extended beyond the original path outline.
 
 **Solution**: Rewrote `vg_lite_draw` dispatch in `src/vg_lite.c`:
-- Computed `has_fill` / `has_stroke` flags from `path_type` bitmask (ZERO/FILL_PATH/FILL_STROKE → fill; STROKE_PATH/FILL_STROKE → stroke).
+- Computed `has_fill` / `has_stroke` flags from `path_type` bitmask (ZERO/FILL_PATH/FILL_STROKE �?fill; STROKE_PATH/FILL_STROKE �?stroke).
 - Fill pass runs FIRST (calls `vg_lite_draw_impl` with original path + draw color), then stroke pass runs SECOND.
 - For the stroke pass, expanded `stroke_tmp.bounding_box` by `1.5 * (line_width + miter_limit_if_miter)` on all 4 sides, matching the official formula.
 
 **Verification**:
 - Full build: 38 test targets, 0 errors.
-- `test_stroke`: EXIT=0, 13 PNGs. `fill_stroke.png` pixel histogram: blue bg 34588px, red fill 28172px, black stroke 2017px (was 1265px before fix — stroke now fully visible over fill). `stroke0_0.png` unchanged (stroke-only, not affected by order).
+- `test_stroke`: EXIT=0, 13 PNGs. `fill_stroke.png` pixel histogram: blue bg 34588px, red fill 28172px, black stroke 2017px (was 1265px before fix �?stroke now fully visible over fill). `stroke0_0.png` unchanged (stroke-only, not affected by order).
 - Regression: `test_clear` (100% pixel match), `test_tiger` (3.90% diff, PASS) both PASS.
 
 **Files**: src/vg_lite.c
+
+---
+
+## 24. Push constant block redundancy cleanup (blend_mode/filter_mode removed)
+
+**Symptom**: The native blit push constant block carried two fields that the shaders never read: `blend_mode` (fragment) and `filter_mode` (fragment). Both vertex and fragment shaders declared the full block including members they didn't use, and the total range was 112 bytes — larger than necessary. This was confusing to read and wasted push-constant bandwidth on every blit/draw that shares the `native_pipeline_layout`.
+
+**Root Cause**: Historical accumulation. The original fragment shader block was `{ mat3 matrix; int blend_mode; uint color; int image_mode; int filter_mode; int flags; }`. When the OBB blit path added `vec4 corners[2]` for the vertex stage, `blend_mode` (offset 48) + `filter_mode` (offset 60) pushed `corners` to offset 80, bloating the range to 112B. However:
+- `blend_mode` is actually handled by **pipeline blend state** (`blend_group` → pipeline selection in `vg_lite_vulkan.c`), not by any shader uniform read.
+- `filter_mode` is handled by **sampler state** (`get_or_create_sampler` in `vg_lite_vulkan.c`), not by any shader uniform read.
+- Neither `blit_native.frag` nor `blit_native_fs.frag` ever referenced `blend_mode` or `filter_mode` in their GLSL bodies — the declarations were dead weight.
+
+**Solution**: Slimmed the shared push constant range from 112B to **96B** by removing the two unused fields and letting each shader stage declare only the members it reads (standard Vulkan practice — both stages share one `VkPushConstantRange` of offset 0, size 96, stageFlags VERTEX|FRAGMENT).
+
+New layout (96B total, verified via `glslangValidator -H`):
+```
+offset 0:  mat3 matrix      (48B, col-major, MatrixStride 16) — VERTEX reads
+offset 48: uint color       (4B)                               — FRAGMENT reads
+offset 52: int  image_mode  (4B)                               — FRAGMENT reads
+offset 56: int  flags       (4B)                               — FRAGMENT reads
+offset 60: int  pad         (4B, aligns corners[2] to 16)
+offset 64: vec4 corners[2]  (32B)                              — VERTEX reads
+```
+
+Files changed:
+- **shaders/blit_obb.vert**: `corners` offset 80 → 64; added layout documentation comment.
+- **shaders/blit.vert**: comment updated to reference the 96B shared block.
+- **shaders/blit_native.frag**: block rewritten to `{ layout(offset=48) uint color; layout(offset=52) int image_mode; layout(offset=56) int flags; }` — removed matrix/blend_mode/filter_mode.
+- **shaders/blit_native_fs.frag**: identical change to blit_native.frag.
+- **src/vg_lite.c** (`vg_lite_blit`): pc struct 80B → 64B (`{ float m[12]; unsigned color; int im_mode; int flags; int pad; }`); removed `pc.blend`/`pc.filt` assignments; second `vkCmdPushConstants` offset 80 → 64.
+- **src/vg_lite_vulkan.c**: seed_msaa clear pc struct synced to 64B layout; two `pc_range.size` 112 → 96.
+
+Out of scope (verified): `vg_lite_draw.c:598-599` `cover_pc` uses a SEPARATE draw pipeline layout, not `native_pipeline_layout`. `vg_lite_blit` function signature still takes `blend`/`filter` params — they drive pipeline/sampler selection, just no longer pushed as shader uniforms.
+
+**Verification**:
+- All 4 shaders compile clean via `glslangValidator -V`.
+- Full build: 0 errors.
+- Blit test matrix (AGENTS.md requirement) — all 4 configs rebuilt and tested:
+
+| Config | VGLITE_BLIT_MSAA | VGLITE_BLIT_OBB | PASS | FAIL |
+|--------|------------------|-----------------|------|------|
+| 1 | 1 | 1 | 37 | 1 (test_sft_blit, pre-existing) |
+| 2 | 1 | 0 | 37 | 1 (test_sft_blit, pre-existing) |
+| 3 | 0 | 1 | 37 | 1 (test_sft_blit, pre-existing) |
+| 4 | 0 | 0 | 37 | 1 (test_sft_blit, pre-existing) |
+
+Zero regressions across all 4 configs. `test_sft_blit` is the only non-PASS test (AGENTS.md explicitly allows this as pre-existing known-bad).
+
+**Files**: shaders/blit_obb.vert, shaders/blit.vert, shaders/blit_native.frag, shaders/blit_native_fs.frag, src/vg_lite.c, src/vg_lite_vulkan.c
+
+---
+
+## 25. Merge two vkCmdPushConstants calls into one, remove explicit shader offsets
+
+**Symptom**: After fix #24, the 96B push constant block was still written by **two** `vkCmdPushConstants` calls: `64B@0` (matrix+color+image_mode+flags+pad) and `32B@64` (corners). Additionally, each shader stage declared its block members with explicit `layout(offset=N)` annotations, which is verbose and fragile — if the C-side struct changes, every shader's offset literals must be manually updated.
+
+**Root Cause**: The two-push pattern originated from the C-side struct splitting `corners` into a separate array written in a second call. The explicit `layout(offset=N)` was necessary because each shader stage declared only a *subset* of the full block — without explicit offsets, the compiler would auto-layout each stage's subset starting at offset 0, causing vertex and fragment stages to disagree on where `corners` lived.
+
+**Solution**: Changed to a **single** `vkCmdPushConstants` call and removed all explicit offset annotations by having **both stages declare the identical full 96B block**:
+
+```glsl
+layout(push_constant) uniform BlitParams {
+    mat3 matrix;       // offset 0  (48B, auto-layouted)
+    uint color;        // offset 48
+    int  image_mode;   // offset 52
+    int  flags;        // offset 56
+    int  pad;          // offset 60
+    vec4 corners[2];   // offset 64 (32B)
+} pc;
+```
+
+Since both stages declare the same block in the same order, the compiler auto-layouts identical offsets for both — no explicit `layout(offset=N)` needed. Each stage still only *reads* the members it uses (vertex: matrix+corners; fragment: color+image_mode+flags).
+
+C-side: merged the 64B struct + separate corners into a single 96B struct `{ float m[12]; unsigned color; int im_mode; int flags; int pad; float corners[8]; }`. Default fullscreen corners memcpy'd in at struct init; OBB path writes directly to `pc.corners` via `compute_blit_obb`. Deleted the second `vkCmdPushConstants` call — now one call: `vkCmdPushConstants(layout, VERTEX|FRAGMENT, 0, sizeof(pc), &pc)`.
+
+Files changed:
+- **shaders/blit_obb.vert, blit.vert, blit_native.frag, blit_native_fs.frag**: removed all `layout(offset=N)`, each now declares the full 96B block identically.
+- **src/vg_lite.c** (`vg_lite_blit`): struct extended to 96B with inline `float corners[8]`; second `vkCmdPushConstants` deleted.
+- **src/vg_lite_vulkan.c** (seed_msaa clear): same struct change, second push deleted.
+
+**Verification**:
+- All 4 shaders compile clean via `glslangValidator -V` (no alignment errors — auto-layout produces identical offsets).
+- Full build: 0 errors.
+- Blit test matrix (AGENTS.md) — all 4 configs: 37 PASS / 1 FAIL (test_sft_blit pre-existing). Zero regressions.
+
+**Files**: shaders/blit_obb.vert, shaders/blit.vert, shaders/blit_native.frag, shaders/blit_native_fs.frag, src/vg_lite.c, src/vg_lite_vulkan.c
+
+---
+
+## 26. Enable scalar block layout to eliminate pad, shrink push constants to 80B
+
+**Symptom**: After fix #25, the 96B push constant block still contained an `int pad` at offset 60 — a 4-byte gap needed solely to align `vec4 corners[2]` to 16 (std140/scalar-aligned layout for push constants). The `mat3 matrix` also wasted 12 bytes per column (3 floats used, 4 floats allocated = MatrixStride 16), consuming 48B for 36B of real data. Total waste: 16B of padding in a 96B block.
+
+**Root Cause**: Push constant blocks default to std140 alignment rules: `mat3` uses MatrixStride=16 (column-major, 4 floats per column, 3 used), and `vec4` requires 16-byte alignment. This forces:
+- `matrix`: 48B (3 cols × 16B, 12B padding total)
+- `pad`: 4B (gap between `flags@56` and `corners@64`)
+
+**Solution**: Enabled `VK_EXT_scalar_block_layout` (Vulkan 1.2 core feature `scalarBlockLayout`) which aligns members by their **scalar component size** (e.g. `vec4` → align=4, not 16; `mat3` → MatrixStride=12). This eliminates all padding:
+
+New layout (80B total, verified via `glslangValidator -H`):
+```
+offset 0:  mat3 matrix      (36B, MatrixStride 12) — VERTEX reads
+offset 36: uint color       (4B)                   — FRAGMENT reads
+offset 40: int  image_mode  (4B)                   — FRAGMENT reads
+offset 44: int  flags       (4B)                   — FRAGMENT reads
+offset 48: vec4 corners[2]  (32B)                  — VERTEX reads
+```
+
+16B saved vs #25's 96B (17% reduction).
+
+**Device support**: Queried `VkPhysicalDeviceVulkan12Features.scalarBlockLayout` at startup — supported (Vulkan 1.2 core). Device creation enables it via `pNext` chain (1.2 core path) or `VK_EXT_scalar_block_layout` extension name (fallback for pre-1.2).
+
+Files changed:
+- **shaders/blit_obb.vert, blit.vert, blit_native.frag, blit_native_fs.frag**: added `#extension GL_EXT_scalar_block_layout : enable`, changed to `layout(push_constant, scalar)`, removed `int pad` member.
+- **src/vg_lite.c** (`vg_lite_blit`): struct `float m[12]` → `float m[9]` (col*4+row → col*3+row indexing), removed `int pad`. Now 80B: `{ float m[9]; unsigned color; int im_mode; int flags; float corners[8]; }`.
+- **src/vg_lite_vulkan.c**: device creation queries + enables `scalarBlockLayout`; seed_msaa struct synced to 80B (identity: `m[0]=m[4]=m[8]=1`); two `pc_range.size` 96 → 80.
+
+**Verification**:
+- All 4 shaders compile clean via `glslangValidator -V` with scalar layout.
+- Full build: 0 errors.
+- Blit test matrix (AGENTS.md) — all 4 configs: 37 PASS / 1 FAIL (test_sft_blit pre-existing). Zero regressions.
+
+**Files**: shaders/blit_obb.vert, shaders/blit.vert, shaders/blit_native.frag, shaders/blit_native_fs.frag, src/vg_lite.c, src/vg_lite_vulkan.c
 ---
 
 ## #24: ARGB8888 内存字节序假设错误（save_png / read_pixel / pack_pixel）

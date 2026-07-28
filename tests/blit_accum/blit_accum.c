@@ -101,9 +101,28 @@ int main() {
         for (int i = 0; i < TW*TH; i++) {
             if (p[i] != expected) {
                 mismatch++;
-                if (mismatch == 1) printf("  first wrong: got 0x%08X exp 0x%08X at (%d,%d)\n", p[i], expected, i%TW, i/TW);
+                if (mismatch == 1)         printf("  first wrong: got 0x%08X exp 0x%08X at (%d,%d)\n", p[i], expected, i%TW, i/TW);
             }
         }
+        /* Sample grid for debugging */
+        printf("  Sample grid (32px step):\n");
+        for (int y = 0; y < TH; y += 32) {
+            printf("  y=%3d: ", y);
+            for (int x = 0; x < TW; x += 32)
+                printf("%08X ", p[y*TW+x]);
+            printf("\n");
+        }
+        /* Count unique values */
+        uint32_t vals[256]; int counts[256]; int nunique = 0;
+        for (int i = 0; i < TW*TH; i++) {
+            int found = -1;
+            for (int j = 0; j < nunique; j++) if (vals[j] == p[i]) { found = j; break; }
+            if (found >= 0) counts[found]++;
+            else if (nunique < 256) { vals[nunique] = p[i]; counts[nunique] = 1; nunique++; }
+        }
+        printf("  Unique values: %d\n", nunique);
+        for (int j = 0; j < nunique; j++)
+            printf("    0x%08X: %d pixels\n", vals[j], counts[j]);
         if (mismatch == 0)
             printf("blit_accum OK (single blend test passed)\n");
         else

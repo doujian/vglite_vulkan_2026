@@ -1486,15 +1486,15 @@ typedef unsigned int        vg_lite_color_t;
     /* Wrap user memory into a vg_lite_buffer. */
     vg_lite_error_t vg_lite_wrap_user_memory(vg_lite_buffer_t *buffer, vg_lite_uint8_t *memory, vg_lite_uint32_t stride, vg_lite_uint32_t width, vg_lite_uint32_t height, vg_lite_buffer_format_t format);
 
-    /* --- Blit AABB optimization control --- */
+    /* --- Blit OBB optimization control --- */
 
-    /* Set blit AABB optimization mode.
-     * mode: 0 = original fullscreen triangle, 1 = AABB-driven tight triangle.
+    /* Set blit OBB optimization mode.
+     * mode: 0 = original fullscreen triangle, 1 = OBB-driven tight quad.
      * Returns VG_LITE_SUCCESS on success. */
-    vg_lite_error_t vg_lite_set_blit_aabb_mode(vg_lite_uint32_t mode);
+    vg_lite_error_t vg_lite_set_blit_obb_mode(vg_lite_uint32_t mode);
 
-    /* Get current blit AABB optimization mode (0 or 1). */
-    vg_lite_uint32_t vg_lite_get_blit_aabb_mode(void);
+    /* Get current blit OBB optimization mode (0 or 1). */
+    vg_lite_uint32_t vg_lite_get_blit_obb_mode(void);
 
     /* --- GPU timestamp profiling --- */
 

@@ -1,6 +1,12 @@
 #version 450
 #extension GL_EXT_scalar_block_layout : enable
 
+/* Fullscreen blit fragment shader — same as blit_native.frag but with
+ * UV discard for out-of-bounds samples. The fullscreen triangle covers
+ * the entire target, so we need to discard fragments where the source
+ * UV falls outside [0,1]. OBB path uses blit_native.frag (no discard)
+ * because the quad geometry already limits coverage. */
+
 /* Shared push constant block (92B, one vkCmdPushConstants call).
  * Uses scalar block layout. Declares full block so compiler auto-layouts
  * offsets. This shader only reads color/image_mode/flags; vertex shader
@@ -39,7 +45,6 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
         return mix;
     }
     if (params.image_mode == IMAGE_MODE_MULTIPLY) {
-        /* A8 source: swizzled to (0,0,0,alpha), multiply uses alpha * color */
         if ((params.flags & FLAG_SOURCE_A8) != 0) {
             return vec4(mix.rgb * src.a, mix.a * src.a);
         }
@@ -56,9 +61,11 @@ vec4 apply_image_mode(vec4 src, uint mix_color)
 
 void main()
 {
-    /* OBB quad precisely covers source image footprint.
-     * UV computed via matrix in vertex shader, same as fullscreen path.
-     * CLAMP_TO_EDGE handles edge sampling for BI_LINEAR filter. */
+    /* Discard fragments outside source texture bounds — fullscreen triangle
+     * covers entire target, so UV can be far outside [0,1]. */
+    if (src_uv.x < -0.001 || src_uv.x > 1.001 ||
+        src_uv.y < -0.001 || src_uv.y > 1.001)
+        discard;
 
     vec4 src = texture(src_texture, src_uv);
 

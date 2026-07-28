@@ -2,7 +2,7 @@
 excalidraw-plugin: parsed
 tags: [excalidraw]
 ---
-==⚠  Switch to EXCALIDRAW VIEW in the MORE OPTIONS menu of this document. ⚠== You can decompress Drawing data with the command palette: 'Decompress current Excalidraw file'. For more info check in plugin settings under 'Saving'
+==�? Switch to EXCALIDRAW VIEW in the MORE OPTIONS menu of this document. �?= You can decompress Drawing data with the command palette: 'Decompress current Excalidraw file'. For more info check in plugin settings under 'Saving'
 
 # Excalidraw Data
 
@@ -831,13 +831,13 @@ tags: [excalidraw]
       "updated": 1,
       "link": null,
       "locked": false,
-      "text": "return SUCCESS「noop」",
+      "text": "return SUCCESS「noop�?,
       "fontSize": 16,
       "fontFamily": 3,
       "textAlign": "center",
       "verticalAlign": "middle",
       "containerId": "s-early-box",
-      "originalText": "return SUCCESS「noop」",
+      "originalText": "return SUCCESS「noop�?,
       "autoResize": true,
       "lineHeight": 1.25
     },

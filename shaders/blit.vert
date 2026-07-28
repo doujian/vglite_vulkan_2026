@@ -1,10 +1,17 @@
 #version 450
+#extension GL_EXT_scalar_block_layout : enable
 
-/* Push constant: matrix at offset 0 (same block as blit_native.frag, written
- * by vg_lite.c with stage = VERTEX|FRAGMENT). Vertex precomputes src_uv so the
- * fragment shader skips the per-fragment 3x3 matrix multiply. */
-layout(push_constant) uniform BlitParams {
-    layout(offset = 0) mat3 matrix;
+/* Shared push constant block (92B, one vkCmdPushConstants call).
+ * Uses scalar block layout. Declares full block so compiler auto-layouts
+ * offsets. This shader only reads matrix; fragment shader reads
+ * color/image_mode/flags. Vertex precomputes src_uv so the fragment
+ * shader skips the per-fragment 3x3 matrix multiply. */
+layout(push_constant, scalar) uniform BlitParams {
+    mat3 matrix;
+    uint color;
+    int  image_mode;
+    int  flags;
+    vec4 corners[2];
 } pc;
 
 const vec2 positions[3] = vec2[3](

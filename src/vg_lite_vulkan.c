@@ -152,8 +152,50 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     dev_ci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dev_ci.queueCreateInfoCount = 1;
     dev_ci.pQueueCreateInfos = &q_ci;
-    dev_ci.enabledExtensionCount = 0;
-    dev_ci.ppEnabledExtensionNames = NULL;
+
+    /* Scalar block layout: allows push constant vec4 alignment = scalar size (4B)
+     * instead of std140 (16B), eliminating the 4B pad before corners[].
+     * Vulkan 1.2 core feature; falls back to VK_EXT_scalar_block_layout on 1.0/1.1. */
+    VkPhysicalDeviceVulkan12Features vk12_features_query = {0};
+    vk12_features_query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceFeatures2 pd_features2 = {0};
+    pd_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    pd_features2.pNext = &vk12_features_query;
+    vkGetPhysicalDeviceFeatures2(g_vk_ctx.physical_device, &pd_features2);
+
+    const char *dev_exts[8];
+    uint32_t dev_ext_count = 0;
+    VkPhysicalDeviceVulkan12Features vk12_features = {0};
+    vk12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vk12_features.scalarBlockLayout = VK_TRUE;
+
+    if (vk12_features_query.scalarBlockLayout) {
+        /* Vulkan 1.2 core: enable via pNext chain */
+        dev_ci.pNext = &vk12_features;
+        fprintf(stderr, "[vglite] scalarBlockLayout: supported (Vulkan 1.2 core)\n");
+    } else {
+        /* Fallback: try VK_EXT_scalar_block_layout device extension */
+        uint32_t dext_count = 0;
+        vkEnumerateDeviceExtensionProperties(g_vk_ctx.physical_device, NULL, &dext_count, NULL);
+        VkExtensionProperties *dexts = malloc(sizeof(VkExtensionProperties) * dext_count);
+        vkEnumerateDeviceExtensionProperties(g_vk_ctx.physical_device, NULL, &dext_count, dexts);
+        int has_scalar = 0;
+        for (uint32_t i = 0; i < dext_count; i++) {
+            if (strcmp(dexts[i].extensionName, VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME) == 0) {
+                has_scalar = 1;
+                break;
+            }
+        }
+        free(dexts);
+        if (has_scalar) {
+            dev_exts[dev_ext_count++] = VK_EXT_SCALAR_BLOCK_LAYOUT_EXTENSION_NAME;
+            dev_ci.enabledExtensionCount = dev_ext_count;
+            dev_ci.ppEnabledExtensionNames = dev_exts;
+            fprintf(stderr, "[vglite] scalarBlockLayout: supported (VK_EXT_scalar_block_layout)\n");
+        } else {
+            fprintf(stderr, "[vglite] WARNING: scalarBlockLayout NOT supported — push constant pad field is mandatory\n");
+        }
+    }
 
     /* Timestamp queries supported by default in Vulkan 1.0 — no feature flag needed.
      * timestampPeriod is queried from VkPhysicalDeviceProperties.limits. */
@@ -252,7 +294,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, g_vk_ctx.clut_buffer, g_vk_ctx.clut_memory, 0));
     VK_CHECK(vkMapMemory(g_vk_ctx.device, g_vk_ctx.clut_memory, 0, VK_WHOLE_SIZE, 0, &g_vk_ctx.clut_mapped));
 
-    g_vk_ctx.use_aabb_blit = VGLITE_BLIT_AABB;  /* AABB optimization, configurable via vg_lite_config.h */
+    g_vk_ctx.use_obb_blit = VGLITE_BLIT_OBB;  /* OBB optimization, configurable via vg_lite_config.h */
     return VG_LITE_SUCCESS;
 }
 
@@ -523,14 +565,12 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
         g_vk_ctx.native_pipeline_layout, 0, 1, &ds, 0, NULL);
 
-    struct { float m[12]; int blend; unsigned color; int im_mode; int filt; int flags; int pad[3]; } pc = {0};
-    pc.m[0] = 1.0f; pc.m[5] = 1.0f; pc.m[10] = 1.0f;
-    pc.blend = (int)VG_LITE_BLEND_NONE;
+    struct { float m[9]; unsigned color; int im_mode; int flags; float corners[8]; } pc = {0};
+    pc.m[0] = 1.0f; pc.m[4] = 1.0f; pc.m[8] = 1.0f;
+    float fullscreen_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
+    memcpy(pc.corners, fullscreen_corners, sizeof(fullscreen_corners));
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
-    float fullscreen_aabb[4] = {-1.0f, -1.0f, 3.0f, 3.0f};
-    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 80, 16, fullscreen_aabb);
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
@@ -853,8 +893,8 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     if (mode != 0) {
         if (!g_vk_ctx.vert_shader)
             g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
-        if (!g_vk_ctx.native_frag_shader)
-            g_vk_ctx.native_frag_shader = load_shader_module(g_vk_ctx.device, "blit_native_frag");
+        if (!g_vk_ctx.native_fs_frag_shader)
+            g_vk_ctx.native_fs_frag_shader = load_shader_module(g_vk_ctx.device, "blit_native_fs_frag");
         if (!g_vk_ctx.native_pipeline_layout) {
             VkDescriptorSetLayoutBinding bindings[1] = {
                 {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL},
@@ -866,7 +906,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
             VkPushConstantRange pc_range = {0};
             pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             pc_range.offset = 0;
-            pc_range.size = 96;  /* 80B fragment data at offset 0 + 16B AABB at offset 80 */
+            pc_range.size = 80;  /* scalar layout: 36B matrix + 12B color/im_mode/flags + 32B corners */
             VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
             pl_ci.setLayoutCount = 1;
             pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
@@ -902,7 +942,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     VkPipelineShaderStageCreateInfo stages[2] = {
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.vert_shader, "main", NULL},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT,
-         mode != 0 ? g_vk_ctx.native_frag_shader : g_vk_ctx.frag_shader, "main", NULL},
+         mode != 0 ? g_vk_ctx.native_fs_frag_shader : g_vk_ctx.frag_shader, "main", NULL},
     };
     VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -1059,16 +1099,16 @@ VkPipeline vg_lite_vulkan_get_pipeline_native_msaa(VkFormat format, int blend_gr
     return pipeline;
 }
 
-/* Create AABB blit pipeline — same as create_blit_pipeline_internal but uses
- * blit_aabb_vert shader module instead of the original blit_vert. */
-static VkPipeline create_blit_aabb_pipeline_internal(VkFormat format, int blend_group, int mode)
+/* Create OBB blit pipeline — same as create_blit_pipeline_internal but uses
+ * blit_obb_vert shader module instead of the original blit_vert. */
+static VkPipeline create_blit_obb_pipeline_internal(VkFormat format, int blend_group, int mode)
 {
-    if (!g_vk_ctx.blit_aabb_vert_shader)
-        g_vk_ctx.blit_aabb_vert_shader = load_shader_module(g_vk_ctx.device, "blit_aabb_vert");
+    if (!g_vk_ctx.blit_obb_vert_shader)
+        g_vk_ctx.blit_obb_vert_shader = load_shader_module(g_vk_ctx.device, "blit_obb_vert");
     if (!g_vk_ctx.native_frag_shader)
         g_vk_ctx.native_frag_shader = load_shader_module(g_vk_ctx.device, "blit_native_frag");
 
-    /* Ensure native_pipeline_layout exists (it has the 96B VERTEX|FRAGMENT range) */
+    /* Ensure native_pipeline_layout exists (it has the 80B VERTEX|FRAGMENT range) */
     if (!g_vk_ctx.native_pipeline_layout) {
         if (!g_vk_ctx.vert_shader)
             g_vk_ctx.vert_shader = load_shader_module(g_vk_ctx.device, "blit_vert");
@@ -1082,7 +1122,7 @@ static VkPipeline create_blit_aabb_pipeline_internal(VkFormat format, int blend_
         VkPushConstantRange pc_range = {0};
         pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
         pc_range.offset = 0;
-        pc_range.size = 96;
+        pc_range.size = 80;  /* scalar layout: 36B matrix + 12B color/im_mode/flags + 32B corners */
         VkPipelineLayoutCreateInfo pl_ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pl_ci.setLayoutCount = 1;
         pl_ci.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
@@ -1092,12 +1132,12 @@ static VkPipeline create_blit_aabb_pipeline_internal(VkFormat format, int blend_
     }
 
     VkPipelineShaderStageCreateInfo stages[2] = {
-        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.blit_aabb_vert_shader, "main", NULL},
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_vk_ctx.blit_obb_vert_shader, "main", NULL},
         {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_vk_ctx.native_frag_shader, "main", NULL},
     };
     VkPipelineVertexInputStateCreateInfo vi = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;  /* AABB: 4 vertices = 2 triangles forming rectangle */
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;  /* OBB: 4 vertices = 1 strip quad */
     VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
@@ -1138,42 +1178,42 @@ static VkPipeline create_blit_aabb_pipeline_internal(VkFormat format, int blend_
     return pipeline;
 }
 
-VkPipeline vg_lite_vulkan_get_pipeline_aabb_no_msaa(VkFormat format, int blend_group)
+VkPipeline vg_lite_vulkan_get_pipeline_obb_no_msaa(VkFormat format, int blend_group)
 {
-    for (int i = 0; i < g_vk_ctx.blit_aabb_pipeline_cache_count; i++) {
-        if (g_vk_ctx.blit_aabb_pipeline_cache[i].format == format &&
-            g_vk_ctx.blit_aabb_pipeline_cache[i].blend_group == blend_group &&
-            g_vk_ctx.blit_aabb_pipeline_cache[i].mode == 1)
-            return g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline;
+    for (int i = 0; i < g_vk_ctx.blit_obb_pipeline_cache_count; i++) {
+        if (g_vk_ctx.blit_obb_pipeline_cache[i].format == format &&
+            g_vk_ctx.blit_obb_pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.blit_obb_pipeline_cache[i].mode == 1)
+            return g_vk_ctx.blit_obb_pipeline_cache[i].pipeline;
     }
 
-    VkPipeline pipeline = create_blit_aabb_pipeline_internal(format, blend_group, 1);
-    if (pipeline && g_vk_ctx.blit_aabb_pipeline_cache_count < MAX_PIPELINE_CACHE) {
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].pipeline = pipeline;
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].format = format;
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].blend_group = blend_group;
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].mode = 1;
-        g_vk_ctx.blit_aabb_pipeline_cache_count++;
+    VkPipeline pipeline = create_blit_obb_pipeline_internal(format, blend_group, 1);
+    if (pipeline && g_vk_ctx.blit_obb_pipeline_cache_count < MAX_PIPELINE_CACHE) {
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].pipeline = pipeline;
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].format = format;
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].mode = 1;
+        g_vk_ctx.blit_obb_pipeline_cache_count++;
     }
     return pipeline;
 }
 
-VkPipeline vg_lite_vulkan_get_pipeline_aabb_native_msaa(VkFormat format, int blend_group)
+VkPipeline vg_lite_vulkan_get_pipeline_obb_native_msaa(VkFormat format, int blend_group)
 {
-    for (int i = 0; i < g_vk_ctx.blit_aabb_pipeline_cache_count; i++) {
-        if (g_vk_ctx.blit_aabb_pipeline_cache[i].format == format &&
-            g_vk_ctx.blit_aabb_pipeline_cache[i].blend_group == blend_group &&
-            g_vk_ctx.blit_aabb_pipeline_cache[i].mode == 2)
-            return g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline;
+    for (int i = 0; i < g_vk_ctx.blit_obb_pipeline_cache_count; i++) {
+        if (g_vk_ctx.blit_obb_pipeline_cache[i].format == format &&
+            g_vk_ctx.blit_obb_pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.blit_obb_pipeline_cache[i].mode == 2)
+            return g_vk_ctx.blit_obb_pipeline_cache[i].pipeline;
     }
 
-    VkPipeline pipeline = create_blit_aabb_pipeline_internal(format, blend_group, 2);
-    if (pipeline && g_vk_ctx.blit_aabb_pipeline_cache_count < MAX_PIPELINE_CACHE) {
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].pipeline = pipeline;
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].format = format;
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].blend_group = blend_group;
-        g_vk_ctx.blit_aabb_pipeline_cache[g_vk_ctx.blit_aabb_pipeline_cache_count].mode = 2;
-        g_vk_ctx.blit_aabb_pipeline_cache_count++;
+    VkPipeline pipeline = create_blit_obb_pipeline_internal(format, blend_group, 2);
+    if (pipeline && g_vk_ctx.blit_obb_pipeline_cache_count < MAX_PIPELINE_CACHE) {
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].pipeline = pipeline;
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].format = format;
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.blit_obb_pipeline_cache[g_vk_ctx.blit_obb_pipeline_cache_count].mode = 2;
+        g_vk_ctx.blit_obb_pipeline_cache_count++;
     }
     return pipeline;
 }
@@ -1290,6 +1330,7 @@ void vg_lite_vulkan_destroy_pipelines(void)
     if (g_vk_ctx.vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.vert_shader, NULL); g_vk_ctx.vert_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.frag_shader, NULL); g_vk_ctx.frag_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.native_frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.native_frag_shader, NULL); g_vk_ctx.native_frag_shader = VK_NULL_HANDLE; }
+    if (g_vk_ctx.native_fs_frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.native_fs_frag_shader, NULL); g_vk_ctx.native_fs_frag_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.native_pipeline_layout) { vkDestroyPipelineLayout(g_vk_ctx.device, g_vk_ctx.native_pipeline_layout, NULL); g_vk_ctx.native_pipeline_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.native_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.native_descriptor_layout, NULL); g_vk_ctx.native_descriptor_layout = VK_NULL_HANDLE; }
     if (g_vk_ctx.blit_ssbo_buffer) {
@@ -1301,13 +1342,13 @@ void vg_lite_vulkan_destroy_pipelines(void)
         g_vk_ctx.blit_ssbo_mapped = NULL;
     }
 
-    /* AABB blit pipeline cleanup */
-    for (int i = 0; i < g_vk_ctx.blit_aabb_pipeline_cache_count; i++) {
-        if (g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline)
-            vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.blit_aabb_pipeline_cache[i].pipeline, NULL);
+    /* OBB blit pipeline cleanup */
+    for (int i = 0; i < g_vk_ctx.blit_obb_pipeline_cache_count; i++) {
+        if (g_vk_ctx.blit_obb_pipeline_cache[i].pipeline)
+            vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.blit_obb_pipeline_cache[i].pipeline, NULL);
     }
-    g_vk_ctx.blit_aabb_pipeline_cache_count = 0;
-    if (g_vk_ctx.blit_aabb_vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.blit_aabb_vert_shader, NULL); g_vk_ctx.blit_aabb_vert_shader = VK_NULL_HANDLE; }
+    g_vk_ctx.blit_obb_pipeline_cache_count = 0;
+    if (g_vk_ctx.blit_obb_vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.blit_obb_vert_shader, NULL); g_vk_ctx.blit_obb_vert_shader = VK_NULL_HANDLE; }
 
     for (int i = 0; i < g_vk_ctx.pattern_pipeline_cache_count; i++) {
         if (g_vk_ctx.pattern_pipeline_cache[i].pipeline)
