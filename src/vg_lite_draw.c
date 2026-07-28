@@ -1185,8 +1185,14 @@ vg_lite_error_t vg_lite_draw_grad(vg_lite_buffer_t *target,
                                    vg_lite_blend_t blend)
 {
     if (!grad || !grad->image.handle) return VG_LITE_INVALID_ARGUMENT;
-    return draw_grad_internal(target, path, fill_rule, matrix,
-                              &grad->image, &grad->matrix, blend, 1, 0);
+
+    /* Linear gradient API has no spread_mode field; default to PAD.
+     * Pass grad->matrix through unchanged — pattern API uses it
+     * identically to draw_grad_internal (grad-local → screen). */
+    return vg_lite_draw_pattern(target, path, fill_rule, matrix,
+                                &grad->image, &grad->matrix, blend,
+                                VG_LITE_PATTERN_PAD,
+                                0, 0, VG_LITE_FILTER_LINEAR);
 }
 
 vg_lite_error_t vg_lite_draw_radial_grad(vg_lite_buffer_t *target,
@@ -1201,15 +1207,22 @@ vg_lite_error_t vg_lite_draw_radial_grad(vg_lite_buffer_t *target,
     if (!grad || !grad->image.handle) return VG_LITE_INVALID_ARGUMENT;
     (void)paint_color; (void)filter;
 
-    int shader_mode = 1;
+    /* Map spread_mode → pattern_mode (FILL = PAD per OpenVG-equivalent). */
+    vg_lite_pattern_mode_t pattern_mode;
     switch (grad->spread_mode) {
-        case VG_LITE_GRADIENT_SPREAD_FILL:    shader_mode = 1; break;
-        case VG_LITE_GRADIENT_SPREAD_PAD:     shader_mode = 1; break;
-        case VG_LITE_GRADIENT_SPREAD_REPEAT:  shader_mode = 2; break;
-        case VG_LITE_GRADIENT_SPREAD_REFLECT: shader_mode = 3; break;
-        default: shader_mode = 1; break;
+        case VG_LITE_GRADIENT_SPREAD_FILL:
+        case VG_LITE_GRADIENT_SPREAD_PAD:     pattern_mode = VG_LITE_PATTERN_PAD;     break;
+        case VG_LITE_GRADIENT_SPREAD_REPEAT:  pattern_mode = VG_LITE_PATTERN_REPEAT;  break;
+        case VG_LITE_GRADIENT_SPREAD_REFLECT: pattern_mode = VG_LITE_PATTERN_REFLECT; break;
+        default:                              pattern_mode = VG_LITE_PATTERN_PAD;     break;
     }
 
-    return draw_grad_internal(target, path, fill_rule, matrix,
-                              &grad->image, &grad->matrix, blend, shader_mode, paint_color);
+    /* Direct substitution: pass grad->matrix through unchanged.
+     * Caller-set grad->matrix defines grad-local → screen mapping;
+     * pattern API uses it identically (pattern_matrix semantics).
+     * spread_mode→pattern_mode is the only required mapping. */
+    return vg_lite_draw_pattern(target, path, fill_rule, matrix,
+                                &grad->image, &grad->matrix, blend,
+                                pattern_mode,
+                                0, 0, VG_LITE_FILTER_LINEAR);
 }
