@@ -1093,6 +1093,9 @@ typedef unsigned int        vg_lite_color_t;
     /* Free a buffer allocated by vg_lite_allocate() */
     vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer);
 
+    /* Flush CPU writes to GPU visibility. Call after writing to buffer->memory. */
+    void vg_lite_buffer_flush(vg_lite_buffer_t *buffer);
+
     /* Upload RGB or YUV pixel data to an allocated buffer. */
     vg_lite_error_t vg_lite_upload_buffer(vg_lite_buffer_t *buffer, vg_lite_uint8_t *data[3], vg_lite_uint32_t stride[3]);
 

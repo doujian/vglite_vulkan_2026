@@ -76,6 +76,7 @@ int vg_lite_load_raw(vg_lite_buffer_t *buffer, const char *name)
         fclose(fp);
     }
 
+    vg_lite_buffer_flush(buffer);
     return 0;
 }
 
@@ -187,7 +188,8 @@ int vg_lite_load_png(vg_lite_buffer_t *buffer, const char *name)
     buffer->format = VG_LITE_BGRA8888;
 
     if (vg_lite_allocate(buffer) != VG_LITE_SUCCESS) {
-        stbi_image_free(data);
+    stbi_image_free(data);
+    vg_lite_buffer_flush(buffer);
         return -1;
     }
 

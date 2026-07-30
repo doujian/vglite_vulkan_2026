@@ -352,6 +352,18 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     return VG_LITE_SUCCESS;
 }
 
+void vg_lite_buffer_flush(vg_lite_buffer_t *buffer)
+{
+    if (!buffer || !buffer->handle) return;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (!internal->mapped_base) return;
+    VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+    range.memory = internal->memory;
+    range.offset = 0;
+    range.size = VK_WHOLE_SIZE;
+    vkFlushMappedMemoryRanges(g_vk_ctx.device, 1, &range);
+}
+
 vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rect, vg_lite_color_t color)
 {
     if (!target) return VG_LITE_INVALID_ARGUMENT;
