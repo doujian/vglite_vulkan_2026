@@ -31,6 +31,13 @@ vg_lite_gradient_spreadmode_t spreadmode[] = {
     VG_LITE_GRADIENT_SPREAD_REFLECT,
 };
 
+const char *spread_names[] = {
+    "FILL",
+    "PAD",
+    "REPEAT",
+    "REFLECT",
+};
+
 static char path_data[] = {
     2, 0, 0,
     4, 120, 0,
@@ -93,7 +100,7 @@ int main(int argc, const char* argv[])
     };
 
     int fcount = 0;
-    char filename[20];
+    char filename[32];
 
     /* Initialize vg_lite engine. */
     CHECK_ERROR(vg_lite_init(fb_width, fb_height));
@@ -116,7 +123,7 @@ int main(int argc, const char* argv[])
 
     while (frames > 0)
     {
-        sprintf(filename, "radialGrad_%d.png", frames - 1);
+        sprintf(filename, "radialGrad_%s.png", spread_names[fcount]);
         memset(&grad, 0, sizeof(grad));
 
         CHECK_ERROR(vg_lite_set_radial_grad(&grad, (sizeof(vgColorRamp) / sizeof(vgColorRamp[0])), vgColorRamp, radialGradient, spreadmode[fcount], 1));
