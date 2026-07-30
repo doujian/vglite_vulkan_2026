@@ -1151,5 +1151,6 @@ int gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, 
     }
 
     free(data);
+    vg_lite_buffer_flush(buf);
     return 0;
 }

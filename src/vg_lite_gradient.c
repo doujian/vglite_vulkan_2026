@@ -176,6 +176,7 @@ vg_lite_error_t vg_lite_update_grad(vg_lite_linear_gradient_t *grad)
         }
     }
 
+    vg_lite_buffer_flush(&grad->image);
     return VG_LITE_SUCCESS;
 }
 
@@ -369,6 +370,7 @@ vg_lite_error_t vg_lite_update_radial_grad(vg_lite_radial_gradient_t *grad)
         }
     }
 
+    vg_lite_buffer_flush(&grad->image);
     return VG_LITE_SUCCESS;
 }
 
