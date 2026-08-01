@@ -3,7 +3,6 @@
 #include "vg_lite_format.h"
 #include <stdlib.h>
 #include <string.h>
-#include <math.h>
 
 #define GRAD_TEX_WIDTH 256
 
@@ -209,96 +208,9 @@ static void sort_color_ramp(vg_lite_color_ramp_t *ramp, uint32_t count)
     }
 }
 
-/* Apply OpenVG spread mode to t in the radial-t domain.
- * PAD/FILL: clamp t to [ramp[0].stop, ramp[last].stop] (sample_ramp handles it).
- * REPEAT: t = fract(t/range) * range + ramp[0].stop (cyclic over ramp range).
- * REFLECT: t mirrored at the ramp boundaries (sawtooth × 2).
- * Reference: OpenVG 1.1 spec §9.1.2.(f) "Radial Gradient Spreading Mode". */
-static float apply_spread_t(float t, vg_lite_color_ramp_t *ramp, uint32_t count,
-                             vg_lite_gradient_spreadmode_t mode)
-{
-    if (count == 0) return 0.0f;
-    float lo = ramp[0].stop;
-    float hi = ramp[count - 1].stop;
-    float range = hi - lo;
-    if (range <= 0.0f) return lo;
-
-    /* Below lo: bring into [lo, hi] via spread */
-    if (t < lo) {
-        float dt = lo - t;              /* distance below lo */
-        if (mode == VG_LITE_GRADIENT_SPREAD_REPEAT) {
-            float m = fmodf(dt, range);
-            t = hi - m;                  /* cycle backwards from hi */
-        } else if (mode == VG_LITE_GRADIENT_SPREAD_REFLECT) {
-            float cycle = fmodf(dt, (2.0f * range));
-            if (cycle <= range) t = lo + cycle;
-            else                t = hi - (cycle - range);
-        } else {
-            t = lo;                      /* PAD/FILL */
-        }
-        return t;
-    }
-    /* Above hi */
-    if (t > hi) {
-        float dt = t - hi;              /* distance above hi */
-        if (mode == VG_LITE_GRADIENT_SPREAD_REPEAT) {
-            float m = fmodf(dt, range);
-            t = lo + m;                  /* cycle forward from lo */
-        } else if (mode == VG_LITE_GRADIENT_SPREAD_REFLECT) {
-            float cycle = fmodf(dt, (2.0f * range));
-            if (cycle <= range) t = hi - cycle;
-            else                t = lo + (cycle - range);
-        } else {
-            t = hi;                      /* PAD/FILL */
-        }
-        return t;
-    }
-    return t;
-}
-
-static uint32_t sample_ramp(vg_lite_color_ramp_t *ramp, uint32_t count, float t)
-{
-    if (count == 0) return 0xFF000000;
-    if (count == 1) {
-        uint8_t a = clamp_u8(ramp[0].alpha * 255.0f);
-        uint8_t r = clamp_u8(ramp[0].red * 255.0f);
-        uint8_t g = clamp_u8(ramp[0].green * 255.0f);
-        uint8_t b = clamp_u8(ramp[0].blue * 255.0f);
-        return pack_pixel(a, r, g, b);
-    }
-
-    if (t <= ramp[0].stop) {
-        uint8_t a = clamp_u8(ramp[0].alpha * 255.0f);
-        uint8_t r = clamp_u8(ramp[0].red * 255.0f);
-        uint8_t g = clamp_u8(ramp[0].green * 255.0f);
-        uint8_t b = clamp_u8(ramp[0].blue * 255.0f);
-        return pack_pixel(a, r, g, b);
-    }
-    if (t >= ramp[count - 1].stop) {
-        uint8_t a = clamp_u8(ramp[count - 1].alpha * 255.0f);
-        uint8_t r = clamp_u8(ramp[count - 1].red * 255.0f);
-        uint8_t g = clamp_u8(ramp[count - 1].green * 255.0f);
-        uint8_t b = clamp_u8(ramp[count - 1].blue * 255.0f);
-        return pack_pixel(a, r, g, b);
-    }
-
-    uint32_t idx = 0;
-    for (uint32_t i = 0; i < count - 1; i++) {
-        if (t >= ramp[i].stop && t <= ramp[i + 1].stop) {
-            idx = i;
-            break;
-        }
-    }
-
-    float range = ramp[idx + 1].stop - ramp[idx].stop;
-    float frac = (range > 0.0f) ? (t - ramp[idx].stop) / range : 0.0f;
-
-    uint8_t a = clamp_u8((ramp[idx].alpha + (ramp[idx + 1].alpha - ramp[idx].alpha) * frac) * 255.0f);
-    uint8_t r = clamp_u8((ramp[idx].red + (ramp[idx + 1].red - ramp[idx].red) * frac) * 255.0f);
-    uint8_t g = clamp_u8((ramp[idx].green + (ramp[idx + 1].green - ramp[idx].green) * frac) * 255.0f);
-    uint8_t b = clamp_u8((ramp[idx].blue + (ramp[idx + 1].blue - ramp[idx].blue) * frac) * 255.0f);
-    return pack_pixel(a, r, g, b);
-}
+/* Spread and ramp sampling for radial gradients are handled entirely on the
+ * GPU (radial.frag) and in the CPU reference (util.c). The 1D ramp LUT baked
+ * here contains no spread — see vg_lite_update_radial_grad below. */
 
 vg_lite_error_t vg_lite_set_radial_grad(vg_lite_radial_gradient_t *grad,
                                          uint32_t count,
@@ -326,19 +238,38 @@ vg_lite_error_t vg_lite_update_radial_grad(vg_lite_radial_gradient_t *grad)
 
     sort_color_ramp(grad->color_ramp, grad->ramp_length);
 
-    float cx = grad->radial_grad.cx;
-    float cy = grad->radial_grad.cy;
-    float r = grad->radial_grad.r;
-    float fx = grad->radial_grad.fx;
-    float fy = grad->radial_grad.fy;
+    /* Build converted_ramp: a copy of the user ramp with explicit stops at
+     * 0.0 and 1.0 so that the 1D LUT (whose index maps linearly to [0,1])
+     * has well-defined endpoints. Matches gpu-vglite vg_lite.c L6442-6485.
+     * If the user's first stop is > 0, prepend a copy of stop[0] at 0.0.
+     * If the user's last stop is < 1, append a copy of stop[n-1] at 1.0. */
+    vg_lite_color_ramp_t converted[VLC_MAX_COLOR_RAMP_STOPS + 2];
+    uint32_t converted_length = 0;
 
-    if (r <= 0.0f) r = 1.0f;
+    if (grad->color_ramp[0].stop > 0.0f) {
+        converted[0] = grad->color_ramp[0];
+        converted[0].stop = 0.0f;
+        converted_length = 1;
+    }
+    for (uint32_t i = 0; i < grad->ramp_length; i++) {
+        converted[converted_length++] = grad->color_ramp[i];
+    }
+    if (grad->color_ramp[grad->ramp_length - 1].stop < 1.0f) {
+        converted[converted_length] = grad->color_ramp[grad->ramp_length - 1];
+        converted[converted_length].stop = 1.0f;
+        converted_length++;
+    }
 
-    int size = (int)(r * 2.0f);
-    if (size < 2) size = 2;
+    /* 1D ramp LUT: width = converted_length * 128, height = 1.
+     * Index i maps linearly to gradient = i/(width-1) in [0,1].
+     * No spread applied here — spread is delegated to the GPU shader which
+     * operates in the normalized [0,1] domain (1.0 == r boundary). This
+     * matches the official gpu-vglite architecture. See FIXES.md #26. */
+    int width = (int)(converted_length * 128);
+    if (width < 2) width = 2;
 
-    grad->image.width = size;
-    grad->image.height = size;
+    grad->image.width = width;
+    grad->image.height = 1;
     grad->image.format = VG_LITE_BGRA8888;
 
     vg_lite_error_t err = vg_lite_allocate(&grad->image);
@@ -350,24 +281,57 @@ vg_lite_error_t vg_lite_update_radial_grad(vg_lite_radial_gradient_t *grad)
         return VG_LITE_INVALID_ARGUMENT;
     }
 
-    uint32_t stride_u32 = grad->image.stride / 4;
+    /* pre_multiplied: if set, color channels are multiplied by alpha before
+     * packing, matching gpu-vglite L6919-6922 behavior. */
+    int pre_mult = (grad->pre_multiplied != 0);
 
-    for (int y = 0; y < size; y++) {
-        for (int x = 0; x < size; x++) {
-            float dx = (float)x - fx;
-            float dy = (float)y - fy;
-            float dist = sqrtf(dx * dx + dy * dy);
-            float t = dist / r;
+    for (int x = 0; x < width; x++) {
+        float g = (width > 1) ? (float)x / (float)(width - 1) : 0.0f;
 
-            /* Apply OpenVG spread in radial-t domain so that pre-rendered
-             * texture correctly encodes the spread behavior (REPEAT/REFLECT
-             * produce ring bands, not 2D UV tiling). */
-            t = apply_spread_t(t, grad->color_ramp, grad->ramp_length, grad->spread_mode);
-
-            uint32_t c = sample_ramp(grad->color_ramp, grad->ramp_length, t);
-
-            pixels[y * stride_u32 + x] = c;
+        /* sample ramp at g (no spread; g is already in [0,1]) */
+        float alpha, red, green, blue;
+        if (g <= converted[0].stop) {
+            alpha = converted[0].alpha; red = converted[0].red;
+            green = converted[0].green; blue = converted[0].blue;
+        } else if (g >= converted[converted_length - 1].stop) {
+            alpha = converted[converted_length - 1].alpha;
+            red   = converted[converted_length - 1].red;
+            green = converted[converted_length - 1].green;
+            blue  = converted[converted_length - 1].blue;
+        } else {
+            uint32_t idx = 0;
+            for (uint32_t i = 0; i < converted_length - 1; i++) {
+                if (g >= converted[i].stop && g <= converted[i + 1].stop) {
+                    idx = i;
+                    break;
+                }
+            }
+            float range = converted[idx + 1].stop - converted[idx].stop;
+            float frac = (range > 0.0f) ? (g - converted[idx].stop) / range : 0.0f;
+            alpha = converted[idx].alpha + (converted[idx + 1].alpha - converted[idx].alpha) * frac;
+            red   = converted[idx].red   + (converted[idx + 1].red   - converted[idx].red)   * frac;
+            green = converted[idx].green + (converted[idx + 1].green - converted[idx].green) * frac;
+            blue  = converted[idx].blue  + (converted[idx + 1].blue  - converted[idx].blue)  * frac;
         }
+
+        if (pre_mult) {
+            red   *= alpha;
+            green *= alpha;
+            blue  *= alpha;
+        }
+
+        pixels[x] = pack_pixel(
+            clamp_u8(alpha * 255.0f),
+            clamp_u8(red   * 255.0f),
+            clamp_u8(green * 255.0f),
+            clamp_u8(blue  * 255.0f)
+        );
+    }
+
+    /* Save converted ramp for the CPU reference path (util.c) if needed. */
+    grad->converted_length = converted_length;
+    for (uint32_t i = 0; i < converted_length; i++) {
+        grad->converted_ramp[i] = converted[i];
     }
 
     vg_lite_buffer_flush(&grad->image);

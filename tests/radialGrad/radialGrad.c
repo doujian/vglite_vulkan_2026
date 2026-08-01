@@ -157,19 +157,22 @@ int main(int argc, const char* argv[])
                 vg_lite_identity(&cpu_matPath);
                 vg_lite_scale(2.0f, 2.0f, &cpu_matPath);
 
-                /* Map spread_mode to shader_mode values (matching GPU) */
+                /* Map spread_mode to shader_mode values (matching GPU).
+                 * GPU path (vg_lite_draw.c vg_lite_draw_radial_grad):
+                 *   FILL=0, PAD=1, REPEAT=2, REFLECT=3. */
                 int shader_mode;
                 switch (spreadmode[fcount]) {
-                    case VG_LITE_GRADIENT_SPREAD_FILL:    shader_mode = 1; break;
+                    case VG_LITE_GRADIENT_SPREAD_FILL:    shader_mode = 0; break;
                     case VG_LITE_GRADIENT_SPREAD_PAD:     shader_mode = 1; break;
                     case VG_LITE_GRADIENT_SPREAD_REPEAT:  shader_mode = 2; break;
                     case VG_LITE_GRADIENT_SPREAD_REFLECT: shader_mode = 3; break;
-                    default: shader_mode = 1; break;
+                    default: shader_mode = 0; break;
                 }
 
                 vg_lite_expected_draw_radial_grad(eb, &path, VG_LITE_FILL_EVEN_ODD,
                     &cpu_matPath, &cpu_grad.image,
-                    &cpu_grad.matrix, VG_LITE_BLEND_NONE, shader_mode);
+                    &cpu_grad.matrix, cpu_grad.radial_grad,
+                    VG_LITE_BLEND_NONE, shader_mode);
 
                 int mismatches = vg_lite_expected_verify(eb, fb, 16);
                 total_mismatches[fcount] = mismatches;

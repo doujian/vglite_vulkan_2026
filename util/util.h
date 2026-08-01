@@ -97,6 +97,12 @@ void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
  *   spread_mode 0 (FILL) or 1 (PAD)    — clamp to edge
  *   spread_mode 2 (REPEAT)             — wrap with fract
  *   spread_mode 3 (REFLECT)            — mirror at boundaries
+ *
+ * The CPU reference evaluates the same radial-gradient equation as the GPU
+ * shader: g = gLin + sqrt(gRad), with the nine coefficients derived from
+ * radial_grad (cx/cy/r/fx/fy) and grad_matrix per gpu-vglite vg_lite_path.c.
+ * spread is applied in the normalized [0,1] domain (1.0 == r boundary) and
+ * the resulting value indexes the 1D ramp LUT (grad_image, height == 1).
  */
 void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
                                         vg_lite_path_t *path,
@@ -104,6 +110,7 @@ void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
                                         vg_lite_matrix_t *path_matrix,
                                         vg_lite_buffer_t *grad_image,
                                         vg_lite_matrix_t *grad_matrix,
+                                        vg_lite_radial_gradient_parameter_t radial_grad,
                                         int blend,
                                         int spread_mode);
 

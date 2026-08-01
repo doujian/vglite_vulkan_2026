@@ -1013,6 +1013,7 @@ void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
                                         vg_lite_matrix_t *path_matrix,
                                         vg_lite_buffer_t *grad_image,
                                         vg_lite_matrix_t *grad_matrix,
+                                        vg_lite_radial_gradient_parameter_t radial_grad,
                                         int blend,
                                         int spread_mode)
 {
@@ -1032,72 +1033,113 @@ void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
         mat_inv[0][0] = 1.0f; mat_inv[1][1] = 1.0f; mat_inv[2][2] = 1.0f;
     }
 
-    /* Build inverse gradient matrix, normalized by texture size */
+    /* Compute the nine radial coefficients (same as GPU path in
+     * vg_lite_draw.c vg_lite_draw_radial_grad, derived from gpu-vglite
+     * vg_lite_path.c L4759-4991). grad_matrix maps gradient-local to screen;
+     * its inverse maps screen pixels back to gradient-local space. */
     if (!grad_matrix) grad_matrix = &identity;
-    float grad_inv[3][3] = {0};
+
     float gm[3][3];
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             gm[i][j] = grad_matrix->m[i][j];
-    if (!mat3_inverse(gm, grad_inv)) {
-        grad_inv[0][0] = 1.0f; grad_inv[1][1] = 1.0f; grad_inv[2][2] = 1.0f;
+    float inv_m[3][3] = {0};
+    if (!mat3_inverse(gm, inv_m)) {
+        inv_m[0][0] = 1.0f; inv_m[1][1] = 1.0f; inv_m[2][2] = 1.0f;
+    }
+    float m00 = inv_m[0][0], m01 = inv_m[0][1], m02 = inv_m[0][2];
+    float m10 = inv_m[1][0], m11 = inv_m[1][1], m12 = inv_m[1][2];
+
+    float r  = radial_grad.r;
+    float fx = radial_grad.fx;
+    float fy = radial_grad.fy;
+    if (r <= 0.0f) r = 1.0f;
+
+    float ofx = fx - radial_grad.cx;
+    float ofy = fy - radial_grad.cy;
+    float focal_r2 = ofx*ofx + ofy*ofy;
+    float r2 = r * r;
+    if (focal_r2 > r2) {
+        float scale = 0.9f * r / sqrtf(focal_r2);
+        ofx *= scale;
+        ofy *= scale;
     }
 
-    /* grad_norm = grad_inv / {tex_w, tex_h} */
-    float grad_norm[3][3] = {0};
-    grad_norm[0][0] = grad_inv[0][0] / grad_image->width;
-    grad_norm[0][1] = grad_inv[0][1] / grad_image->width;
-    grad_norm[0][2] = grad_inv[0][2] / grad_image->width;
-    grad_norm[1][0] = grad_inv[1][0] / grad_image->height;
-    grad_norm[1][1] = grad_inv[1][1] / grad_image->height;
-    grad_norm[1][2] = grad_inv[1][2] / grad_image->height;
-    grad_norm[2][2] = 1.0f;
+    float r2_fx2 = r2 - ofx*ofx;
+    float r2_fy2 = r2 - ofy*ofy;
+    float r2_fx2_2 = 2.0f * r2_fx2;
+    float r2_fy2_2 = 2.0f * r2_fy2;
+    float fxfy_2   = 2.0f * ofx * ofy;
+    float r2_fx2_fy2 = r2_fx2 - ofy*ofy;
+    if (fabsf(r2_fx2_fy2) < 1e-12f) r2_fx2_fy2 = (r2_fx2_fy2 >= 0) ? 1e-12f : -1e-12f;
+    float r2_fx2_fy2sq = r2_fx2_fy2 * r2_fx2_fy2;
 
-    /* combined_pattern = grad_norm * mat_inv */
-    float combined_pattern[3][3];
-    memcpy(combined_pattern, grad_norm, sizeof(grad_norm));
+    float cx = 0.5f*(m00 + m01) + m02 - fx;
+    float cy = 0.5f*(m10 + m11) + m12 - fy;
 
-    /* For each pixel in the expected buffer */
+    float rgStepXLin    = (m00*ofx + m10*ofy) / r2_fx2_fy2;
+    float rgStepYLin    = (m01*ofx + m11*ofy) / r2_fx2_fy2;
+    float rgConstantLin = (cx*ofx + cy*ofy) / r2_fx2_fy2;
+    float rgStepXXRad   = (m00*m00*r2_fy2 + m10*m10*r2_fx2 + m00*m10*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepYYRad   = (m01*m01*r2_fy2 + m11*m11*r2_fx2 + m01*m11*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepXYRad   = (m00*m01*r2_fy2_2 + m10*m11*r2_fx2_2 + (m00*m11 + m01*m10)*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepXRad    = (m00*cx*r2_fy2_2 + m10*cy*r2_fx2_2 + (m00*cy + m10*cx)*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepYRad    = (m01*cx*r2_fy2_2 + m11*cy*r2_fx2_2 + (m01*cy + m11*cx)*fxfy_2) / r2_fx2_fy2sq;
+    float rgConstantRad = (cx*cx*r2_fy2 + cy*cy*r2_fx2 + cx*cy*fxfy_2) / r2_fx2_fy2sq;
+
+    /* LUT sampling: grad_image is a 1D texture (height == 1). Map u ∈ [0,1]
+     * to texel x ∈ [0, width-1] for linear sampling. */
+    float lut_w = (float)grad_image->width;
+    float lut_h = (float)grad_image->height;
+
     for (int y = 0; y < eb->height; y++) {
         for (int x = 0; x < eb->width; x++) {
             float sx = (float)x + 0.5f;
             float sy = (float)y + 0.5f;
 
+            /* Inside-path test via inverse path matrix */
             float px, py;
             mat3_transform_point(mat_inv, sx, sy, &px, &py);
-
-            int inside;
-            if (fill_rule == VG_LITE_FILL_NON_ZERO) {
-                inside = point_in_polygon_evenodd(px, py, local_pts, vtx_count);
-            } else {
-                inside = point_in_polygon_evenodd(px, py, local_pts, vtx_count);
-            }
+            int inside = point_in_polygon_evenodd(px, py, local_pts, vtx_count);
             if (!inside) continue;
 
-            float u, v;
-            mat3_transform_point(combined_pattern, sx, sy, &u, &v);
+            /* Evaluate g = gLin + sqrt(gRad) at this screen pixel.
+             * px_screen is the screen-space pixel coordinate used by the
+             * GPU shader (radial.vert outputs screen_pos_pixel), which is
+             * exactly (x+0.5, y+0.5) here. */
+            float psx = sx;
+            float psy = sy;
+            float gLin = psx*rgStepXLin + psy*rgStepYLin + rgConstantLin;
+            float gRad = psx*psx*rgStepXXRad + psy*psy*rgStepYYRad
+                       + psx*psy*rgStepXYRad + psx*rgStepXRad
+                       + psy*rgStepYRad + rgConstantRad;
+            float g = (gRad < 0.0f) ? gLin : gLin + sqrtf(gRad);
 
-            /* Spread mode UV wrapping */
-            if (spread_mode <= 1) {
-                /* FILL or PAD: clamp */
+            /* Apply spread in the normalized [0,1] domain (1.0 == r).
+             * FILL is treated as PAD to match ThorVG (vg_lite_tvg.cpp
+             * fill_spread_conv maps FILL -> FillSpread::Pad). */
+            float u;
+            if (spread_mode == 1 || spread_mode == 0) {
+                /* PAD or FILL */
+                if (g < 0.0f) g = 0.0f;
+                if (g > 1.0f) g = 1.0f;
+                u = g;
+            } else if (spread_mode == 2) {
+                /* REPEAT */
+                u = g - floorf(g);
+            } else if (spread_mode == 3) {
+                /* REFLECT */
+                float m = g - 2.0f * floorf(g * 0.5f);
+                u = (m > 1.0f) ? (2.0f - m) : m;
+            } else {
+                u = g;
                 if (u < 0.0f) u = 0.0f;
                 if (u > 1.0f) u = 1.0f;
-                if (v < 0.0f) v = 0.0f;
-                if (v > 1.0f) v = 1.0f;
-            } else if (spread_mode == 2) {
-                /* REPEAT: fract */
-                u = u - floorf(u);
-                v = v - floorf(v);
-            } else {
-                /* REFLECT: mirror */
-                float fu = floorf(u);
-                u = ((int)fu % 2 == 0) ? (u - fu) : (1.0f - (u - fu));
-                float fv = floorf(v);
-                v = ((int)fv % 2 == 0) ? (v - fv) : (1.0f - (v - fv));
             }
 
-            float tex_x = u * grad_image->width;
-            float tex_y = v * grad_image->height;
+            /* Sample 1D LUT (height == 1, v = 0.5) */
+            float tex_x = u * (lut_w - 1.0f);
+            float tex_y = 0.5f * lut_h;
             int sr, sg, sb, sa;
             vulkan_linear_sample(grad_image, tex_x, tex_y, &sr, &sg, &sb, &sa);
 

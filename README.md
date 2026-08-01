@@ -28,6 +28,8 @@ shaders/gradient.vert    - Linear gradient vertex shader
 shaders/gradient.frag    - Linear gradient fragment shader
 shaders/pattern.vert     - Pattern fill vertex shader
 shaders/pattern.frag     - Pattern fill fragment shader
+shaders/radial.vert      - Radial gradient vertex shader (dedicated pipeline)
+shaders/radial.frag      - Radial gradient fragment shader (GPU g = gLin + sqrt(gRad) + [0,1] spread + 1D LUT)
 util/util.c              - Test utility: expected buffer, gen_image, pack/read pixel, CPU gradient sim
 util/vg_lite_util.c      - PNG save/load, buffer allocation helper
 util/Common.h            - Shared test macros (CHECK_ERROR, IS_ERROR)

@@ -944,6 +944,241 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     return VG_LITE_SUCCESS;
 }
 
+/* Radial-gradient dedicated draw path.
+ *
+ * Mirrors vg_lite_draw_pattern()'s stencil + cover dual-pass structure but
+ * drives a separate radial pipeline whose fragment shader evaluates the
+ * OpenVG radial-gradient equation g = gLin + sqrt(gRad) per pixel and applies
+ * the spread mode in the normalized [0,1] domain (1.0 == r boundary), then
+ * samples a 1D ramp LUT. This matches the official gpu-vglite architecture
+ * (vg_lite_path.c radial path) and avoids the double-spread bug that arose
+ * when the CPU baked spread into a 2D texture and the GPU re-applied it in
+ * the 2D UV domain. See FIXES.md #26.
+ *
+ * The nine gLin/gRad coefficients are computed by the caller
+ * (vg_lite_draw_radial_grad) from the radial gradient parameters and the
+ * inverse of grad->matrix, following gpu-vglite vg_lite_path.c L4759-4991.
+ */
+static vg_lite_error_t draw_radial_internal(
+    vg_lite_buffer_t *target,
+    vg_lite_path_t *path,
+    vg_lite_fill_t fill_rule,
+    vg_lite_matrix_t *path_matrix,
+    vg_lite_buffer_t *lut_image,
+    const float radial_coef[9],
+    int spread_mode,
+    vg_lite_blend_t blend)
+{
+    (void)fill_rule;
+
+    if (!target || !path || !lut_image) return VG_LITE_INVALID_ARGUMENT;
+    if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
+
+    buffer_internal_t *lut_int = (buffer_internal_t *)lut_image->handle;
+    if (!lut_int) return VG_LITE_INVALID_ARGUMENT;
+
+    VlcPath vlc_path;
+    vlc_path_init(&vlc_path);
+    int cmd_count = vlc_parse_path(path, &vlc_path);
+    if (cmd_count <= 0) {
+        vlc_path_free(&vlc_path);
+        return VG_LITE_INVALID_ARGUMENT;
+    }
+
+    TessGeometry geom;
+    tess_geometry_init(&geom);
+    int vtx_count = tessellate_path(&vlc_path, &geom);
+    if (vtx_count <= 0 || geom.vertex_count == 0 || geom.index_count == 0) {
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return VG_LITE_SUCCESS;
+    }
+
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    vg_lite_vulkan_init_radial_pipeline(vkfmt);
+
+    VkBuffer vbo = VK_NULL_HANDLE, ibo = VK_NULL_HANDLE;
+    VkDeviceMemory vbo_mem = VK_NULL_HANDLE, ibo_mem = VK_NULL_HANDLE;
+    create_vertex_buffer(geom.vertex_count, geom.index_count, &vbo, &vbo_mem, &ibo, &ibo_mem);
+    upload_geom(vbo, vbo_mem, ibo, ibo_mem, &geom);
+
+    vg_lite_error_t err = vg_lite_vulkan_begin_command();
+    if (err != VG_LITE_SUCCESS) {
+        destroy_buffer(vbo, vbo_mem);
+        destroy_buffer(ibo, ibo_mem);
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return err;
+    }
+    int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
+    vg_lite_vulkan_flush_render_pass();
+
+    buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
+    if (target_int->msaa_dirty)
+        vg_lite_vulkan_resolve_msaa_to_target(target_int);
+    if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != target_int->image) {
+        err = vg_lite_vulkan_set_render_target(target);
+        if (err != VG_LITE_SUCCESS) {
+            destroy_buffer(vbo, vbo_mem);
+            destroy_buffer(ibo, ibo_mem);
+            tess_geometry_free(&geom);
+            vlc_path_free(&vlc_path);
+            return err;
+        }
+        if (prev_was_no_msaa || target_int->msaa_needs_seed) {
+            VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
+            vg_lite_vulkan_seed_msaa(target, sampler);
+            target_int->msaa_needs_seed = 0;
+        }
+    }
+
+    float w = (float)target->width;
+    float h = (float)target->height;
+    VkViewport vp = {0, 0, w, h, 0, 1};
+    vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
+    vg_lite_vulkan_apply_scissor(target->width, target->height);
+
+    /* Compute screen-to-ndc * path_matrix for stencil pass */
+    float path_screen_to_ndc[3][3] = {{2.0f/w, 0, -1.0f}, {0, 2.0f/h, -1.0f}, {0, 0, 1.0f}};
+    float path_combined[3][3] = {0};
+
+    vg_lite_matrix_t identity = {0};
+    vg_lite_identity(&identity);
+    if (!path_matrix) path_matrix = &identity;
+
+    mat3_multiply(path_screen_to_ndc, path_matrix->m, path_combined);
+
+    /* Descriptor set: bind the 1D ramp LUT as combined image sampler */
+    VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
+    ds_alloc.descriptorSetCount = 1;
+    ds_alloc.pSetLayouts = &g_vk_ctx.radial_descriptor_layout;
+    VkDescriptorSet desc_set;
+    if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS) {
+        destroy_buffer(vbo, vbo_mem);
+        destroy_buffer(ibo, ibo_mem);
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+
+    VkSampler sampler = get_or_create_pattern_sampler();
+    VkImageView lut_view = lut_int->swizzle_view ? lut_int->swizzle_view : lut_int->view;
+    VkDescriptorImageInfo img_info = {sampler, lut_view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet ws = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    ws.dstSet = desc_set;
+    ws.dstBinding = 0;
+    ws.dstArrayElement = 0;
+    ws.descriptorCount = 1;
+    ws.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    ws.pImageInfo = &img_info;
+    vkUpdateDescriptorSets(g_vk_ctx.device, 1, &ws, 0, NULL);
+
+    /* Push constant struct: matches radial.vert/frag layout (124B) */
+    struct {
+        float path_m[12];       /* mat3 as 3 vec4 columns (std140) — 48B */
+        float radial_coef[12];  /* mat3 as 3 vec4 columns (std140) — 48B */
+        int   spread_mode;      /* 4B */
+        uint32_t paint_color;   /* 4B */
+        int   target_width;     /* 4B */
+        int   target_height;    /* 4B */
+        int   lut_width;        /* 4B */
+        int   lut_height;       /* 4B */
+        int   blend_mode;       /* 4B */
+    } pc_data = {0};
+
+    pc_data.spread_mode = spread_mode;
+    pc_data.target_width = target->width;
+    pc_data.target_height = target->height;
+    pc_data.lut_width = lut_image->width;
+    pc_data.lut_height = lut_image->height;
+    pc_data.blend_mode = (int)blend;
+
+    /* Stencil pass: path_m = path_combined, radial_coef packed column-major */
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
+        pc_data.path_m[j*4+i] = path_combined[i][j];
+    }
+    /* radial_coef[9] -> mat3 column-major:
+     *   col0 = (StepXLin,    StepYLin,    ConstantLin)    = radial_coef[0..2]
+     *   col1 = (StepXXRad,   StepYYRad,   StepXYRad)      = radial_coef[3..5]
+     *   col2 = (StepXRad,    StepYRad,    ConstantRad)    = radial_coef[6..8] */
+    for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) {
+        pc_data.radial_coef[j*4+i] = radial_coef[j*3 + i];
+    }
+
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.radial_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc_data), &pc_data);
+
+    vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            g_vk_ctx.radial_pipeline_layout, 0, 1, &desc_set, 0, NULL);
+
+    /* Bind path VBO/IBO and draw stencil pass */
+    VkDeviceSize vbo_offset = 0;
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &vbo_offset);
+    vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, ibo, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_ctx.radial_stencil_pipeline);
+    vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
+
+    /* Cover pass: bbox NDC corners via path_combined */
+    float cover_verts[8];
+    float corners[4][2] = {
+        {(float)path->bounding_box[0], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[1]},
+        {(float)path->bounding_box[2], (float)path->bounding_box[3]},
+        {(float)path->bounding_box[0], (float)path->bounding_box[3]}
+    };
+    for (int i = 0; i < 4; i++) {
+        cover_verts[i*2]   = path_combined[0][0]*corners[i][0] + path_combined[0][1]*corners[i][1] + path_combined[0][2];
+        cover_verts[i*2+1] = path_combined[1][0]*corners[i][0] + path_combined[1][1]*corners[i][1] + path_combined[1][2];
+    }
+
+    VkBuffer cover_vbo;
+    VkDeviceMemory cover_vbo_mem;
+    create_cover_vbo(cover_verts, &cover_vbo, &cover_vbo_mem);
+
+    /* Cover pass: path_m = identity (bbox verts already NDC), radial_coef same */
+    memset(&pc_data, 0, sizeof(pc_data));
+    pc_data.spread_mode = spread_mode;
+    pc_data.target_width = target->width;
+    pc_data.target_height = target->height;
+    pc_data.lut_width = lut_image->width;
+    pc_data.lut_height = lut_image->height;
+    pc_data.blend_mode = (int)blend;
+    pc_data.path_m[0] = 1.0f;   /* identity col0 */
+    pc_data.path_m[5] = 1.0f;   /* identity col1 */
+    pc_data.path_m[10] = 1.0f;  /* identity col2 */
+    for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) {
+        pc_data.radial_coef[j*4+i] = radial_coef[j*3 + i];
+    }
+
+    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.radial_pipeline_layout,
+                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(pc_data), &pc_data);
+
+    VkPipeline cover_pipeline = vg_lite_vulkan_get_radial_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend));
+    if (!cover_pipeline) {
+        tess_geometry_free(&geom);
+        vlc_path_free(&vlc_path);
+        add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+        add_pending_buffer(cover_vbo, cover_vbo_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
+
+    VkDeviceSize cover_offset = 0;
+    vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &cover_vbo, &cover_offset);
+    vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, g_vk_ctx.radial_cover_ibo, 0, VK_INDEX_TYPE_UINT32);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, cover_pipeline);
+    vkCmdDrawIndexed(g_vk_ctx.cmd_buf, 6, 1, 0, 0, 0);
+
+    tess_geometry_free(&geom);
+    vlc_path_free(&vlc_path);
+    add_pending_buffer(vbo, vbo_mem, ibo, ibo_mem);
+    add_pending_buffer(cover_vbo, cover_vbo_mem, VK_NULL_HANDLE, VK_NULL_HANDLE);
+
+    return VG_LITE_SUCCESS;
+}
+
 static vg_lite_error_t draw_grad_internal(
     vg_lite_buffer_t *target,
     vg_lite_path_t *path,
@@ -1204,25 +1439,102 @@ vg_lite_error_t vg_lite_draw_radial_grad(vg_lite_buffer_t *target,
                                           vg_lite_blend_t blend,
                                           vg_lite_filter_t filter)
 {
-    if (!grad || !grad->image.handle) return VG_LITE_INVALID_ARGUMENT;
     (void)paint_color; (void)filter;
 
-    /* Map spread_mode → pattern_mode (FILL = PAD per OpenVG-equivalent). */
-    vg_lite_pattern_mode_t pattern_mode;
-    switch (grad->spread_mode) {
-        case VG_LITE_GRADIENT_SPREAD_FILL:
-        case VG_LITE_GRADIENT_SPREAD_PAD:     pattern_mode = VG_LITE_PATTERN_PAD;     break;
-        case VG_LITE_GRADIENT_SPREAD_REPEAT:  pattern_mode = VG_LITE_PATTERN_REPEAT;  break;
-        case VG_LITE_GRADIENT_SPREAD_REFLECT: pattern_mode = VG_LITE_PATTERN_REFLECT; break;
-        default:                              pattern_mode = VG_LITE_PATTERN_PAD;     break;
+    if (!target || !path || !grad) return VG_LITE_INVALID_ARGUMENT;
+    if (!grad->image.handle) return VG_LITE_INVALID_ARGUMENT;
+    if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
+
+    /* Compute the nine GPU coefficients for g = gLin + sqrt(gRad).
+     * Follows gpu-vglite vg_lite_path.c L4759-4991. The GPU evaluates this
+     * per pixel (px = screen-space pixel coordinate) and then applies the
+     * spread mode in the normalized [0,1] domain (1.0 == r boundary),
+     * matching the official hardware behavior and ThorVG's software path.
+     *
+     * The coefficient math uses the INVERSE of grad->matrix to map screen
+     * pixels back into gradient-local space before applying the focal-point
+     * radial equation. See FIXES.md #26. */
+    float r  = grad->radial_grad.r;
+    float fx = grad->radial_grad.fx;
+    float fy = grad->radial_grad.fy;
+    float centerX = grad->radial_grad.cx;
+    float centerY = grad->radial_grad.cy;
+    if (r <= 0.0f) r = 1.0f;
+
+    /* inverse(grad->matrix): screen pixel -> gradient-local coord */
+    float m[3][3];
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) m[i][j] = grad->matrix.m[i][j];
+    float inv_m[3][3] = {0};
+    if (!mat3_inverse(m, inv_m)) {
+        inv_m[0][0] = 1.0f; inv_m[1][1] = 1.0f; inv_m[2][2] = 1.0f;
+    }
+    float m00 = inv_m[0][0], m01 = inv_m[0][1], m02 = inv_m[0][2];
+    float m10 = inv_m[1][0], m11 = inv_m[1][1], m12 = inv_m[1][2];
+
+    /* fx/fy here are focal offset from center (gpu-vglite convention) */
+    float ofx = fx - centerX;
+    float ofy = fy - centerY;
+
+    /* Clamp focal point into the circle if it lies outside (vg11 spec pg125,
+     * gpu-vglite L4733-4744): scale the offset by 0.9 * r / |offset|. */
+    float focal_r2 = ofx*ofx + ofy*ofy;
+    float r2 = r * r;
+    if (focal_r2 > r2) {
+        float scale = 0.9f * r / sqrtf(focal_r2);
+        ofx *= scale;
+        ofy *= scale;
     }
 
-    /* Direct substitution: pass grad->matrix through unchanged.
-     * Caller-set grad->matrix defines grad-local → screen mapping;
-     * pattern API uses it identically (pattern_matrix semantics).
-     * spread_mode→pattern_mode is the only required mapping. */
-    return vg_lite_draw_pattern(target, path, fill_rule, matrix,
-                                &grad->image, &grad->matrix, blend,
-                                pattern_mode,
-                                0, 0, VG_LITE_FILTER_LINEAR);
+    float r2_fx2 = r2 - ofx*ofx;
+    float r2_fy2 = r2 - ofy*ofy;
+    float r2_fx2_2 = 2.0f * r2_fx2;
+    float r2_fy2_2 = 2.0f * r2_fy2;
+    float fxfy_2   = 2.0f * ofx * ofy;
+    float r2_fx2_fy2   = r2_fx2 - ofy*ofy;
+    if (fabsf(r2_fx2_fy2) < 1e-12f) r2_fx2_fy2 = (r2_fx2_fy2 >= 0) ? 1e-12f : -1e-12f;
+    float r2_fx2_fy2sq = r2_fx2_fy2 * r2_fx2_fy2;
+
+    /* cx/cy are the gradient-local coord of screen pixel (0,0) center, minus
+     * focal, i.e. the constant term of (F(x) - focalX) at pixel origin. */
+    float cx = 0.5f*(m00 + m01) + m02 - fx;
+    float cy = 0.5f*(m10 + m11) + m12 - fy;
+
+    /* gLin coefficients (3) */
+    float rgStepXLin    = (m00*ofx + m10*ofy) / r2_fx2_fy2;
+    float rgStepYLin    = (m01*ofx + m11*ofy) / r2_fx2_fy2;
+    float rgConstantLin = (cx*ofx + cy*ofy) / r2_fx2_fy2;
+
+    /* gRad coefficients (6) */
+    float rgStepXXRad = (m00*m00*r2_fy2 + m10*m10*r2_fx2 + m00*m10*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepYYRad = (m01*m01*r2_fy2 + m11*m11*r2_fx2 + m01*m11*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepXYRad = (m00*m01*r2_fy2_2 + m10*m11*r2_fx2_2 + (m00*m11 + m01*m10)*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepXRad  = (m00*cx*r2_fy2_2 + m10*cy*r2_fx2_2 + (m00*cy + m10*cx)*fxfy_2) / r2_fx2_fy2sq;
+    float rgStepYRad  = (m01*cx*r2_fy2_2 + m11*cy*r2_fx2_2 + (m01*cy + m11*cx)*fxfy_2) / r2_fx2_fy2sq;
+    float rgConstantRad = (cx*cx*r2_fy2 + cy*cy*r2_fx2 + cx*cy*fxfy_2) / r2_fx2_fy2sq;
+
+    /* Pack into radial_coef[9] in mat3 column-major order (matches radial.frag):
+     *   col0 = (StepXLin,    StepYLin,    ConstantLin)
+     *   col1 = (StepXXRad,   StepYYRad,   StepXYRad)
+     *   col2 = (StepXRad,    StepYRad,    ConstantRad) */
+    float radial_coef[9];
+    radial_coef[0] = rgStepXLin;     radial_coef[1] = rgStepYLin;     radial_coef[2] = rgConstantLin;
+    radial_coef[3] = rgStepXXRad;    radial_coef[4] = rgStepYYRad;    radial_coef[5] = rgStepXYRad;
+    radial_coef[6] = rgStepXRad;     radial_coef[7] = rgStepYRad;     radial_coef[8] = rgConstantRad;
+
+    /* Map public spread mode enum to shader internal mode:
+     *   VG_LITE_GRADIENT_SPREAD_FILL    = 0     -> shader 0
+     *   VG_LITE_GRADIENT_SPREAD_PAD     = 0x1C00-> shader 1
+     *   VG_LITE_GRADIENT_SPREAD_REPEAT  = 0x1C01-> shader 2
+     *   VG_LITE_GRADIENT_SPREAD_REFLECT = 0x1C02-> shader 3 */
+    int shader_spread = 0;
+    switch (grad->spread_mode) {
+        case VG_LITE_GRADIENT_SPREAD_FILL:    shader_spread = 0; break;
+        case VG_LITE_GRADIENT_SPREAD_PAD:     shader_spread = 1; break;
+        case VG_LITE_GRADIENT_SPREAD_REPEAT:  shader_spread = 2; break;
+        case VG_LITE_GRADIENT_SPREAD_REFLECT: shader_spread = 3; break;
+        default: shader_spread = 0; break;
+    }
+
+    return draw_radial_internal(target, path, fill_rule, matrix,
+                                &grad->image, radial_coef, shader_spread, blend);
 }

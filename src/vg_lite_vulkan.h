@@ -119,6 +119,21 @@ typedef struct {
     pipeline_cache_entry_t pattern_pipeline_cache[MAX_PIPELINE_CACHE];
     int pattern_pipeline_cache_count;
 
+    /* Radial gradient pipeline (stencil + cover, radial-dedicated shaders).
+     * Structure mirrors pattern pipeline; shaders compute g = gLin + sqrt(gRad)
+     * per pixel and sample a 1D ramp LUT. See FIXES.md #26. */
+    VkPipelineLayout    radial_pipeline_layout;
+    VkDescriptorSetLayout radial_descriptor_layout;
+    VkShaderModule      radial_vert_shader;
+    VkShaderModule      radial_frag_shader;
+    VkPipeline          radial_stencil_pipeline;
+    VkBuffer            radial_cover_vbo;
+    VkDeviceMemory      radial_cover_vbo_mem;
+    VkBuffer            radial_cover_ibo;
+    VkDeviceMemory      radial_cover_ibo_mem;
+    pipeline_cache_entry_t radial_pipeline_cache[MAX_PIPELINE_CACHE];
+    int                 radial_pipeline_cache_count;
+
     VkDebugUtilsMessengerEXT debug_messenger;
     
     VkBuffer clut_buffer;
@@ -200,6 +215,8 @@ vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *interna
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_init_pattern_pipeline(VkFormat format);
 VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group);
+void vg_lite_vulkan_init_radial_pipeline(VkFormat format);
+VkPipeline vg_lite_vulkan_get_radial_cover_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_destroy_pipelines(void);
 
 void vg_lite_vulkan_init_grad_pipeline(VkFormat format);
