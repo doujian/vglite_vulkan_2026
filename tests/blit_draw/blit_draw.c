@@ -48,6 +48,7 @@ int main() {
 
     vg_lite_buffer_t target = {0};
     target.width = TW; target.height = TH; target.format = VG_LITE_BGRA8888;
+    target.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target));
 
     vg_lite_buffer_t src_red = {0}, src_blue = {0};
@@ -102,7 +103,7 @@ int main() {
 
     /* Verification */
     {
-        uint32_t *p = (uint32_t*)target.memory;
+        const uint32_t *p = (const uint32_t*)vg_lite_buffer_read_ptr(&target);
         int mismatch = 0;
 
         /* Expected colors (BGRA8888 LE) */
@@ -137,6 +138,7 @@ int main() {
             printf("blit_draw FAILED (%d pixels wrong)\n", mismatch);
             fail = 1;
         }
+        vg_lite_buffer_read_ptr_release(&target);
     }
 
     printf("Saved: blit_draw.png (%dx%d)\n", TW, TH);

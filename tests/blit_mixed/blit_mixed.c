@@ -19,6 +19,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "vg_lite.h"
 #include "vg_lite_util.h"
@@ -59,9 +60,14 @@ static const int8_t rect_data[] = {
 
 static void cpu_fill(vg_lite_buffer_t *buf, uint32_t color)
 {
-    uint32_t *p = (uint32_t*)buf->memory;
-    for (int i = 0; i < buf->width * buf->height; i++)
-        p[i] = color;
+    uint32_t stride_u32 = buf->stride / 4;
+    uint32_t *tmp = (uint32_t*)malloc(buf->stride * buf->height);
+    if (!tmp) return;
+    for (int y = 0; y < buf->height; y++)
+        for (int x = 0; x < buf->width; x++)
+            tmp[y * stride_u32 + x] = color;
+    vg_lite_buffer_write(buf, tmp);
+    free(tmp);
 }
 
 void cleanup(void)
@@ -86,6 +92,7 @@ int main(int argc, const char *argv[])
 
     /* Setup target: CPU fill dark gray */
     target.width = W; target.height = H; target.format = VG_LITE_BGRA8888;
+    target.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target));
     cpu_fill(&target, 0xFF202020);
 
@@ -186,6 +193,7 @@ int main(int argc, const char *argv[])
 
     /* --- allocate target2 --- */
     target2.width = W; target2.height = H; target2.format = VG_LITE_BGRA8888;
+    target2.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target2));
 
     /* blit target2 <- target (target was render target, now is source) */
@@ -201,12 +209,18 @@ int main(int argc, const char *argv[])
 
     /* Verify: target2 should match target pixel-for-pixel */
     {
-        uint32_t *t  = (uint32_t*)target.memory;
-        uint32_t *t2 = (uint32_t*)target2.memory;
+        const uint32_t *t  = (const uint32_t*)vg_lite_buffer_read_ptr(&target);
+        const uint32_t *t2 = (const uint32_t*)vg_lite_buffer_read_ptr(&target2);
+        int stride_u32_t1 = target.stride / 4;
+        int stride_u32_t2 = target2.stride / 4;
         int mismatches = 0;
-        for (int i = 0; i < W * H; i++) {
-            if (t[i] != t2[i]) mismatches++;
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                if (t[y * stride_u32_t1 + x] != t2[y * stride_u32_t2 + x]) mismatches++;
+            }
         }
+        vg_lite_buffer_read_ptr_release(&target);
+        vg_lite_buffer_read_ptr_release(&target2);
         if (mismatches == 0)
             printf("blit_mixed OK (target2 == target, all pixels match)\n");
         else
@@ -217,10 +231,14 @@ int main(int argc, const char *argv[])
     /* Also sanity-check: target should be cyan (source6) */
     {
         int mismatch = 0;
-        uint32_t *t = (uint32_t*)target.memory;
-        for (int i = 0; i < W * H; i++) {
-            if (t[i] != CYAN) mismatch++;
+        const uint32_t *t = (const uint32_t*)vg_lite_buffer_read_ptr(&target);
+        int stride_u32 = target.stride / 4;
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                if (t[y * stride_u32 + x] != CYAN) mismatch++;
+            }
         }
+        vg_lite_buffer_read_ptr_release(&target);
         if (mismatch == 0)
             printf("blit_mixed target == cyan (source6), OK\n");
         else

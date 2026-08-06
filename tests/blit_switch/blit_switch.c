@@ -59,10 +59,12 @@ int main() {
     CHECK_ERROR(vg_lite_init(TW, TH));
     memset(&target_a, 0, sizeof(target_a));
     target_a.width = TW; target_a.height = TH; target_a.format = VG_LITE_BGRA8888;
+    target_a.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target_a));
 
     memset(&target_b, 0, sizeof(target_b));
     target_b.width = TW; target_b.height = TH; target_b.format = VG_LITE_BGRA8888;
+    target_b.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target_b));
 
     /* 9 consecutive BLEND_NONE blits to target_a.
@@ -93,10 +95,13 @@ int main() {
     /* Verify: target_a should be gold (last overwrite) */
     {
         uint32_t expected = colors[8]; /* 0xFFC0A040 */
-        uint32_t *p = (uint32_t*)target_a.memory;
+        const uint32_t *p = (const uint32_t*)vg_lite_buffer_read_ptr(&target_a);
+        int stride_u32 = target_a.stride / 4;
         int mismatch = 0;
-        for (int i = 0; i < TW*TH; i++) {
-            if (p[i] != expected) mismatch++;
+        for (int y = 0; y < TH; y++) {
+            for (int x = 0; x < TW; x++) {
+                if (p[y * stride_u32 + x] != expected) mismatch++;
+            }
         }
         if (mismatch == 0)
             printf("target_a: PASS (gold 0x%08X after 9 blits)\n", expected);
@@ -104,15 +109,19 @@ int main() {
             printf("target_a: FAIL (%d/%d wrong, got 0x%08X exp 0x%08X)\n",
                    mismatch, TW*TH, p[0], expected);
         fail |= (mismatch > 0);
+        vg_lite_buffer_read_ptr_release(&target_a);
     }
 
     /* Verify: target_b should also be gold (copied from target_a) */
     {
         uint32_t expected = colors[8];
-        uint32_t *p = (uint32_t*)target_b.memory;
+        const uint32_t *p = (const uint32_t*)vg_lite_buffer_read_ptr(&target_b);
+        int stride_u32 = target_b.stride / 4;
         int mismatch = 0;
-        for (int i = 0; i < TW*TH; i++) {
-            if (p[i] != expected) mismatch++;
+        for (int y = 0; y < TH; y++) {
+            for (int x = 0; x < TW; x++) {
+                if (p[y * stride_u32 + x] != expected) mismatch++;
+            }
         }
         if (mismatch == 0)
             printf("target_b: PASS (gold 0x%08X after blit A→B)\n", expected);
@@ -120,6 +129,7 @@ int main() {
             printf("target_b: FAIL (%d/%d wrong, got 0x%08X exp 0x%08X)\n",
                    mismatch, TW*TH, p[0], expected);
         fail |= (mismatch > 0);
+        vg_lite_buffer_read_ptr_release(&target_b);
     }
 
     if (!fail)

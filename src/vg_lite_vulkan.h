@@ -43,6 +43,8 @@ typedef struct {
     VkImageView resolve_view;
     VkDeviceMemory resolve_memory;
     int msaa_needs_seed;  /* Set when no-MSAA RP wrote to target; draw must seed MSAA before use */
+    int is_optimal;       /* 1 = OPTIMAL tiling + DEVICE_LOCAL, CPU access via staging */
+    void *cpu_cache;      /* cached CPU copy for OPTIMAL buffers (read-pixel support) */
     uint32_t width;
     uint32_t height;
     int msaa_dirty;

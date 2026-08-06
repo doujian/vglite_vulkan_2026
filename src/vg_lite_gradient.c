@@ -140,8 +140,8 @@ vg_lite_error_t vg_lite_update_grad(vg_lite_linear_gradient_t *grad)
 
     sort_stops(grad);
 
-    uint32_t *pixels = (uint32_t *)grad->image.memory;
-    if (!pixels) return VG_LITE_INVALID_ARGUMENT;
+    uint32_t *pixels = (uint32_t *)malloc(grad->image.stride * grad->image.height);
+    if (!pixels) return VG_LITE_OUT_OF_MEMORY;
 
     uint32_t max_stop = grad->stops[grad->count - 1];
     if (max_stop == 0) max_stop = 1;
@@ -175,7 +175,8 @@ vg_lite_error_t vg_lite_update_grad(vg_lite_linear_gradient_t *grad)
         }
     }
 
-    vg_lite_buffer_flush(&grad->image);
+    vg_lite_buffer_write(&grad->image, pixels);
+    free(pixels);
     return VG_LITE_SUCCESS;
 }
 
@@ -275,10 +276,10 @@ vg_lite_error_t vg_lite_update_radial_grad(vg_lite_radial_gradient_t *grad)
     vg_lite_error_t err = vg_lite_allocate(&grad->image);
     if (err != VG_LITE_SUCCESS) return err;
 
-    uint32_t *pixels = (uint32_t *)grad->image.memory;
+    uint32_t *pixels = (uint32_t *)malloc(grad->image.stride * grad->image.height);
     if (!pixels) {
         vg_lite_free(&grad->image);
-        return VG_LITE_INVALID_ARGUMENT;
+        return VG_LITE_OUT_OF_MEMORY;
     }
 
     /* pre_multiplied: if set, color channels are multiplied by alpha before
@@ -334,7 +335,8 @@ vg_lite_error_t vg_lite_update_radial_grad(vg_lite_radial_gradient_t *grad)
         grad->converted_ramp[i] = converted[i];
     }
 
-    vg_lite_buffer_flush(&grad->image);
+    vg_lite_buffer_write(&grad->image, pixels);
+    free(pixels);
     return VG_LITE_SUCCESS;
 }
 

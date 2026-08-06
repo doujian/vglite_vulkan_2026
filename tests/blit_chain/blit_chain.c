@@ -15,6 +15,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "vg_lite.h"
 #include "vg_lite_util.h"
@@ -47,16 +48,23 @@ int main(int argc, const char *argv[])
     buf_a.width = 128; buf_a.height = 128; buf_a.format = VG_LITE_BGRA8888;
     CHECK_ERROR(vg_lite_allocate(&buf_a));
     {
-        uint32_t *p = (uint32_t*)buf_a.memory;
-        for (int i = 0; i < 128 * 128; i++) p[i] = 0xFF0000FF; /* red */
+        int npix = (buf_a.stride / 4) * buf_a.height;
+        uint32_t *tmp = (uint32_t *)malloc(buf_a.stride * buf_a.height);
+        for (int i = 0; i < npix; i++) tmp[i] = 0xFF0000FF; /* red */
+        vg_lite_buffer_write(&buf_a, tmp);
+        free(tmp);
     }
 
     /* Allocate buf_b just before first blit, CPU-init to green */
     buf_b.width = 128; buf_b.height = 128; buf_b.format = VG_LITE_BGRA8888;
+    buf_b.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&buf_b));
     {
-        uint32_t *p = (uint32_t*)buf_b.memory;
-        for (int i = 0; i < 128 * 128; i++) p[i] = 0xFF00FF00; /* green */
+        int npix = (buf_b.stride / 4) * buf_b.height;
+        uint32_t *tmp = (uint32_t *)malloc(buf_b.stride * buf_b.height);
+        for (int i = 0; i < npix; i++) tmp[i] = 0xFF00FF00; /* green */
+        vg_lite_buffer_write(&buf_b, tmp);
+        free(tmp);
     }
 
     /* Blit 1: buf_a -> buf_b (native, opens no-MSAA RP on buf_b) */
@@ -69,10 +77,14 @@ int main(int argc, const char *argv[])
 
     /* Allocate buf_c just before third blit, CPU-init to blue */
     buf_c.width = 128; buf_c.height = 128; buf_c.format = VG_LITE_BGRA8888;
+    buf_c.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&buf_c));
     {
-        uint32_t *p = (uint32_t*)buf_c.memory;
-        for (int i = 0; i < 128 * 128; i++) p[i] = 0xFFFF0000; /* blue */
+        int npix = (buf_c.stride / 4) * buf_c.height;
+        uint32_t *tmp = (uint32_t *)malloc(buf_c.stride * buf_c.height);
+        for (int i = 0; i < npix; i++) tmp[i] = 0xFFFF0000; /* blue */
+        vg_lite_buffer_write(&buf_c, tmp);
+        free(tmp);
     }
 
     /* Blit 3: buf_b -> buf_c (buf_b was target, now source — tests barrier) */
@@ -91,12 +103,18 @@ int main(int argc, const char *argv[])
     {
         uint32_t expect = 0xFF0000FF; /* red in BGRA8888 LE */
         int mismatch_b = 0, mismatch_c = 0;
-        uint32_t *b = (uint32_t*)buf_b.memory;
-        uint32_t *c = (uint32_t*)buf_c.memory;
-        for (int i = 0; i < 128 * 128; i++) {
-            if (b[i] != expect) mismatch_b++;
-            if (c[i] != expect) mismatch_c++;
+        const uint32_t *b = (const uint32_t*)vg_lite_buffer_read_ptr(&buf_b);
+        const uint32_t *c = (const uint32_t*)vg_lite_buffer_read_ptr(&buf_c);
+        int stride_u32_b = buf_b.stride / 4;
+        int stride_u32_c = buf_c.stride / 4;
+        for (int y = 0; y < 128; y++) {
+            for (int x = 0; x < 128; x++) {
+                if (b[y * stride_u32_b + x] != expect) mismatch_b++;
+                if (c[y * stride_u32_c + x] != expect) mismatch_c++;
+            }
         }
+        vg_lite_buffer_read_ptr_release(&buf_b);
+        vg_lite_buffer_read_ptr_release(&buf_c);
         printf("buf_b: %d mismatches\n", mismatch_b);
         printf("buf_c: %d mismatches\n", mismatch_c);
         fail = (mismatch_b > 0 || mismatch_c > 0) ? 1 : 0;

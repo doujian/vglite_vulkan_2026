@@ -679,20 +679,22 @@ static vg_lite_error_t render()
 {
     vg_lite_error_t error = VG_LITE_SUCCESS;
     vg_lite_blend_t blend = VG_LITE_BLEND_SRC_OVER;
-    unsigned char * ptr;
     int i;
 
     buffer.format = VG_LITE_RGBA8888; 
     buffer.width = ALIGMENT(fb_width,64);
     buffer.height = fb_height;
-    ptr = offscreenBuf.memory;
+    buffer.tiled = VGLITE_TARGET_TILING;
 
-    //Setup A8 surface - use actual stride from buffer (VkImage rowPitch)
-    memset(offscreenBuf.memory, 0, offscreenBuf.stride * offscreenBuf.height);
-    for(i = 0; i < TEST_RASTER_HEIGHT; i++)
+    //Setup A8 surface - build in temp, upload via vg_lite_buffer_write
     {
-        memcpy(ptr, &test_a8_raster[i*TEST_RASTER_OFFSET], TEST_RASTER_WIDTH);
-        ptr += offscreenBuf.stride;  // Use actual stride, not test_raster_stride
+        uint8_t *tmp = (uint8_t *)calloc(1, offscreenBuf.stride * offscreenBuf.height);
+        for (i = 0; i < TEST_RASTER_HEIGHT; i++)
+        {
+            memcpy(tmp + i * offscreenBuf.stride, &test_a8_raster[i*TEST_RASTER_OFFSET], TEST_RASTER_WIDTH);
+        }
+        vg_lite_buffer_write(&offscreenBuf, tmp);
+        free(tmp);
     }
     CHECK_ERROR(vg_lite_finish());
     CHECK_ERROR(vg_lite_allocate(&buffer));

@@ -60,10 +60,12 @@ int main() {
     /* Allocate targets */
     memset(&target, 0, sizeof(target));
     target.width = TW; target.height = TH; target.format = VG_LITE_BGRA8888;
+    target.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target));
 
     memset(&target_ref, 0, sizeof(target_ref));
     target_ref.width = TW; target_ref.height = TH; target_ref.format = VG_LITE_BGRA8888;
+    target_ref.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target_ref));
 
     /* ===== Phase 1: Correctness Check ===== */
@@ -96,17 +98,20 @@ int main() {
         /* Compare — only within the source rectangle (256x256 at origin).
          * Outside it, mode 0 (fullscreen, no discard) fills with CLAMP_TO_EDGE edge color,
          * while mode 1 (OBB) doesn't rasterize at all. Both are correct behaviors. */
-        uint32_t *p_ref = (uint32_t*)target_ref.memory;
-        uint32_t *p_obb = (uint32_t*)target.memory;
+        const uint32_t *p_ref = (const uint32_t*)vg_lite_buffer_read_ptr(&target_ref);
+        const uint32_t *p_obb = (const uint32_t*)vg_lite_buffer_read_ptr(&target);
+        int stride_u32 = target.stride / 4;
         int mismatch = 0;
         int checked = 0;
         for (int y = 0; y < 256; y++) {
             for (int x = 0; x < 256; x++) {
-                int idx = y * TW + x;
+                int idx = y * stride_u32 + x;
                 checked++;
                 if (p_ref[idx] != p_obb[idx]) mismatch++;
             }
         }
+        vg_lite_buffer_read_ptr_release(&target_ref);
+        vg_lite_buffer_read_ptr_release(&target);
         double pct = checked > 0 ? 100.0 * mismatch / checked : 0;
         if (pct < 0.5)
             printf("Correctness: PASS (%d/%d pixels differ = %.2f%% within source rect, within tolerance)\n",

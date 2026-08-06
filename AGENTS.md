@@ -4,18 +4,38 @@
 
 Every code change MUST be followed by running the test cases to ensure no regression compared to the previous state.
 
-### Blit Test Matrix
+### Full Test Matrix (3 axes × 8 configs)
 
-Blit-related changes (shader, pipeline, vg_lite_blit, push constants) MUST pass all 4 configurations:
+ALL code changes MUST pass all 8 configurations (3 compile-time axes: Tiling × MSAA × OBB):
 
-| Config | VGLITE_BLIT_MSAA | VGLITE_BLIT_OBB | Description |
-|--------|-------------------|------------------|-------------|
-| 1 | 1 | 1 | 4x MSAA + OBB quad (default) |
-| 2 | 1 | 0 | 4x MSAA + fullscreen triangle |
-| 3 | 0 | 1 | 1x no-MSAA + OBB quad |
-| 4 | 0 | 0 | 1x no-MSAA + fullscreen triangle |
+| Config | VGLITE_TARGET_OPTIMAL | VGLITE_BLIT_MSAA | VGLITE_BLIT_OBB | Build Dir | Dump Dir | Description |
+|--------|-----------------------|-------------------|------------------|-----------|----------|-------------|
+| 1 | OFF | ON | ON | `build/` | `dump_lin_msaa_obb/` | LINEAR + 4x MSAA + OBB (default) |
+| 2 | OFF | ON | OFF | `build_lin_msaa_noobb/` | `dump_lin_msaa_noobb/` | LINEAR + 4x MSAA + fullscreen tri |
+| 3 | OFF | OFF | ON | `build_lin_nomsaa_obb/` | `dump_lin_nomsaa_obb/` | LINEAR + 1x + OBB quad |
+| 4 | OFF | OFF | OFF | `build_lin_nomsaa_noobb/` | `dump_lin_nomsaa_noobb/` | LINEAR + 1x + fullscreen tri |
+| 5 | ON | ON | ON | `build_tiled/` | `dump_opt_msaa_obb/` | OPTIMAL + 4x MSAA + OBB |
+| 6 | ON | ON | OFF | `build_opt_msaa_noobb/` | `dump_opt_msaa_noobb/` | OPTIMAL + 4x MSAA + fullscreen tri |
+| 7 | ON | OFF | ON | `build_opt_nomsaa_obb/` | `dump_opt_nomsaa_obb/` | OPTIMAL + 1x + OBB quad |
+| 8 | ON | OFF | OFF | `build_opt_nomsaa_noobb/` | `dump_opt_nomsaa_noobb/` | OPTIMAL + 1x + fullscreen tri |
 
-Rebuild between configs: change macros in `inc/vg_lite_config.h`, run `cmake --build build`, run full test suite from `build/tests/Debug/`. All 4 configs must show the same pass/fail counts (only `test_sft_blit` pre-existing crash allowed).
+Build and test commands:
+```
+# Config 1 (default): LINEAR + MSAA + OBB
+cmake -B build -DVGLITE_TARGET_OPTIMAL=OFF -DVGLITE_BLIT_MSAA=ON -DVGLITE_BLIT_OBB=ON
+cmake --build build
+# run all tests from build/tests/Debug/
+
+# Config 2-8: same pattern, change flags + build dir
+# Example — Config 8: OPTIMAL + no MSAA + no OBB
+cmake -B build_opt_nomsaa_noobb -DVGLITE_TARGET_OPTIMAL=ON -DVGLITE_BLIT_MSAA=OFF -DVGLITE_BLIT_OBB=OFF
+cmake --build build_opt_nomsaa_noobb
+# run all tests from build_opt_nomsaa_noobb/tests/Debug/
+```
+
+All 8 configs must show **37/38 PASS** (only `test_sft_blit` pre-existing crash allowed).
+
+PNG/raw outputs are automatically routed to configuration-specific subdirectories (e.g. `dump_lin_msaa_obb/`, `dump_opt_nomsaa_noobb/`) for visual comparison.
 
 ## Bugfix Logging
 

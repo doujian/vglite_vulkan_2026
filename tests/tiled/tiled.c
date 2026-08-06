@@ -89,10 +89,12 @@ static vg_lite_error_t Tiled_001(void)
     buffer.width = fb_width;
     buffer.height = fb_height;
     buffer.format = VG_LITE_RGB565;
+    buffer.tiled = VGLITE_TARGET_TILING;
     error = vg_lite_allocate(&buffer);
     if (error == VG_LITE_NOT_SUPPORT) {
         printf("[fallback] RGB565 (B5G6R5) unsupported, retry with BGR565 (R5G6B5)\n");
         buffer.format = VG_LITE_BGR565;
+        buffer.tiled = VGLITE_TARGET_TILING;
         error = vg_lite_allocate(&buffer);
     }
     CHECK_ERROR(error);
@@ -102,6 +104,7 @@ static vg_lite_error_t Tiled_001(void)
     tiled_buffer.format = VG_LITE_RGBA8888;
     tiled_buffer.width = buffer.width;
     tiled_buffer.height = buffer.height;
+    tiled_buffer.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&tiled_buffer));
 
     CHECK_ERROR(vg_lite_clear(&buffer, NULL, 0xFFFF0000));

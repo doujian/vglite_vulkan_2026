@@ -25,6 +25,7 @@ int main(int argc, const char *argv[])
     buffer.width = 640;
     buffer.height = 480;
     buffer.format = VG_LITE_BGRA8888;
+    buffer.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&buffer));
 
     CHECK_ERROR(vg_lite_clear(&buffer, NULL, 0xFFFF0000));

@@ -49,6 +49,7 @@ int main(int argc, const char *argv[])
     memset(&target, 0, sizeof(target));
 
     target.width = TW; target.height = TH; target.format = VG_LITE_BGRA8888;
+    target.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target));
 
     /* Clear to gray (AABBGGRR: A=FF, B=20, G=20, R=20) */
@@ -106,11 +107,12 @@ int main(int argc, const char *argv[])
     /* Verify: check center of each triangle area.
      * BGRA8888 LE: [B, G, R, A] as uint32 */
     {
-        uint32_t *p = (uint32_t*)target.memory;
+        const uint32_t *p = (const uint32_t*)vg_lite_buffer_read_ptr(&target);
+        int stride_u32 = target.stride / 4;
         int mismatch = 0;
 
         /* Red triangle center ~(64, 70): R > 200, G < 60, B < 60 */
-        uint32_t px = p[70 * TW + 64];
+        uint32_t px = p[70 * stride_u32 + 64];
         uint8_t r = (px >> 16) & 0xFF, g = (px >> 8) & 0xFF, b = px & 0xFF;
         if (!(r > 200 && g < 60 && b < 60)) {
             mismatch++;
@@ -118,7 +120,7 @@ int main(int argc, const char *argv[])
         }
 
         /* Green triangle center ~(192, 70): G > 200 */
-        px = p[70 * TW + 192];
+        px = p[70 * stride_u32 + 192];
         r = (px >> 16) & 0xFF; g = (px >> 8) & 0xFF; b = px & 0xFF;
         if (!(g > 200 && r < 60 && b < 60)) {
             mismatch++;
@@ -126,7 +128,7 @@ int main(int argc, const char *argv[])
         }
 
         /* Blue triangle center ~(128, 198): B > 200 */
-        px = p[198 * TW + 128];
+        px = p[198 * stride_u32 + 128];
         r = (px >> 16) & 0xFF; g = (px >> 8) & 0xFF; b = px & 0xFF;
         if (!(b > 200 && r < 60 && g < 60)) {
             mismatch++;
@@ -134,11 +136,13 @@ int main(int argc, const char *argv[])
         }
 
         /* Gray area (10, 200): should be gray 0x202020 */
-        px = p[200 * TW + 10];
+        px = p[200 * stride_u32 + 10];
         if (px != 0xFF202020) {
             mismatch++;
             printf("  gray check failed: 0x%08X\n", px);
         }
+
+        vg_lite_buffer_read_ptr_release(&target);
 
         if (mismatch == 0)
             printf("blit_multi OK (3 triangles at different positions, colors correct)\n");

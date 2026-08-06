@@ -35,6 +35,7 @@ int main(int argc, const char *argv[])
 
     CHECK_ERROR(vg_lite_init(32, 32));
 
+    dst.tiled = VGLITE_TARGET_TILING;
     loaded = (vg_lite_load_raw(&dst, "landscape.raw") == 0);
     if (!loaded) loaded = (vg_lite_load_raw(&dst, "data/landscape.raw") == 0);
     if (!loaded) loaded = (vg_lite_load_raw(&dst, "../tests/data/landscape.raw") == 0);
@@ -48,7 +49,12 @@ int main(int argc, const char *argv[])
     dst_orig.height = dst.height;
     dst_orig.format = dst.format;
     CHECK_ERROR(vg_lite_allocate(&dst_orig));
-    memcpy(dst_orig.memory, dst.memory, dst.stride * dst.height);
+    {
+        uint8_t *tmp = (uint8_t *)malloc(dst.stride * dst.height);
+        vg_lite_buffer_download(&dst, tmp);
+        vg_lite_buffer_write(&dst_orig, tmp);
+        free(tmp);
+    }
 
     src.width = dst.width;
     src.height = dst.height;

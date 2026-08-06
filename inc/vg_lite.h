@@ -40,6 +40,7 @@ extern "C" {
 
 #include <stddef.h>
 #include <stdint.h>
+#include "vg_lite_config.h"
 
 /*  VGLite API Constants *******************************************************************************************************************/
 
@@ -1095,6 +1096,22 @@ typedef unsigned int        vg_lite_color_t;
 
     /* Flush CPU writes to GPU visibility. Call after writing to buffer->memory. */
     void vg_lite_buffer_flush(vg_lite_buffer_t *buffer);
+
+    /* Upload pixel data to buffer (LINEAR: memcpy+flush, OPTIMAL: staging transfer). */
+    vg_lite_error_t vg_lite_buffer_write(vg_lite_buffer_t *buffer, const void *src_data);
+
+    /* Download pixel data from buffer (LINEAR: memcpy, OPTIMAL: staging transfer). */
+    vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data);
+
+    /* Acquire a read-only CPU pointer for pixel access.
+     * LINEAR: returns buffer->memory directly (no copy).
+     * OPTIMAL: downloads once, caches internally until release.
+     * Returns NULL on failure. */
+    const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer);
+
+    /* Release a previously acquired read pointer.
+     * LINEAR: no-op. OPTIMAL: frees the cached CPU copy. */
+    void vg_lite_buffer_read_ptr_release(vg_lite_buffer_t *buffer);
 
     /* Upload RGB or YUV pixel data to an allocated buffer. */
     vg_lite_error_t vg_lite_upload_buffer(vg_lite_buffer_t *buffer, vg_lite_uint8_t *data[3], vg_lite_uint32_t stride[3]);

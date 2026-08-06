@@ -693,6 +693,58 @@ correct).
 
 ---
 
+## 20. OPTIMAL Tiling (VK_IMAGE_TILING_OPTIMAL + DEVICE_LOCAL) Support
+
+**Date**: 2026-08-06
+
+**Symptom**: VGLite Vulkan backend only supported VK_IMAGE_TILING_LINEAR + HOST_VISIBLE memory. GPU performance was suboptimal; no support for GPU-private DEVICE_LOCAL memory with VK_IMAGE_TILING_OPTIMAL.
+
+**Root cause**: All buffer access (upload, download, pixel read) used direct uffer->memory pointer access, which requires HOST_VISIBLE mapping. OPTIMAL-tiled images are GPU-private and cannot be mapped.
+
+**Solution**: Added staging-transfer infrastructure and a CPU-access abstraction layer:
+
+### New Public APIs (inc/vg_lite.h, src/vg_lite.c)
+- g_lite_buffer_write(buffer, src_data) �� upload CPU data (LINEAR: memcpy+flush, OPTIMAL: staging transfer via upload_to_image)
+- g_lite_buffer_download(buffer, dst_data) �� download to CPU (LINEAR: memcpy, OPTIMAL: staging transfer via download_from_image)
+- g_lite_buffer_read_ptr(buffer) -> const void* �� acquire read-only pointer (LINEAR: zero-copy uffer->memory, OPTIMAL: cached download on internal->cpu_cache)
+- g_lite_buffer_read_ptr_release(buffer) �� no-op (cache persists, invalidated on next GPU render)
+
+### Cache Invalidation Strategy
+cpu_cache freed on: uffer_write, g_lite_clear target, g_lite_blit target, g_lite_draw_impl target, ensure_render_pass target, g_lite_free.
+
+### Compile-time Config (inc/vg_lite_config.h, CMakeLists.txt)
+- VGLITE_TARGET_OPTIMAL macro: 0=LINEAR (default), 1=OPTIMAL
+- VGLITE_TARGET_TILING expands to VG_LITE_TILED or VG_LITE_LINEAR
+- CMake option: -DVGLITE_TARGET_OPTIMAL=ON/OFF
+
+### Library Code Adaptation
+- g_lite_allocate: dual-path (OPTIMAL=DEVICE_LOCAL+NULL memory, LINEAR=HOST_VISIBLE+mapped)
+- g_lite_gradient.c: update_grad + radial use uffer_write
+- util/vg_lite_util.c: load_raw/save_png/load_png/save_raw use uffer_write/uffer_download
+- util/util.c: ead_pixel_ptr refactor, gen_buffer uses uffer_write, verify functions use ead_ptr/elease
+- g_lite_vulkan.h: added cpu_cache + is_optimal fields to uffer_internal_t
+
+### Test File Adaptation (24 files, 34 target buffers)
+- All render targets: .tiled = VGLITE_TARGET_TILING
+- Category A (read-verify): uffer.memory -> g_lite_buffer_read_ptr + stride fix
+- Category B (CPU-init): memset/memcpy -> malloc temp -> uffer_write -> free
+- Category C (buffer copy): uffer_download -> uffer_write
+
+### Bug: blit_mixed.c missing #include <stdlib.h>
+malloc was implicitly declared returning int, causing 64-bit pointer truncation -> ACCESS_VIOLATION. Fixed by adding the include.
+
+### PNG Output Separation
+g_lite_save_png automatically routes to dump_linear/ or dump_optimal/ subdirectory based on VGLITE_TARGET_OPTIMAL.
+
+**Verification**: LINEAR 37/38 PASS, OPTIMAL 37/38 PASS (only 	est_sft_blit pre-existing crash).
+
+**Files**:
+- `src/vg_lite_gradient.c`: added `apply_spread_t` helper (~50 lines)
+  + call site in `vg_lite_update_radial_grad` texture loop.
+- `src/vg_lite_draw.c`: removed 2 debug printf added during diagnosis.
+
+---
+
 ## #26 — Radial gradient: wrong spread domain (ramp-stop vs normalized g) + double-spread architecture
 
 **Symptom**:
@@ -858,3 +910,14 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 - `util/util.h` (signature: +radial_grad parameter)
 - `util/util.c` (CPU reference: 9-coefficient g formula + [0,1] spread)
 - `tests/radialGrad/radialGrad.c` (caller: shader_mode + radial_grad arg)
+- inc/vg_lite.h: 4 new API declarations
+- inc/vg_lite_config.h: VGLITE_TARGET_OPTIMAL + VGLITE_TARGET_TILING macros
+- src/vg_lite.c: buffer_write/download/read_ptr/read_ptr_release, upload_to_image, download_from_image, dual-path allocate
+- src/vg_lite_vulkan.h: cpu_cache + is_optimal fields
+- src/vg_lite_draw.c: cache invalidation in draw_impl + ensure_render_pass
+- src/vg_lite_gradient.c: update_grad + radial use buffer_write
+- util/vg_lite_util.c: all I/O via write/download API, PNG subdirectory routing
+- util/util.c: read_pixel_ptr refactor, gen_buffer/verify/blit/copy/grad adaptation
+- CMakeLists.txt: VGLITE_TARGET_OPTIMAL option
+- 24 test files: .tiled = VGLITE_TARGET_TILING, direct memory access replaced
+- AGENTS.md: Full Test Matrix (8 configs)

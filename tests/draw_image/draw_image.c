@@ -95,6 +95,7 @@ static vg_lite_error_t Allocate_Buffer(vg_lite_buffer_t *buffer,
     buffer->height = height;
     buffer->format = format;
     buffer->stride = 0;
+    buffer->tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(buffer));
 ErrorHandler:
     return error;

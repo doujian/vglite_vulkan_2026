@@ -146,9 +146,9 @@ int SaveBMP(char *image_name, unsigned char* p, int width, int height, vg_lite_b
     return 0;
 }
 
-uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
+static uint32_t read_pixel_ptr(vg_lite_buffer_t *buffer, const void *base, int x, int y)
 {
-    unsigned char *ptr = (unsigned char *)buffer->memory;
+    unsigned char *ptr = (unsigned char *)base;
     if (!ptr || x < 0 || y < 0 || x >= (int)buffer->width || y >= (int)buffer->height)
         return 0;
 
@@ -252,6 +252,15 @@ uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
     default:
         return *(uint32_t*)(ptr + y * buffer->stride + x * 4);
     }
+}
+
+uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
+{
+    const void *ptr = vg_lite_buffer_read_ptr(buffer);
+    if (!ptr) return 0;
+    uint32_t result = read_pixel_ptr(buffer, ptr, x, y);
+    vg_lite_buffer_read_ptr_release(buffer);
+    return result;
 }
 
 int vg_lite_check_pixel(vg_lite_buffer_t *buffer, int x, int y, uint32_t expected, int tolerance)
@@ -587,6 +596,7 @@ void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
                 image_mode, flags, color, clut);
         }
     }
+    vg_lite_buffer_read_ptr_release(src);
 }
 
 int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
@@ -638,6 +648,8 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
         }
     }
 
+    vg_lite_buffer_read_ptr_release(actual);
+
     if (fail > max_print) printf("  ... %d more mismatches\n", fail - max_print);
     int pass_rate = (total > 0) ? ((total - fail) * 100) / total : 100;
     printf("  VERIFY: %d/%d pixels match (%d%% pass rate)\n", total - fail, total, pass_rate);
@@ -650,6 +662,7 @@ void vg_lite_expected_copy(vg_lite_expected_buffer_t *eb, vg_lite_buffer_t *buf)
     for (int y = 0; y < eb->height; y++)
         for (int x = 0; x < eb->width; x++)
             eb->pixels[y * eb->width + x] = vg_lite_read_pixel(buf, x, y);
+    vg_lite_buffer_read_ptr_release(buf);
 }
 
 int vg_lite_verify_raw(vg_lite_buffer_t *actual, const char *golden_path, int tolerance)
@@ -1005,6 +1018,7 @@ void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
                 sr, sg, sb, sa, dst_px, blend);
         }
     }
+    vg_lite_buffer_read_ptr_release(grad_image);
 }
 
 void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
@@ -1152,6 +1166,7 @@ void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
                 sr, sg, sb, sa, dst_px, blend);
         }
     }
+    vg_lite_buffer_read_ptr_release(grad_image);
 }
 
 void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
@@ -1181,18 +1196,27 @@ int gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, 
     data = gen_image(type, format, width, height);
     if (!data) { vg_lite_free(buf); return -1; }
 
-    /* Copy generated pixel data into the GPU buffer's memory.
-     * The stride may include padding, so copy row-by-row. */
+    /* Copy generated pixel data into the GPU buffer.
+     * Use vg_lite_buffer_write which handles both LINEAR and OPTIMAL.
+     * The stride may include padding, so build a stride-aware buffer. */
     {
-        uint8_t *src = (uint8_t *)data;
-        uint8_t *dst = (uint8_t *)buf->memory;
+        uint32_t bpp = vg_lite_format_bpp(format);
         uint32_t row_bytes = width * bpp / 8;
-        for (uint32_t y = 0; y < height; y++) {
-            memcpy(dst + y * buf->stride, src + y * row_bytes, row_bytes);
+        if (row_bytes == buf->stride) {
+            /* Tight pack, no stride padding */
+            vg_lite_buffer_write(buf, data);
+        } else {
+            /* Stride has padding, need to expand */
+            uint8_t *expanded = (uint8_t *)malloc(buf->stride * height);
+            if (!expanded) { free(data); vg_lite_free(buf); return -1; }
+            for (uint32_t y = 0; y < height; y++) {
+                memcpy(expanded + y * buf->stride, (uint8_t *)data + y * row_bytes, row_bytes);
+            }
+            vg_lite_buffer_write(buf, expanded);
+            free(expanded);
         }
     }
 
     free(data);
-    vg_lite_buffer_flush(buf);
     return 0;
 }

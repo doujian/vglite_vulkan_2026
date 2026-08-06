@@ -80,6 +80,32 @@ Requirements:
 ./build.sh run      # Build and run tests
 ```
 
+### Buffer Tiling Mode
+
+The backend supports two image tiling modes, controlled by `VGLITE_TARGET_OPTIMAL`:
+
+| Mode | Flag | Memory Type | Description |
+|------|------|------------|-------------|
+| LINEAR (default) | `-DVGLITE_TARGET_OPTIMAL=OFF` | HOST_VISIBLE | CPU-direct pointer access, original behavior |
+| OPTIMAL | `-DVGLITE_TARGET_OPTIMAL=ON` | DEVICE_LOCAL | GPU-private memory, staging transfer for CPU access |
+
+```bash
+# LINEAR mode (default)
+cmake -B build -DVGLITE_TARGET_OPTIMAL=OFF
+cmake --build build
+
+# OPTIMAL mode
+cmake -B build_tiled -DVGLITE_TARGET_OPTIMAL=ON
+cmake --build build_tiled
+```
+
+In OPTIMAL mode, CPU access to buffer pixels goes through staging buffers via:
+- `vg_lite_buffer_write(buf, src)` — upload
+- `vg_lite_buffer_download(buf, dst)` — download
+- `vg_lite_buffer_read_ptr(buf)` — cached read-only pointer
+
+Test PNG outputs are automatically routed to `dump_linear/` or `dump_optimal/` subdirectories.
+
 ### Shader System
 
 Shaders are compiled from `shaders/*.vert` and `shaders/*.frag` to SPIR-V `.spv` files at build time (output: `build/spv/`). At runtime, `shader_loader.c` loads `.spv` files via `load_shader_module()` with multi-path search:

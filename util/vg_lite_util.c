@@ -1,10 +1,35 @@
 #include "vg_lite.h"
 #include "vg_lite_util.h"
+#include "vg_lite_config.h"
 #include "stb_image.h"
 #include "stb_image_write.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+/* Configuration-specific dump directory name (string literal).
+ * Encodes all 3 compile-time axes: tiling + MSAA + OBB.
+ * Examples: "dump_lin_msaa_obb", "dump_opt_nomsaa_noobb" */
+#define DUMP_NAME0(t, m, o)  "dump_" #t "_" #m "_" #o
+#define DUMP_NAME(t, m, o)    DUMP_NAME0(t, m, o)
+#if VGLITE_TARGET_OPTIMAL
+    #define DUMP_TILING opt
+#else
+    #define DUMP_TILING lin
+#endif
+#if VGLITE_BLIT_MSAA
+    #define DUMP_MSAA msaa
+#else
+    #define DUMP_MSAA nomsaa
+#endif
+#if VGLITE_BLIT_OBB
+    #define DUMP_OBB obb
+#else
+    #define DUMP_OBB noobb
+#endif
+#define DUMP_SUBDIR DUMP_NAME(DUMP_TILING, DUMP_MSAA, DUMP_OBB)
 
 /* Read a little-endian 32-bit integer from file */
 static int read_long(FILE *fp)
@@ -59,24 +84,29 @@ int vg_lite_load_raw(vg_lite_buffer_t *buffer, const char *name)
 
     fseek(fp, 16, SEEK_SET);
 
-    if (raw_stride == 0 || raw_stride == (int)buffer->stride) {
-        int flag = fread(buffer->memory, buffer->stride * buffer->height, 1, fp);
-        fclose(fp);
-        if (flag != 1) { vg_lite_free(buffer); return -1; }
-    } else {
-        unsigned char *dst = (unsigned char *)buffer->memory;
-        for (int y = 0; y < buffer->height; y++) {
-            if (fread(dst, raw_stride, 1, fp) != 1) {
-                fclose(fp);
-                vg_lite_free(buffer);
-                return -1;
-            }
-            dst += buffer->stride;
-        }
-        fclose(fp);
-    }
+    {
+        unsigned char *temp = (unsigned char *)malloc(buffer->stride * buffer->height);
+        if (!temp) { fclose(fp); vg_lite_free(buffer); return -1; }
 
-    vg_lite_buffer_flush(buffer);
+        if (raw_stride == 0 || raw_stride == (int)buffer->stride) {
+            int flag = fread(temp, buffer->stride * buffer->height, 1, fp);
+            fclose(fp);
+            if (flag != 1) { free(temp); vg_lite_free(buffer); return -1; }
+        } else {
+            unsigned char *dst = temp;
+            for (int y = 0; y < buffer->height; y++) {
+                if (fread(dst, raw_stride, 1, fp) != 1) {
+                    fclose(fp); free(temp); vg_lite_free(buffer);
+                    return -1;
+                }
+                dst += buffer->stride;
+            }
+            fclose(fp);
+        }
+
+        vg_lite_buffer_write(buffer, temp);
+        free(temp);
+    }
     return 0;
 }
 
@@ -100,7 +130,12 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
                     buffer->format == VG_LITE_BGRA4444);
     int is_argb = (buffer->format == VG_LITE_ARGB8888 ||
                    buffer->format == VG_LITE_ABGR8888);
-    unsigned char *src = (unsigned char *)buffer->memory;
+
+    unsigned char *img_data = (unsigned char *)malloc(buffer->stride * buffer->height);
+    if (!img_data) { free(rgba); return 0; }
+    vg_lite_buffer_download(buffer, img_data);
+
+    unsigned char *src = img_data;
     for (int y = 0; y < buffer->height; y++) {
         for (int x = 0; x < buffer->width; x++) {
             int di = (y * buffer->width + x) * 4;
@@ -170,9 +205,19 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
         }
     }
 
-    int ok = stbi_write_png(name, buffer->width, buffer->height, 4, rgba, buffer->width * 4);
-    printf("stbi_write_png result: %d (w=%d, h=%d)\n", ok, buffer->width, buffer->height);
+    /* Route PNG output to configuration-specific subdirectory for visual inspection. */
+    mkdir(DUMP_SUBDIR
+#if defined(_WIN32)
+         , 0
+#endif
+    );
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/%s", DUMP_SUBDIR, name);
+
+    int ok = stbi_write_png(outpath, buffer->width, buffer->height, 4, rgba, buffer->width * 4);
+    printf("stbi_write_png result: %d (w=%d, h=%d) -> %s\n", ok, buffer->width, buffer->height, outpath);
     free(rgba);
+    free(img_data);
     return ok;
 }
 
@@ -189,12 +234,12 @@ int vg_lite_load_png(vg_lite_buffer_t *buffer, const char *name)
 
     if (vg_lite_allocate(buffer) != VG_LITE_SUCCESS) {
     stbi_image_free(data);
-    vg_lite_buffer_flush(buffer);
         return -1;
     }
 
     /* stb_image returns RGBA order, VGLite BGRA8888 expects B,G,R,A in memory */
-    unsigned char *dst = (unsigned char *)buffer->memory;
+    unsigned char *dst = (unsigned char *)malloc(buffer->stride * buffer->height);
+    if (!dst) { stbi_image_free(data); return -1; }
     for (int y = 0; y < h; y++) {
         for (int x = 0; x < w; x++) {
             int si = (y * w + x) * 4;
@@ -205,6 +250,8 @@ int vg_lite_load_png(vg_lite_buffer_t *buffer, const char *name)
             dst[di+3] = data[si+3]; /* A */
         }
     }
+    vg_lite_buffer_write(buffer, dst);
+    free(dst);
     stbi_image_free(data);
     return 0;
 }
@@ -215,7 +262,16 @@ void vg_lite_fb_close(vg_lite_buffer_t *buffer) { (void)buffer; }
 void vg_lite_save_raw(const char *name, vg_lite_buffer_t *buffer)
 {
     if (!name || !buffer) return;
-    FILE *fp = fopen(name, "wb");
+
+    /* Route to same configuration-specific subdirectory as PNG output. */
+    mkdir(DUMP_SUBDIR
+#if defined(_WIN32)
+         , 0
+#endif
+    );
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/%s", DUMP_SUBDIR, name);
+    FILE *fp = fopen(outpath, "wb");
     if (!fp) return;
 
     /* Write 16-byte header */
@@ -227,10 +283,15 @@ void vg_lite_save_raw(const char *name, vg_lite_buffer_t *buffer)
     fwrite(header, 4, 4, fp);
 
     /* Write pixel data */
-    unsigned char *ptr = (unsigned char *)buffer->memory;
-    for (int y = 0; y < buffer->height; y++) {
-        fwrite(ptr, 1, buffer->stride, fp);
-        ptr += buffer->stride;
+    unsigned char *img_data = (unsigned char *)malloc(buffer->stride * buffer->height);
+    if (img_data) {
+        vg_lite_buffer_download(buffer, img_data);
+        unsigned char *ptr = img_data;
+        for (int y = 0; y < buffer->height; y++) {
+            fwrite(ptr, 1, buffer->stride, fp);
+            ptr += buffer->stride;
+        }
+        free(img_data);
     }
     fclose(fp);
 }

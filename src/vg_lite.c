@@ -149,13 +149,14 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 {
     if (!buffer) return VG_LITE_INVALID_ARGUMENT;
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
+
     buffer->stride = vg_lite_format_stride(buffer->format, buffer->width);
-    buffer->tiled = VG_LITE_LINEAR;
     VkFormat vkfmt = vg_lite_format_to_vk(buffer->format);
+    VkImageTiling tiling = (buffer->tiled == VG_LITE_TILED) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
 
     VkImageFormatProperties img_fmt_props;
     if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, vkfmt,
-            VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_LINEAR,
+            VK_IMAGE_TYPE_2D, tiling,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             0, &img_fmt_props) != VK_SUCCESS) {
@@ -171,7 +172,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     img_ci.mipLevels = 1;
     img_ci.arrayLayers = 1;
     img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    img_ci.tiling = VK_IMAGE_TILING_LINEAR;
+    img_ci.tiling = tiling;
     img_ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     img_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -186,8 +187,20 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     vkGetImageMemoryRequirements(g_vk_ctx.device, internal->image, &mem_req);
     VkMemoryAllocateInfo alloc_ci = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     alloc_ci.allocationSize = mem_req.size;
-    int32_t mem_type = find_memory_type(mem_req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+
+    int32_t mem_type;
+    if (tiling == VK_IMAGE_TILING_OPTIMAL) {
+        /* OPTIMAL: prefer DEVICE_LOCAL, fall back to HOST_VISIBLE */
+        mem_type = find_memory_type(mem_req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (mem_type < 0)
+            mem_type = find_memory_type(mem_req.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    } else {
+        /* LINEAR: HOST_VISIBLE + HOST_COHERENT for CPU direct access */
+        mem_type = find_memory_type(mem_req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
     if (mem_type < 0) {
         vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
         free(internal); return VG_LITE_OUT_OF_MEMORY;
@@ -268,18 +281,10 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
     internal->mapped_base = NULL;
+    internal->is_optimal = (tiling == VK_IMAGE_TILING_OPTIMAL) ? 1 : 0;
     internal->width = buffer->width;
     internal->height = buffer->height;
     internal->msaa_dirty = 0;
-
-    /* Get actual image layout in memory (offset and row pitch) */
-    VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
-    VkSubresourceLayout layout;
-    vkGetImageSubresourceLayout(g_vk_ctx.device, internal->image, &sub, &layout);
-    buffer->stride = layout.rowPitch;
-
-    void *mapped = NULL;
-    VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
 
     /* Layout transition on a separate command buffer (does not interrupt main cmd_buf render pass) */
     {
@@ -291,7 +296,9 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         VK_CHECK(vkBeginCommandBuffer(icb, &bi));
         VkImageMemoryBarrier init_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         init_bar.srcAccessMask = 0;
-        init_bar.dstAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+        init_bar.dstAccessMask = internal->is_optimal
+            ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            : (VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT);
         init_bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         init_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         init_bar.image = internal->image;
@@ -299,7 +306,8 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         init_bar.subresourceRange.levelCount = 1;
         init_bar.subresourceRange.layerCount = 1;
         vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &init_bar);
+            internal->is_optimal ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_HOST_BIT,
+            0, 0, NULL, 0, NULL, 1, &init_bar);
         VK_CHECK(vkEndCommandBuffer(icb));
         VkSubmitInfo si = {0};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -311,11 +319,25 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     }
 
     buffer->handle = internal;
-    buffer->memory = (uint8_t *)mapped + layout.offset;
-    buffer->address = 0;
-    buffer->image_mode = VG_LITE_NORMAL_IMAGE_MODE;  /* Initialize to default */
 
-    internal->mapped_base = mapped;
+    if (internal->is_optimal) {
+        /* OPTIMAL: no direct CPU access, stride from format_stride (already set) */
+        buffer->memory = NULL;
+    } else {
+        /* LINEAR: get subresource layout for CPU direct access */
+        VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+        VkSubresourceLayout layout;
+        vkGetImageSubresourceLayout(g_vk_ctx.device, internal->image, &sub, &layout);
+        buffer->stride = layout.rowPitch;
+
+        void *mapped = NULL;
+        VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+        buffer->memory = (uint8_t *)mapped + layout.offset;
+        internal->mapped_base = mapped;
+    }
+
+    buffer->address = 0;
+    buffer->image_mode = VG_LITE_NORMAL_IMAGE_MODE;
     return VG_LITE_SUCCESS;
 }
 
@@ -345,6 +367,7 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
     if (internal->image) vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
     if (internal->mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
+    if (internal->cpu_cache) free(internal->cpu_cache);
     if (internal->memory) vkFreeMemory(g_vk_ctx.device, internal->memory, NULL);
     free(internal);
     buffer->handle = NULL;
@@ -364,12 +387,266 @@ void vg_lite_buffer_flush(vg_lite_buffer_t *buffer)
     vkFlushMappedMemoryRanges(g_vk_ctx.device, 1, &range);
 }
 
+/* Upload pixel data to OPTIMAL-tiled image via staging buffer.
+ * src_data must be buffer->stride * buffer->height bytes in LINEAR layout. */
+static vg_lite_error_t upload_to_image(vg_lite_buffer_t *buffer, const void *src_data)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint32_t image_size = buffer->stride * buffer->height;
+
+    /* 1. Create staging buffer */
+    VkBufferCreateInfo buf_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buf_ci.size = image_size;
+    buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging_buf;
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &buf_ci, NULL, &staging_buf));
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, staging_buf, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    int32_t mt = find_memory_type(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) { vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL); return VG_LITE_OUT_OF_MEMORY; }
+    alloc.memoryTypeIndex = (uint32_t)mt;
+    VkDeviceMemory staging_mem;
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &alloc, NULL, &staging_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, staging_buf, staging_mem, 0));
+
+    /* 2. Fill staging with data */
+    void *mapped;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, staging_mem, 0, image_size, 0, &mapped));
+    memcpy(mapped, src_data, image_size);
+    vkUnmapMemory(g_vk_ctx.device, staging_mem);
+
+    /* 3. Record copy on init_cmd_buf (doesn't interrupt main render pass) */
+    VkCommandBuffer icb = g_vk_ctx.init_cmd_buf;
+    VK_CHECK(vkResetCommandBuffer(icb, 0));
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(icb, &bi));
+
+    /* Barrier: image GENERAL -> TRANSFER_DST */
+    VkImageMemoryBarrier dst_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    dst_bar.srcAccessMask = 0;
+    dst_bar.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dst_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dst_bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dst_bar.image = internal->image;
+    dst_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    dst_bar.subresourceRange.levelCount = 1;
+    dst_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &dst_bar);
+
+    /* Copy buffer to image */
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
+    region.bufferImageHeight = buffer->height;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = buffer->width;
+    region.imageExtent.height = buffer->height;
+    region.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(icb, staging_buf, internal->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    /* Barrier: image TRANSFER_DST -> GENERAL */
+    VkImageMemoryBarrier gen_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    gen_bar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    gen_bar.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    gen_bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    gen_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    gen_bar.image = internal->image;
+    gen_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    gen_bar.subresourceRange.levelCount = 1;
+    gen_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &gen_bar);
+
+    VK_CHECK(vkEndCommandBuffer(icb));
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &icb;
+    VK_CHECK(vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence));
+    VK_CHECK(vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence));
+    VK_CHECK(vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX));
+
+    /* 4. Cleanup staging */
+    vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL);
+    vkFreeMemory(g_vk_ctx.device, staging_mem, NULL);
+    return VG_LITE_SUCCESS;
+}
+
+/* Download pixel data from OPTIMAL-tiled image via staging buffer.
+ * dst_data receives buffer->stride * buffer->height bytes in LINEAR layout. */
+static vg_lite_error_t download_from_image(vg_lite_buffer_t *buffer, void *dst_data)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint32_t image_size = buffer->stride * buffer->height;
+
+    /* 1. Create staging buffer */
+    VkBufferCreateInfo buf_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buf_ci.size = image_size;
+    buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging_buf;
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &buf_ci, NULL, &staging_buf));
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, staging_buf, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    int32_t mt = find_memory_type(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) { vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL); return VG_LITE_OUT_OF_MEMORY; }
+    alloc.memoryTypeIndex = (uint32_t)mt;
+    VkDeviceMemory staging_mem;
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &alloc, NULL, &staging_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, staging_buf, staging_mem, 0));
+
+    /* 2. Flush render pass first to ensure GPU writes are visible */
+    vg_lite_vulkan_flush_render_pass();
+    vg_lite_vulkan_submit_command(1);
+
+    /* 3. Record copy on init_cmd_buf */
+    VkCommandBuffer icb = g_vk_ctx.init_cmd_buf;
+    VK_CHECK(vkResetCommandBuffer(icb, 0));
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(icb, &bi));
+
+    /* Barrier: image GENERAL -> TRANSFER_SRC */
+    VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    src_bar.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    src_bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    src_bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    src_bar.image = internal->image;
+    src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    src_bar.subresourceRange.levelCount = 1;
+    src_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &src_bar);
+
+    /* Copy image to buffer */
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
+    region.bufferImageHeight = buffer->height;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = buffer->width;
+    region.imageExtent.height = buffer->height;
+    region.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(icb, internal->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buf, 1, &region);
+
+    /* Barrier: image TRANSFER_SRC -> GENERAL */
+    VkImageMemoryBarrier gen_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    gen_bar.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    gen_bar.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    gen_bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    gen_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    gen_bar.image = internal->image;
+    gen_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    gen_bar.subresourceRange.levelCount = 1;
+    gen_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &gen_bar);
+
+    VK_CHECK(vkEndCommandBuffer(icb));
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &icb;
+    VK_CHECK(vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence));
+    VK_CHECK(vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence));
+    VK_CHECK(vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX));
+
+    /* 4. Read back data */
+    void *mapped;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, staging_mem, 0, image_size, 0, &mapped));
+    memcpy(dst_data, mapped, image_size);
+    vkUnmapMemory(g_vk_ctx.device, staging_mem);
+
+    /* 5. Cleanup staging */
+    vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL);
+    vkFreeMemory(g_vk_ctx.device, staging_mem, NULL);
+    return VG_LITE_SUCCESS;
+}
+
+/* Public API: upload CPU data to buffer (handles both LINEAR and OPTIMAL) */
+vg_lite_error_t vg_lite_buffer_write(vg_lite_buffer_t *buffer, const void *src_data)
+{
+    if (!buffer || !buffer->handle || !src_data) return VG_LITE_INVALID_ARGUMENT;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (internal->is_optimal) {
+        /* Invalidate cached CPU data before upload */
+        if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+        return upload_to_image(buffer, src_data);
+    } else {
+        memcpy(buffer->memory, src_data, buffer->stride * buffer->height);
+        vg_lite_buffer_flush(buffer);
+        return VG_LITE_SUCCESS;
+    }
+}
+
+/* Public API: download buffer data to CPU (handles both LINEAR and OPTIMAL) */
+vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data)
+{
+    if (!buffer || !buffer->handle || !dst_data) return VG_LITE_INVALID_ARGUMENT;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (internal->is_optimal) {
+        return download_from_image(buffer, dst_data);
+    } else {
+        memcpy(dst_data, buffer->memory, buffer->stride * buffer->height);
+        return VG_LITE_SUCCESS;
+    }
+}
+
+/* Public API: acquire read-only CPU pointer (LINEAR: zero-copy, OPTIMAL: cached download) */
+const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
+{
+    if (!buffer) return NULL;
+    if (!buffer->handle) return buffer->memory;  /* unallocated: use raw memory if set */
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (!internal->is_optimal) {
+        return buffer->memory;
+    }
+    /* OPTIMAL: download once, cache */
+    if (!internal->cpu_cache) {
+        internal->cpu_cache = malloc(buffer->stride * buffer->height);
+        if (!internal->cpu_cache) return NULL;
+        if (download_from_image(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
+            free(internal->cpu_cache);
+            internal->cpu_cache = NULL;
+            return NULL;
+        }
+    }
+    return internal->cpu_cache;
+}
+
+/* Public API: release read-only CPU pointer.
+ * For OPTIMAL buffers, the cache persists until the next write or free,
+ * so repeated read_ptr calls in a loop don't trigger repeated downloads. */
+void vg_lite_buffer_read_ptr_release(vg_lite_buffer_t *buffer)
+{
+    if (!buffer || !buffer->handle) return;
+    /* Cache persists; invalidated on next write or vg_lite_free */
+}
+
 vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rect, vg_lite_color_t color)
 {
     if (!target) return VG_LITE_INVALID_ARGUMENT;
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
     
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    /* Invalidate cached CPU data — GPU will render to this buffer */
+    if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
     
     VkClearAttachment clear_att = {0};
@@ -626,6 +903,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
     buffer_internal_t *src_int = (buffer_internal_t *)source->handle;
+    /* Invalidate cached CPU data — GPU will render to this target */
+    if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
     int blend_group = vg_lite_blend_to_group(blend);

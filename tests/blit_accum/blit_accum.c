@@ -41,6 +41,7 @@ int main() {
     CHECK_ERROR(vg_lite_init(TW, TH));
     memset(&target, 0, sizeof(target));
     target.width = TW; target.height = TH; target.format = VG_LITE_BGRA8888;
+    target.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&target));
 
     /* Premultiplied alpha sources (engine uses premultiplied blend).
@@ -94,14 +95,18 @@ int main() {
 
     /* Expected: B=128, G=63, R=31 (BGRA8888 LE: 0xFF803F1F) */
     {
-        uint32_t *p = (uint32_t*)target.memory;
+        const uint32_t *p = (const uint32_t*)vg_lite_buffer_read_ptr(&target);
+        int stride_u32 = target.stride / 4;
         uint32_t expected = 0xFF804020; /* A=255, B=128, G=64, R=32 */
         printf("  pixel(0,0) = 0x%08X (expected 0x%08X)\n", p[0], expected);
         int mismatch = 0;
-        for (int i = 0; i < TW*TH; i++) {
-            if (p[i] != expected) {
-                mismatch++;
-                if (mismatch == 1)         printf("  first wrong: got 0x%08X exp 0x%08X at (%d,%d)\n", p[i], expected, i%TW, i/TW);
+        for (int y = 0; y < TH; y++) {
+            for (int x = 0; x < TW; x++) {
+                uint32_t val = p[y * stride_u32 + x];
+                if (val != expected) {
+                    mismatch++;
+                    if (mismatch == 1) printf("  first wrong: got 0x%08X exp 0x%08X at (%d,%d)\n", val, expected, x, y);
+                }
             }
         }
         /* Sample grid for debugging */
@@ -109,20 +114,24 @@ int main() {
         for (int y = 0; y < TH; y += 32) {
             printf("  y=%3d: ", y);
             for (int x = 0; x < TW; x += 32)
-                printf("%08X ", p[y*TW+x]);
+                printf("%08X ", p[y*stride_u32+x]);
             printf("\n");
         }
         /* Count unique values */
         uint32_t vals[256]; int counts[256]; int nunique = 0;
-        for (int i = 0; i < TW*TH; i++) {
-            int found = -1;
-            for (int j = 0; j < nunique; j++) if (vals[j] == p[i]) { found = j; break; }
-            if (found >= 0) counts[found]++;
-            else if (nunique < 256) { vals[nunique] = p[i]; counts[nunique] = 1; nunique++; }
+        for (int y = 0; y < TH; y++) {
+            for (int x = 0; x < TW; x++) {
+                uint32_t val = p[y * stride_u32 + x];
+                int found = -1;
+                for (int j = 0; j < nunique; j++) if (vals[j] == val) { found = j; break; }
+                if (found >= 0) counts[found]++;
+                else if (nunique < 256) { vals[nunique] = val; counts[nunique] = 1; nunique++; }
+            }
         }
         printf("  Unique values: %d\n", nunique);
         for (int j = 0; j < nunique; j++)
             printf("    0x%08X: %d pixels\n", vals[j], counts[j]);
+        vg_lite_buffer_read_ptr_release(&target);
         if (mismatch == 0)
             printf("blit_accum OK (single blend test passed)\n");
         else
