@@ -8,6 +8,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#if defined(_WIN32)
+#include <direct.h>
+#endif
 
 /* Configuration-specific dump directory name (string literal).
  * Encodes all 3 compile-time axes: tiling + MSAA + OBB.
@@ -206,11 +209,11 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
     }
 
     /* Route PNG output to configuration-specific subdirectory for visual inspection. */
-    mkdir(DUMP_SUBDIR
 #if defined(_WIN32)
-         , 0
+    _mkdir(DUMP_SUBDIR);
+#else
+    mkdir(DUMP_SUBDIR, 0755);
 #endif
-    );
     char outpath[512];
     snprintf(outpath, sizeof(outpath), "%s/%s", DUMP_SUBDIR, name);
 
@@ -264,11 +267,11 @@ void vg_lite_save_raw(const char *name, vg_lite_buffer_t *buffer)
     if (!name || !buffer) return;
 
     /* Route to same configuration-specific subdirectory as PNG output. */
-    mkdir(DUMP_SUBDIR
 #if defined(_WIN32)
-         , 0
+    _mkdir(DUMP_SUBDIR);
+#else
+    mkdir(DUMP_SUBDIR, 0755);
 #endif
-    );
     char outpath[512];
     snprintf(outpath, sizeof(outpath), "%s/%s", DUMP_SUBDIR, name);
     FILE *fp = fopen(outpath, "wb");
