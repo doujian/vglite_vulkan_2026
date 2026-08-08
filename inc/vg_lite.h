@@ -1518,6 +1518,7 @@ typedef unsigned int        vg_lite_color_t;
 
     /* --- GPU timestamp profiling --- */
 
+#if VGLITE_BLIT_PERF
     /* Write a GPU timestamp at the given pipeline stage.
      * Returns the query slot index used. */
     vg_lite_uint32_t vg_lite_write_timestamp(vg_lite_uint32_t stage);
@@ -1527,6 +1528,7 @@ typedef unsigned int        vg_lite_color_t;
 
     /* Get elapsed nanoseconds between two timestamp slots. */
     double vg_lite_get_elapsed_ns(vg_lite_uint32_t start_slot, vg_lite_uint32_t end_slot);
+#endif
 
 #endif /* VGLITE_VERSION_3_0 */
 

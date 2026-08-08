@@ -166,6 +166,7 @@ uint8_t use_obb_blit;                /* 0 = original fullscreen, 1 = OBB pipelin
 pipeline_cache_entry_t blit_obb_pipeline_cache[MAX_PIPELINE_CACHE];
 int blit_obb_pipeline_cache_count;
 
+#if VGLITE_BLIT_PERF
     /* GPU timestamp query pool */
     VkQueryPool timestamp_query_pool;
     float timestamp_period;             /* nanoseconds per timestamp tick */
@@ -175,6 +176,7 @@ int blit_obb_pipeline_cache_count;
     /* Blit perf statistics (accumulated across blits within a batch) */
     uint32_t blit_perf_count;           /* number of timed blits in current batch */
     uint64_t blit_perf_total_ns;        /* sum of elapsed ns across all timed blits */
+#endif
 } vk_context_t;
 
 /* Helper: set scissor at draw time — uses user scissor if enabled, else full framebuffer */
@@ -207,9 +209,11 @@ VkPipeline vg_lite_vulkan_get_pipeline_obb_no_msaa(VkFormat format, int blend_gr
 VkPipeline vg_lite_vulkan_get_pipeline_obb_native_msaa(VkFormat format, int blend_group);
 
 /* GPU timestamp utilities */
+#if VGLITE_BLIT_PERF
 void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage);
 uint64_t vg_lite_vulkan_read_timestamp(uint32_t slot);
 double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot);
+#endif
 
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler);
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);

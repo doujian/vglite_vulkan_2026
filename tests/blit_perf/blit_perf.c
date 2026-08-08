@@ -127,6 +127,7 @@ int main() {
     }
 
     /* ===== Phase 2: Performance Measurement ===== */
+#if VGLITE_BLIT_PERF
     printf("\n=== Phase 2: Performance ===\n");
     printf("[PERF] format=BGRA8888 target=%dx%d iterations=%d\n", TW, TH, BLIT_ITERATIONS);
 
@@ -174,6 +175,9 @@ int main() {
 
         vg_lite_free(&src);
     }
+#else
+    printf("\n=== Phase 2: Performance (skipped, VGLITE_BLIT_PERF=0) ===\n");
+#endif
 
     /* ===== Phase 3: Summary ===== */
     printf("\n=== Phase 3: Summary ===\n");

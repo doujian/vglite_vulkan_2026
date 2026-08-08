@@ -212,6 +212,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     /* Query timestamp period for GPU timing */
     VkPhysicalDeviceProperties phys_props;
     vkGetPhysicalDeviceProperties(g_vk_ctx.physical_device, &phys_props);
+#if VGLITE_BLIT_PERF
     g_vk_ctx.timestamp_period = (float)phys_props.limits.timestampPeriod;
 
     /* Create timestamp query pool */
@@ -220,6 +221,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     qp_ci.queryCount = VGLITE_TIMESTAMP_QUERY_COUNT;
     VK_CHECK(vkCreateQueryPool(g_vk_ctx.device, &qp_ci, NULL, &g_vk_ctx.timestamp_query_pool));
     g_vk_ctx.timestamp_slot_counter = 0;
+#endif
 
     VkCommandPoolCreateInfo pool_ci = {0};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -309,7 +311,9 @@ vg_lite_error_t vg_lite_vulkan_destroy(void)
     if (g_vk_ctx.descriptor_pool) { vkDestroyDescriptorPool(g_vk_ctx.device, g_vk_ctx.descriptor_pool, NULL); g_vk_ctx.descriptor_pool = VK_NULL_HANDLE; }
     if (g_vk_ctx.fence) { vkDestroyFence(g_vk_ctx.device, g_vk_ctx.fence, NULL); g_vk_ctx.fence = VK_NULL_HANDLE; }
     if (g_vk_ctx.command_pool) { vkFreeCommandBuffers(g_vk_ctx.device, g_vk_ctx.command_pool, 1, &g_vk_ctx.cmd_buf); vkFreeCommandBuffers(g_vk_ctx.device, g_vk_ctx.command_pool, 1, &g_vk_ctx.init_cmd_buf); vkDestroyCommandPool(g_vk_ctx.device, g_vk_ctx.command_pool, NULL); g_vk_ctx.command_pool = VK_NULL_HANDLE; }
+#if VGLITE_BLIT_PERF
     if (g_vk_ctx.timestamp_query_pool) { vkDestroyQueryPool(g_vk_ctx.device, g_vk_ctx.timestamp_query_pool, NULL); g_vk_ctx.timestamp_query_pool = VK_NULL_HANDLE; }
+#endif
     if (g_vk_ctx.device) { vkDestroyDevice(g_vk_ctx.device, NULL); g_vk_ctx.device = VK_NULL_HANDLE; }
     if (g_vk_ctx.debug_messenger) { destroy_debug_messenger(g_vk_ctx.instance, g_vk_ctx.debug_messenger); g_vk_ctx.debug_messenger = VK_NULL_HANDLE; }
     if (g_vk_ctx.instance) { vkDestroyInstance(g_vk_ctx.instance, NULL); g_vk_ctx.instance = VK_NULL_HANDLE; }
@@ -326,9 +330,11 @@ vg_lite_error_t vg_lite_vulkan_begin_command(void)
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(g_vk_ctx.cmd_buf, &bi));
     g_vk_ctx.cmd_buf_recording = 1;
+#if VGLITE_BLIT_PERF
     g_vk_ctx.timestamp_slot_counter = 0;
     if (g_vk_ctx.timestamp_query_pool)
         vkCmdResetQueryPool(g_vk_ctx.cmd_buf, g_vk_ctx.timestamp_query_pool, 0, VGLITE_TIMESTAMP_QUERY_COUNT);
+#endif
     return VG_LITE_SUCCESS;
 }
 
@@ -507,6 +513,7 @@ static int create_attachment(
 }
 
 /* GPU timestamp utilities */
+#if VGLITE_BLIT_PERF
 void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage)
 {
     if (!g_vk_ctx.timestamp_query_pool || !g_vk_ctx.cmd_buf_recording) return;
@@ -537,6 +544,7 @@ double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot)
     if (start == 0 || end == 0 || end < start) return 0.0;
     return (double)(end - start) * (double)g_vk_ctx.timestamp_period;
 }
+#endif
 
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler)
 {

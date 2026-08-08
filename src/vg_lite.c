@@ -1392,6 +1392,7 @@ vg_lite_uint32_t vg_lite_get_blit_obb_mode(void) {
     return g_vk_ctx.use_obb_blit;
 }
 
+#if VGLITE_BLIT_PERF
 vg_lite_uint32_t vg_lite_write_timestamp(vg_lite_uint32_t stage) {
     /* Map vg_lite_uint32_t to VkPipelineStageFlagBits */
     vg_lite_vulkan_write_timestamp((VkPipelineStageFlagBits)stage);
@@ -1405,3 +1406,4 @@ vg_lite_uint64_t vg_lite_read_timestamp(vg_lite_uint32_t slot) {
 double vg_lite_get_elapsed_ns(vg_lite_uint32_t start_slot, vg_lite_uint32_t end_slot) {
     return vg_lite_vulkan_get_elapsed_ns(start_slot, end_slot);
 }
+#endif
