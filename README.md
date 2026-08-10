@@ -66,6 +66,15 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 
 Native blend is used for NONE/SRC_OVER/DST_OVER/ADDITIVE/SUBTRACT on common formats. It uses 4x MSAA with hardware pipeline blend. A seed draw copies the target's content into the MSAA at the start of each new render pass, so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). All other format/blend combinations use shader blend (also 4x MSAA, but computes blend in the shader with a temp copy of the target as dst).
 
+### Delayed Clear Optimization
+
+Fullscreen `vg_lite_clear` (rect==NULL or covers entire target) is deferred — no GPU operations are executed immediately. The clear color is stored as pending state on the target buffer. When the next `vg_lite_blit` or `vg_lite_draw` targets the same buffer, the clear is merged into the render pass begin:
+
+- **no-MSAA path**: clear and blit/draw share a single render pass (saves 1 RP open/close).
+- **MSAA path**: pending clear is flushed to the target via a no-MSAA RP, then normal `seed_msaa` follows. (Cannot merge into MSAA RP due to llvmpipe `vkCmdClearAttachments` bug on 4x MSAA B5G6R5 attachments.)
+- **Flush points**: `vg_lite_finish` and `vg_lite_buffer_read_ptr` automatically flush any unconsumed pending clear.
+- **Partial clear** (rect != fullscreen): unchanged — executes immediately via `vkCmdClearAttachments`.
+
 ## Build
 
 Requirements:
