@@ -921,3 +921,36 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 - CMakeLists.txt: VGLITE_TARGET_OPTIMAL option
 - 24 test files: .tiled = VGLITE_TARGET_TILING, direct memory access replaced
 - AGENTS.md: Full Test Matrix (8 configs)
+
+---
+
+## #26 — Delayed clear: merge fullscreen clear into next blit/draw RP
+
+**Symptom**: `vg_lite_clear` (fullscreen) opens a no-MSAA render pass, executes `vkCmdClearAttachments`, then leaves the RP open. The immediately following `vg_lite_blit` / `vg_lite_draw` flushes that RP, opens a new one (MSAA with seed_msaa, or no-MSAA), and renders — resulting in 2 unnecessary RP open/close cycles + 1 redundant seed_msaa blit.
+
+**Root Cause**: Clear is always executed immediately, even when the next API call renders to the same target. The clear could be deferred and merged into the next RP begin.
+
+**Solution**: Two-tier deferred clear system:
+
+1. **Fullscreen clear** (`vg_lite_clear` with `rect==NULL` or rect covering full target): sets `has_pending_clear=1` + `pending_clear_color` on the target buffer's `buffer_internal_t`, stores `g_pending_clear_buffer` pointer. No GPU operations executed.
+
+2. **no-MSAA blit path** (`VGLITE_BLIT_MSAA=0`): When consuming pending clear, opens a single no-MSAA RP, executes `vkCmdClearAttachments`, then proceeds to blit draw — all in one RP. Saves 1 RP open/close vs HEAD.
+
+3. **MSAA blit/draw path** (`VGLITE_BLIT_MSAA=1`): Flushes pending clear to target via no-MSAA RP (identical to HEAD behavior), then proceeds with normal `set_render_target` + `seed_msaa`. Cannot merge into MSAA RP because llvmpipe has a bug: `vkCmdClearAttachments` on 4x MSAA `B5G6R5_PACK16` attachment swaps R/B channels (see Bug below).
+
+4. **Flush points**: `vg_lite_finish()` and `vg_lite_buffer_read_ptr()` call `flush_pending_clear_global()` to ensure the clear is executed even when no blit/draw follows.
+
+5. **Partial clear** (rect != fullscreen): unchanged immediate path. Flushes any pending fullscreen clear first to avoid overwrite.
+
+**llvmpipe MSAA clear bug**: `vkCmdClearAttachments` on a 4x multisampled `VK_FORMAT_B5G6R5_UNORM_PACK16` color attachment produces R/B swapped output. Verified: clear value `[0, 0, 1, 1]` (RGBA = blue) produces R=255 G=0 B=0 (red) instead. Same operation on a 1x (non-MSAA) attachment of the same format works correctly. This affects config 1/2/5/6 (MSAA=ON). Workaround: MSAA path uses no-MSAA RP for clear + seed_msaa instead of in-RP MSAA clear.
+
+**New helper functions**:
+- `vg_lite_color_to_vk_clear(format, color, *out)` — converts `vg_lite_color_t` (0xAABBGGRR) to `VkClearValue.float32` per format. Extracted from `vg_lite_clear`'s existing color conversion.
+- `flush_pending_clear_on_target(target)` — non-static, performs actual GPU clear via no-MSAA RP + `vkCmdClearAttachments`. Called by blit (MSAA path), draw (all paths), and flush_pending_clear_global.
+- `flush_pending_clear_global()` — calls flush on `g_pending_clear_buffer` if set.
+
+**New buffer_internal_t fields**: `has_pending_clear`, `pending_clear_color`, `clear_render_pass` (unused in final implementation but reserved).
+
+**Verification**: All 8 configs 37/38 PASS (only test_sft_blit pre-existing crash).
+
+**Files**: src/vg_lite.c, src/vg_lite_draw.c, src/vg_lite_vulkan.c, src/vg_lite_vulkan.h

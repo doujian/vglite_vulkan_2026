@@ -10,6 +10,14 @@
 #include "vg_lite_math.h"
 #include "shader_loader.h"
 
+/* Global pointer to the buffer with a pending fullscreen clear.
+ * Set by vg_lite_clear, consumed by blit/draw, flushed by finish/read_ptr. */
+vg_lite_buffer_t *g_pending_clear_buffer = NULL;
+
+/* Forward declarations */
+void flush_pending_clear_on_target(vg_lite_buffer_t *target);
+static void flush_pending_clear_global(void);
+
 #if VGLITE_BLIT_PERF
 #define BOTTOM_OF_PIPE_BIT 0x00002000
 
@@ -365,6 +373,7 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
     if (internal->a_to_r_view) vkDestroyImageView(g_vk_ctx.device, internal->a_to_r_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
+    if (internal->clear_render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->clear_render_pass, NULL);
     if (internal->image) vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
     if (internal->mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
     if (internal->cpu_cache) free(internal->cpu_cache);
@@ -614,6 +623,13 @@ const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
     if (!buffer) return NULL;
     if (!buffer->handle) return buffer->memory;  /* unallocated: use raw memory if set */
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+
+    /* If there's a pending clear on this buffer, flush it before reading */
+    if (internal->has_pending_clear) {
+        flush_pending_clear_global();
+        vg_lite_finish();
+    }
+
     if (!internal->is_optimal) {
         return buffer->memory;
     }
@@ -639,74 +655,111 @@ void vg_lite_buffer_read_ptr_release(vg_lite_buffer_t *buffer)
     /* Cache persists; invalidated on next write or vg_lite_free */
 }
 
-vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rect, vg_lite_color_t color)
+/* Convert VGLite color (0xAABBGGRR) to VkClearValue based on target format.
+ * Used by both vg_lite_clear (immediate path) and delayed clear (loadOp=CLEAR path). */
+void vg_lite_color_to_vk_clear(vg_lite_buffer_format_t format, vg_lite_color_t color, VkClearValue *out)
 {
-    if (!target) return VG_LITE_INVALID_ARGUMENT;
-    if (!g_initialized) return VG_LITE_NO_CONTEXT;
-    
-    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    /* Invalidate cached CPU data — GPU will render to this buffer */
-    if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
-    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-    
-    VkClearAttachment clear_att = {0};
-    clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    clear_att.colorAttachment = 0;
-    
-    /* VGLite color is 0xAABBGGRR: A at bits 24-31, B at bits 16-23, G at bits 8-15, R at bits 0-7 */
     uint8_t a = (color >> 24) & 0xFF;
     uint8_t b = (color >> 16) & 0xFF;
     uint8_t g = (color >> 8)  & 0xFF;
     uint8_t r = (color)       & 0xFF;
-    
-    if (target->format == VG_LITE_L8) {
+
+    float *f = out->color.float32;
+    f[1] = f[2] = 0.0f;
+    f[3] = 1.0f;
+
+    if (format == VG_LITE_L8) {
         float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-        clear_att.clearValue.color.float32[0] = lum / 255.0f;
-        clear_att.clearValue.color.float32[1] = 0.0f;
-        clear_att.clearValue.color.float32[2] = 0.0f;
-        clear_att.clearValue.color.float32[3] = 1.0f;
-    } else if (target->format == VG_LITE_A8) {
-        clear_att.clearValue.color.float32[0] = (float)a / 255.0f;
-        clear_att.clearValue.color.float32[1] = 0.0f;
-        clear_att.clearValue.color.float32[2] = 0.0f;
-        clear_att.clearValue.color.float32[3] = 1.0f;
-    } else if (target->format == VG_LITE_RGB565) {
-        /* VK_FORMAT_B5G6R5_UNORM_PACK16: standard Vulkan mapping float32[0]=R, [1]=G, [2]=B.
-         * No-MSAA path follows Vulkan spec correctly.
-         * (MSAA path needs R/B swap due to Intel Iris Xe driver bug �?see blit/draw code.) */
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
-    } else if (target->format == VG_LITE_RGBA4444) {
-        /* VK_FORMAT_R4G4B4A4_UNORM_PACK16: standard Vulkan mapping float32[0]=R, [1]=G, [2]=B, [3]=A.
-         * No-MSAA path follows Vulkan spec correctly.
-         * (MSAA path needs full channel remap due to Intel Iris Xe driver bug.) */
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
-    } else if (target->format == VG_LITE_BGRA4444) {
-        /* VK_FORMAT_B4G4R4A4_UNORM_PACK16: standard Vulkan mapping float32[0]=B, [1]=G, [2]=R, [3]=A.
-         * No-MSAA path follows Vulkan spec correctly.
-         * (MSAA path needs full channel remap due to Intel Iris Xe driver bug.) */
-        clear_att.clearValue.color.float32[0] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
+        f[0] = lum / 255.0f;
+    } else if (format == VG_LITE_A8) {
+        f[0] = (float)a / 255.0f;
+    } else if (format == VG_LITE_BGRA4444) {
+        /* VK_FORMAT_B4G4R4A4: [0]=B, [1]=G, [2]=R, [3]=A */
+        f[0] = (float)b / 255.0f;
+        f[1] = (float)g / 255.0f;
+        f[2] = (float)r / 255.0f;
+        f[3] = (float)a / 255.0f;
     } else {
-        /* VkClearValue channels are format-independent per Vulkan spec:
-         * [0]=R value, [1]=G value, [2]=B value, [3]=A value
-         * The driver handles format-specific memory layout internally. */
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
+        /* All other formats (RGB565, RGBA4444, BGRA8888, etc.): [0]=R, [1]=G, [2]=B, [3]=A */
+        f[0] = (float)r / 255.0f;
+        f[1] = (float)g / 255.0f;
+        f[2] = (float)b / 255.0f;
+        f[3] = (float)a / 255.0f;
     }
+}
+
+/* Flush a pending fullscreen clear by performing an actual GPU clear via no-MSAA RP.
+ * Called when we need the clear to be actually executed but no blit/draw will consume it. */
+void flush_pending_clear_on_target(vg_lite_buffer_t *target)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    if (!internal->has_pending_clear) return;
+
+    VkClearAttachment l_clear_att = {0};
+    l_clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    l_clear_att.colorAttachment = 0;
+    vg_lite_color_to_vk_clear(target->format, internal->pending_clear_color, &l_clear_att.clearValue);
 
     vg_lite_vulkan_begin_command();
-    /* Reuse the no-MSAA RP if it's already active on the same target.
-     * Only flush when switching targets or when a different RP type is active. */
+    {
+        buffer_internal_t *ci = (buffer_internal_t *)target->handle;
+        if (!(g_vk_ctx.current_fb_image == ci->image && g_vk_ctx.current_fb_is_no_msaa))
+            vg_lite_vulkan_flush_render_pass();
+    }
+    vg_lite_vulkan_set_render_target_no_msaa(target);
+
+    VkClearRect l_clear_rect = {0};
+    l_clear_rect.rect.extent.width = target->width;
+    l_clear_rect.rect.extent.height = target->height;
+    l_clear_rect.baseArrayLayer = 0;
+    l_clear_rect.layerCount = 1;
+    vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &l_clear_att, 1, &l_clear_rect);
+
+    internal->has_pending_clear = 0;
+    g_pending_clear_buffer = NULL;
+}
+
+/* Flush any pending clear globally. Called at finish/read_ptr. */
+static void flush_pending_clear_global(void)
+{
+    if (g_pending_clear_buffer) {
+        flush_pending_clear_on_target(g_pending_clear_buffer);
+    }
+}
+
+vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rect, vg_lite_color_t color)
+{
+    if (!target) return VG_LITE_INVALID_ARGUMENT;
+    if (!g_initialized) return VG_LITE_NO_CONTEXT;
+
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+
+    int is_fullscreen = (!rect ||
+        (rect->x <= 0 && rect->y <= 0 &&
+         rect->x + rect->width >= (int32_t)target->width &&
+         rect->y + rect->height >= (int32_t)target->height));
+
+    if (is_fullscreen) {
+        internal->has_pending_clear = 1;
+        internal->pending_clear_color = color;
+        internal->msaa_needs_seed = 1;
+        internal->msaa_dirty = 0;
+        g_pending_clear_buffer = target;
+        return VG_LITE_SUCCESS;
+    }
+
+    /* Partial clear path — flush any pending fullscreen clear first */
+    if (internal->has_pending_clear) {
+        flush_pending_clear_on_target(target);
+    }
+
+    VkClearAttachment clear_att = {0};
+    clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    clear_att.colorAttachment = 0;
+    vg_lite_color_to_vk_clear(target->format, color, &clear_att.clearValue);
+
+    vg_lite_vulkan_begin_command();
     {
         buffer_internal_t *ci = (buffer_internal_t *)target->handle;
         if (!(g_vk_ctx.current_fb_image == ci->image && g_vk_ctx.current_fb_is_no_msaa))
@@ -715,26 +768,21 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     vg_lite_vulkan_set_render_target_no_msaa(target);
 
     VkClearRect clear_rect;
-    if (rect) {
+    {
         int32_t x = rect->x < 0 ? 0 : rect->x;
         int32_t y = rect->y < 0 ? 0 : rect->y;
-        int32_t r_bound = (rect->x + rect->width) > target->width ? target->width : (rect->x + rect->width);
-        int32_t b_bound = (rect->y + rect->height) > target->height ? target->height : (rect->y + rect->height);
+        int32_t r_bound = (rect->x + rect->width) > (int32_t)target->width ? (int32_t)target->width : (rect->x + rect->width);
+        int32_t b_bound = (rect->y + rect->height) > (int32_t)target->height ? (int32_t)target->height : (rect->y + rect->height);
         if (x >= r_bound || y >= b_bound) return VG_LITE_SUCCESS;
         clear_rect.rect.offset.x = x;
         clear_rect.rect.offset.y = y;
         clear_rect.rect.extent.width = r_bound - x;
         clear_rect.rect.extent.height = b_bound - y;
-    } else {
-        clear_rect.rect.offset.x = 0;
-        clear_rect.rect.offset.y = 0;
-        clear_rect.rect.extent.width = target->width;
-        clear_rect.rect.extent.height = target->height;
     }
     clear_rect.baseArrayLayer = 0;
     clear_rect.layerCount = 1;
     vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
-    internal->msaa_needs_seed = 1;  /* no-MSAA RP wrote to target; flag for draw path */
+    internal->msaa_needs_seed = 1;
     internal->msaa_dirty = 0;
     return VG_LITE_SUCCESS;
 }
@@ -998,6 +1046,44 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
             0, NULL, 0, NULL, 1, &src_bar);
     }
 
+    /* Consume pending clear.
+     * MSAA path: llvmpipe has a bug with vkCmdClearAttachments on 4x MSAA
+     *   attachments (R/B swap on B5G6R5). Must flush to target via no-MSAA RP,
+     *   then use normal seed_msaa path.
+     * no-MSAA path: merge clear into blit's RP — single RP open/close instead
+     *   of HEAD's two (one for clear, one for blit). */
+    {
+        buffer_internal_t *tgt_int = (buffer_internal_t *)target->handle;
+        if (tgt_int->has_pending_clear) {
+#if VGLITE_BLIT_MSAA
+            /* MSAA: flush to target, fall through to normal seed_msaa path */
+            flush_pending_clear_on_target(target);
+            tgt_int->has_pending_clear = 0;
+            g_pending_clear_buffer = NULL;
+#else
+            /* no-MSAA: merge clear into blit's RP */
+            VkClearValue cv;
+            vg_lite_color_to_vk_clear(target->format, tgt_int->pending_clear_color, &cv);
+            tgt_int->has_pending_clear = 0;
+            g_pending_clear_buffer = NULL;
+            vg_lite_vulkan_set_render_target_no_msaa(target);
+            {
+                VkClearAttachment ca = {0};
+                ca.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                ca.colorAttachment = 0;
+                ca.clearValue = cv;
+                VkClearRect cr = {0};
+                cr.rect.extent.width = target->width;
+                cr.rect.extent.height = target->height;
+                cr.baseArrayLayer = 0;
+                cr.layerCount = 1;
+                vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &ca, 1, &cr);
+            }
+            goto blit_draw_setup;
+#endif
+        }
+    }
+
 #if VGLITE_BLIT_MSAA
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     vg_lite_vulkan_set_render_target(target);
@@ -1007,6 +1093,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 #else
     vg_lite_vulkan_set_render_target_no_msaa(target);
 #endif
+
+blit_draw_setup:
 
     float shader_mat[3][3];
     compute_blit_shader_matrix(matrix, source->width, source->height, target->width, target->height, shader_mat);
@@ -1110,6 +1198,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
 vg_lite_error_t vg_lite_finish(void)
 {
+    /* Flush any deferred fullscreen clear that wasn't consumed by blit/draw */
+    flush_pending_clear_global();
 #if VGLITE_BLIT_PERF
     /* Always record CPU start before submit �?cheap, used if GPU timestamps fail */
     if (g_vk_ctx.blit_perf_count > 0)
@@ -1394,6 +1484,9 @@ vg_lite_uint32_t vg_lite_get_blit_obb_mode(void) {
 
 #if VGLITE_BLIT_PERF
 vg_lite_uint32_t vg_lite_write_timestamp(vg_lite_uint32_t stage) {
+    /* Ensure command buffer is recording before writing timestamp.
+     * With delayed clear, the cmd buffer may not be started yet. */
+    vg_lite_vulkan_begin_command();
     /* Map vg_lite_uint32_t to VkPipelineStageFlagBits */
     vg_lite_vulkan_write_timestamp((VkPipelineStageFlagBits)stage);
     return g_vk_ctx.timestamp_slot_counter - 1;

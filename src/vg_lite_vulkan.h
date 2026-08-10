@@ -22,6 +22,7 @@
 #define BG_NORMAL_LVGL 6
 #define BG_COUNT      7
 void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachmentState *cba);
+void vg_lite_color_to_vk_clear(vg_lite_buffer_format_t format, vg_lite_color_t color, VkClearValue *out);
 
 typedef struct {
     VkImage image;
@@ -48,6 +49,10 @@ typedef struct {
     uint32_t width;
     uint32_t height;
     int msaa_dirty;
+    /* Delayed clear state: fullscreen clear deferred to next RP loadOp=CLEAR */
+    int has_pending_clear;
+    uint32_t pending_clear_color;
+    VkRenderPass clear_render_pass;  /* lazily-created MSAA RP with loadOp=CLEAR */
 } buffer_internal_t;
 
 typedef struct {
@@ -190,6 +195,8 @@ vg_lite_error_t vg_lite_vulkan_init(void);
 vg_lite_error_t vg_lite_vulkan_destroy(void);
 
 vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target);
+vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, const VkClearValue *clear_value);
+VkRenderPass vg_lite_vulkan_create_render_pass_clear(VkFormat format);
 vg_lite_error_t vg_lite_vulkan_end_render_pass(void);
 /* End the currently-active render pass (if any), resolving the MSAA color
  * attachment to the OPTIMAL intermediate and copying it to the LINEAR target.
@@ -217,6 +224,7 @@ double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot);
 
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler);
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
+vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa_ex(vg_lite_buffer_t *target, const VkClearValue *clear_value);
 vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *internal);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_init_pattern_pipeline(VkFormat format);

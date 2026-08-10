@@ -9,6 +9,11 @@
 #include <math.h>
 #include <stdio.h>
 
+/* Declared in vg_lite.c — tracks buffer with pending deferred clear */
+extern vg_lite_buffer_t *g_pending_clear_buffer;
+/* Declared in vg_lite.c — flushes pending fullscreen clear to target via no-MSAA RP */
+extern void flush_pending_clear_on_target(vg_lite_buffer_t *target);
+
 #define MAX_PENDING_BUFFERS 512
 
 typedef struct {
@@ -752,21 +757,20 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     if (target_int->msaa_dirty)
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
-    if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != target_int->image) {
-        err = vg_lite_vulkan_set_render_target(target);
-        if (err != VG_LITE_SUCCESS) {
-            destroy_buffer(vbo, vbo_mem);
-            destroy_buffer(ibo, ibo_mem);
-            tess_geometry_free(&geom);
-            vlc_path_free(&vlc_path);
-            return err;
+        if (target_int->has_pending_clear) {
+            /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
+             * Flush to target via no-MSAA RP, then normal seed_msaa. */
+            flush_pending_clear_on_target(target);
+            target_int->has_pending_clear = 0;
+            g_pending_clear_buffer = NULL;
         }
+        err = vg_lite_vulkan_set_render_target(target);
+        if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
         if (prev_was_no_msaa || target_int->msaa_needs_seed) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
             target_int->msaa_needs_seed = 0;
         }
-    }
 
     float w = (float)target->width;
     float h = (float)target->height;
@@ -1020,21 +1024,20 @@ static vg_lite_error_t draw_radial_internal(
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
     if (target_int->msaa_dirty)
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
-    if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != target_int->image) {
-        err = vg_lite_vulkan_set_render_target(target);
-        if (err != VG_LITE_SUCCESS) {
-            destroy_buffer(vbo, vbo_mem);
-            destroy_buffer(ibo, ibo_mem);
-            tess_geometry_free(&geom);
-            vlc_path_free(&vlc_path);
-            return err;
+        if (target_int->has_pending_clear) {
+            /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
+             * Flush to target via no-MSAA RP, then normal seed_msaa. */
+            flush_pending_clear_on_target(target);
+            target_int->has_pending_clear = 0;
+            g_pending_clear_buffer = NULL;
         }
+        err = vg_lite_vulkan_set_render_target(target);
+        if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
         if (prev_was_no_msaa || target_int->msaa_needs_seed) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
             target_int->msaa_needs_seed = 0;
         }
-    }
 
     float w = (float)target->width;
     float h = (float)target->height;
@@ -1240,21 +1243,20 @@ static vg_lite_error_t draw_grad_internal(
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
     if (internal->msaa_dirty)
         vg_lite_vulkan_resolve_msaa_to_target(internal);
-    if (g_vk_ctx.current_fb == VK_NULL_HANDLE || g_vk_ctx.current_fb_image != internal->image) {
-        err = vg_lite_vulkan_set_render_target(target);
-        if (err != VG_LITE_SUCCESS) {
-            destroy_buffer(vbo, vbo_mem);
-            destroy_buffer(ibo, ibo_mem);
-            tess_geometry_free(&geom);
-            vlc_path_free(&vlc_path);
-            return err;
+        if (internal->has_pending_clear) {
+            /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
+             * Flush to target via no-MSAA RP, then normal seed_msaa. */
+            flush_pending_clear_on_target(target);
+            internal->has_pending_clear = 0;
+            g_pending_clear_buffer = NULL;
         }
+        err = vg_lite_vulkan_set_render_target(target);
+        if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
         if (prev_was_no_msaa || internal->msaa_needs_seed) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
             internal->msaa_needs_seed = 0;
         }
-    }
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
