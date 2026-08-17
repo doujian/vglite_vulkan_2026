@@ -121,6 +121,8 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
     case VG_LITE_RGB565: case VG_LITE_BGR565:
     case VG_LITE_RGBA4444: case VG_LITE_BGRA4444: bpp = 16; channels = 3; break;
     case VG_LITE_A8: case VG_LITE_L8: bpp = 8; channels = 1; break;
+    case VG_LITE_RGBA5551: case VG_LITE_BGRA5551:
+    case VG_LITE_ARGB1555: case VG_LITE_ABGR1555: bpp = 16; channels = 3; break;
     default: break;
     }
 
@@ -154,10 +156,11 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
                     /* ARGB8888 maps to VK_FORMAT_R8G8B8A8 → mem [R,G,B,A] (identity).
                      * ABGR8888 maps to VK_FORMAT_A8B8G8R8 → mem [A,B,G,R]. */
                     if (buffer->format == VG_LITE_ARGB8888) {
-                        rgba[di+0] = src[si+0]; /* R */
-                        rgba[di+1] = src[si+1]; /* G */
-                        rgba[di+2] = src[si+2]; /* B */
-                        rgba[di+3] = src[si+3]; /* A */
+                        /* VGLite ARGB8888 mem [A,R,G,B]: byte0=A (swizzle view handles sampling) */
+                        rgba[di+0] = src[si+1]; /* R */
+                        rgba[di+1] = src[si+2]; /* G */
+                        rgba[di+2] = src[si+3]; /* B */
+                        rgba[di+3] = src[si+0]; /* A */
                     } else { /* ABGR8888 mem [A,B,G,R] */
                         rgba[di+0] = src[si+3]; /* R */
                         rgba[di+1] = src[si+2]; /* G */
@@ -186,6 +189,23 @@ int vg_lite_save_png(const char *name, vg_lite_buffer_t *buffer)
                         rgba[di+1] = (unsigned char)(((p >> 4) & 0xF) * 17);
                         rgba[di+2] = (unsigned char)(((p >> 8) & 0xF) * 17);
                     }
+                } else if (buffer->format == VG_LITE_RGBA5551 || buffer->format == VG_LITE_BGRA5551 ||
+                           buffer->format == VG_LITE_ARGB1555 || buffer->format == VG_LITE_ABGR1555) {
+                    /* VGLite 5551/1555 (LSB-first): first letter at lowest bits, A at 15 or 0 */
+                    int r5, g5, b5;
+                    if (buffer->format == VG_LITE_RGBA5551) {
+                        /* Aliased onto A1R5G5B5 physical layout (same as BGRA5551) */
+                        b5 = p & 0x1F; g5 = (p >> 5) & 0x1F; r5 = (p >> 10) & 0x1F;
+                    } else if (buffer->format == VG_LITE_BGRA5551) {
+                        b5 = p & 0x1F; g5 = (p >> 5) & 0x1F; r5 = (p >> 10) & 0x1F;
+                    } else if (buffer->format == VG_LITE_ARGB1555) {
+                        r5 = (p >> 1) & 0x1F; g5 = (p >> 6) & 0x1F; b5 = (p >> 11) & 0x1F;
+                    } else { /* ABGR1555 */
+                        b5 = (p >> 1) & 0x1F; g5 = (p >> 6) & 0x1F; r5 = (p >> 11) & 0x1F;
+                    }
+                    rgba[di+0] = (unsigned char)(r5 * 255 / 31);
+                    rgba[di+1] = (unsigned char)(g5 * 255 / 31);
+                    rgba[di+2] = (unsigned char)(b5 * 255 / 31);
                 } else if (is_bgra) {
                     /* VG_LITE_BGR565 -> VK_FORMAT_R5G6B5: R in bits 15-11, G in 10-5, B in 4-0 */
                     rgba[di+0] = (unsigned char)(((p >> 11) & 0x1F) * 255 / 31);

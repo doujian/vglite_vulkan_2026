@@ -128,11 +128,23 @@ uint32_t pack_pixel(vg_lite_buffer_format_t format, uint32_t r, uint32_t g, uint
     case VG_LITE_BGRX8888:
         return b | (g << 8) | (r << 16);
     case VG_LITE_ARGB8888:
-        /* ARGB8888 → VK_FORMAT_R8G8B8A8_UNORM: mem [R,G,B,A] */
-        return r | (g << 8) | (b << 16) | (a << 24);
+        /* VGLite ARGB8888 mem [A,R,G,B]: byte0=A (byte-order naming).
+         * Sampled via swizzle view (vg_lite.c). */
+        return a | (r << 8) | (g << 16) | (b << 24);
     case VG_LITE_ABGR8888:
         /* ABGR8888 → VK_FORMAT_A8B8G8R8_PACK32: mem [A,B,G,R] */
         return a | (b << 8) | (g << 16) | (r << 24);
+    case VG_LITE_RGBA5551:
+    case VG_LITE_BGRA5551:
+        /* Both map to VK_FORMAT_A1R5G5B5 physical layout:
+         * B=4:0, G=9:5, R=14:10, A=15 (VGLite RGBA5551 doc layout is an alias). */
+        return ((b & 0xF8) >> 3) | ((g & 0xF8) << 2) | ((r & 0xF8) << 7) | ((a & 0x80) << 8);
+    case VG_LITE_ARGB1555:
+        /* A=0, R=5:1, G=10:6, B=15:11 */
+        return ((a & 0x80) >> 7) | ((r & 0xF8) >> 2) | ((g & 0xF8) << 1) | ((b & 0xF8) << 8);
+    case VG_LITE_ABGR1555:
+        /* A=0, B=5:1, G=10:6, R=15:11 */
+        return ((a & 0x80) >> 7) | ((b & 0xF8) >> 2) | ((g & 0xF8) << 1) | ((r & 0xF8) << 8);
     default:
         return r | (g << 8) | (b << 16) | (a << 24);
     }
@@ -189,6 +201,37 @@ static uint32_t read_pixel_ptr(vg_lite_buffer_t *buffer, const void *base, int x
         return ((r << 4) | r) | (((g << 4) | g) << 8) |
                (((b << 4) | b) << 16) | (((a << 4) | a) << 24);
     }
+    case VG_LITE_RGBA5551:
+    case VG_LITE_BGRA5551: {
+        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        /* VK_FORMAT_A1R5G5B5 physical: B in 4:0, G in 9:5, R in 14:10, A in 15 */
+        uint8_t b = p & 0x1F;
+        uint8_t g = (p >> 5) & 0x1F;
+        uint8_t r = (p >> 10) & 0x1F;
+        uint8_t a = (p >> 15) & 0x1;
+        return ((r << 3) | (r >> 2)) | (((g << 3) | (g >> 2)) << 8) |
+               (((b << 3) | (b >> 2)) << 16) | ((uint32_t)(a ? 0xFF : 0) << 24);
+    }
+    case VG_LITE_ARGB1555: {
+        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        /* VGLite ARGB1555: A in 0, R in 5:1, G in 10:6, B in 15:11 */
+        uint8_t a = p & 0x1;
+        uint8_t r = (p >> 1) & 0x1F;
+        uint8_t g = (p >> 6) & 0x1F;
+        uint8_t b = (p >> 11) & 0x1F;
+        return ((r << 3) | (r >> 2)) | (((g << 3) | (g >> 2)) << 8) |
+               (((b << 3) | (b >> 2)) << 16) | ((uint32_t)(a ? 0xFF : 0) << 24);
+    }
+    case VG_LITE_ABGR1555: {
+        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
+        /* VGLite ABGR1555: A in 0, B in 5:1, G in 10:6, R in 15:11 */
+        uint8_t a = p & 0x1;
+        uint8_t b = (p >> 1) & 0x1F;
+        uint8_t g = (p >> 6) & 0x1F;
+        uint8_t r = (p >> 11) & 0x1F;
+        return ((r << 3) | (r >> 2)) | (((g << 3) | (g >> 2)) << 8) |
+               (((b << 3) | (b >> 2)) << 16) | ((uint32_t)(a ? 0xFF : 0) << 24);
+    }
     case VG_LITE_BGRA8888: {
         uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
         uint8_t b = p & 0xFF;
@@ -198,12 +241,12 @@ static uint32_t read_pixel_ptr(vg_lite_buffer_t *buffer, const void *base, int x
         return r | (g << 8) | (b << 16) | (a << 24);
     }
     case VG_LITE_ARGB8888: {
-        /* ARGB8888 → VK_FORMAT_R8G8B8A8_UNORM: mem [R,G,B,A] */
+        /* VGLite ARGB8888 mem [A,R,G,B]: byte0=A, byte1=R, byte2=G, byte3=B */
         uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t r = p & 0xFF;
-        uint8_t g = (p >> 8) & 0xFF;
-        uint8_t b = (p >> 16) & 0xFF;
-        uint8_t a = (p >> 24) & 0xFF;
+        uint8_t a = p & 0xFF;
+        uint8_t r = (p >> 8) & 0xFF;
+        uint8_t g = (p >> 16) & 0xFF;
+        uint8_t b = (p >> 24) & 0xFF;
         return r | (g << 8) | (b << 16) | (a << 24);
     }
     case VG_LITE_ABGR8888: {
@@ -407,12 +450,18 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
         int cg = (color >> 8) & 0xFF;
         int cb = (color >> 16) & 0xFF;
         int ca = (color >> 24) & 0xFF;
-        sr = (sr * cr + 127) / 255;
-        sb = (sb * cb + 127) / 255;
-        sa = (sa * ca + 127) / 255;
-        sg = (sg * cg + 127) / 255;
         if (flag_a8) {
+            /* A8 source acts as alpha mask: rgb = color.rgb * src.a,
+             * alpha = color.a * src.a (matches blit_native.frag A8 branch). */
+            sr = (sa * cr + 127) / 255;
             sg = (sa * cg + 127) / 255;
+            sb = (sa * cb + 127) / 255;
+            sa = (sa * ca + 127) / 255;
+        } else {
+            sr = (sr * cr + 127) / 255;
+            sb = (sb * cb + 127) / 255;
+            sa = (sa * ca + 127) / 255;
+            sg = (sg * cg + 127) / 255;
         }
     }
 
@@ -610,6 +659,9 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
     int is_l8 = (actual->format == VG_LITE_L8 || actual->format == VG_LITE_A8);
     int is_565 = (actual->format == VG_LITE_RGB565 || actual->format == VG_LITE_BGR565);
     int is_4444 = (actual->format == VG_LITE_RGBA4444 || actual->format == VG_LITE_BGRA4444);
+    int is_5551 = (actual->format == VG_LITE_RGBA5551 || actual->format == VG_LITE_BGRA5551 ||
+                   actual->format == VG_LITE_ARGB1555 || actual->format == VG_LITE_ABGR1555);
+    int is_x8888 = (actual->format == VG_LITE_RGBX8888 || actual->format == VG_LITE_BGRX8888);
 
     for (int y = 0; y < eb->height; y++) {
         for (int x = 0; x < eb->width; x++) {
@@ -636,6 +688,17 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
                 eb_ = (eb_ >> 4) << 4; ea = (ea >> 4) << 4;
                 ar = (ar >> 4) << 4; ag = (ag >> 4) << 4;
                 ab = (ab >> 4) << 4; aa = (aa >> 4) << 4;
+            } else if (is_5551) {
+                /* 5-bit RGB + 1-bit alpha storage: quantize both sides to
+                 * storage precision. A1 rounding: a >= 128 (a/255 >= 0.5). */
+                int r5 = er >> 3, g5 = eg >> 3, b5 = eb_ >> 3;
+                er = (r5 << 3) | (r5 >> 2); eg = (g5 << 3) | (g5 >> 2); eb_ = (b5 << 3) | (b5 >> 2);
+                ea = (ea >= 128) ? 0xFF : 0x00;
+                aa = (aa >= 128) ? 0xFF : 0x00;
+            } else if (is_x8888) {
+                /* X channel has no defined alpha semantics: read_pixel forces
+                 * A=0xFF on the actual side, so force expected alpha to 0xFF. */
+                ea = 0xFF; aa = 0xFF;
             }
 
             if (abs(ar - er) > tolerance || abs(ag - eg) > tolerance ||
