@@ -494,6 +494,14 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         vg_lite_vulkan_resolve_msaa_to_target(internal);
     }
 
+    if (internal->has_pending_clear) {
+        /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
+         * Flush to target via no-MSAA RP, then normal seed_msaa.
+         * Without this, seed_msaa samples the never-cleared target and
+         * the deferred clear color is lost (plain path draw). */
+        flush_pending_clear_on_target(target);
+    }
+
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     err = vg_lite_vulkan_set_render_target(target);
     if (err != VG_LITE_SUCCESS) {

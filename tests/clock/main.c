@@ -474,6 +474,8 @@ int main(int argc, const char * argv[])
     {
         int fail = vg_lite_verify_raw(fb, golden, 150);
         printf("clock golden: %s (%d mismatches)\n", fail == 0 ? "PASS" : "FAIL", fail);
+        if (fail != 0)
+            return 1;  /* propagate golden failure to exit code (suite visibility) */
     }
 
     // Cleanup.
