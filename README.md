@@ -53,18 +53,13 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 - **Matrix ops** - identity, translate, scale, rotate
 - **Blend modes**: NONE, SRC_OVER, DST_OVER, SRC_IN, DST_IN, MULTIPLY, SCREEN, DARKEN, LIGHTEN, ADDITIVE, SUBTRACT, NORMAL_LVGL, ADDITIVE_LVGL, SUBTRACT_LVGL, MULTIPLY_LVGL, OpenVG premultiplied modes
 - **Image modes**: NONE (color only), NORMAL, MULTIPLY, STENCIL, RECOLOR
-- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, A8, L8, INDEX_8
+- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, RGBA5551, BGRA5551, ARGB1555, ABGR1555, A8, L8, INDEX_8
 - **Filters**: POINT, LINEAR, BI_LINEAR
 - **VLC path opcodes**: MOVE/LINE/QUAD/CUBIC (absolute + relative), END (auto-close)
 
-### Two Blit Paths
+### Blit Path
 
-| Path | Shader | MSAA | Blend | Supported Targets |
-|------|--------|------|-------|-------------------|
-| Native blend | `blit_native.frag` | 4x | Vulkan hardware pipeline blend + target seeding | BGRA8888, BGR565, RGBA8888, RGB565, A8, L8 |
-| Shader blend | `blit.frag` | 4x | Shader-based (temp copy for dst) | All formats |
-
-Native blend is used for NONE/SRC_OVER/DST_OVER/ADDITIVE/SUBTRACT on common formats. It uses 4x MSAA with hardware pipeline blend. A seed draw copies the target's content into the MSAA at the start of each new render pass, so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). All other format/blend combinations use shader blend (also 4x MSAA, but computes blend in the shader with a temp copy of the target as dst).
+All blits use the native path: `blit_native.frag` (OBB quad) / `blit_native_fs.frag` (fullscreen triangle) with Vulkan hardware pipeline blend (e.g. SRC_OVER = ONE, ONE_MINUS_SRC_ALPHA) + target seeding. Pipelines are cached per (VkFormat, blend group); render passes are generic per format. A seed draw copies the target's content into the 4x MSAA attachment at the start of each new render pass so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). Single-channel targets are handled by shader output flags (A8 -> alpha, L8 -> luminance) and seed through identity views. The legacy shader-blend path (`blit.frag`) is currently disabled in code.
 
 ### Delayed Clear Optimization
 
@@ -135,7 +130,7 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_clear_unit | Clear unit test with expected buffer | PASS (100%) |
 | test_clear_dl | 1920x1080 RGB565 clear | PASS |
 | test_align16 | 16-pixel alignment check | PASS |
-| test_draw_image | 72 cases: src/dst formats × image modes | PASS |
+| test_draw_image | 475 cases: 5x5 src/tgt format matrix x image modes x filters x blends (NONE, SRC_OVER) | PASS (0 pixel failures) |
 | test_recolor | RECOLOR mode with rotate/scale/translate | PASS |
 | test_tiled | Tiled rendering test | PASS |
 | test_gfx1 | Full buffer clear | PASS |

@@ -1,4 +1,4 @@
-# Bugfix Log
+﻿# Bugfix Log
 
 Record of bugs found and fixed during development. Each entry: symptom, root cause, solution, date, commit.
 
@@ -954,3 +954,54 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Verification**: All 8 configs 37/38 PASS (only test_sft_blit pre-existing crash).
 
 **Files**: src/vg_lite.c, src/vg_lite_draw.c, src/vg_lite_vulkan.c, src/vg_lite_vulkan.h
+
+## 27. Blit format matrix: 5551/1555 formats, X-format source alpha, A8 target output
+
+**Symptom**: `vg_lite_blit` produced garbled output (or validation abort) for the 5551/1555 format family; A8 targets rendered zero under image modes; RGBX targets failed verification under BLEND_NONE; the expanded `test_draw_image` matrix (src {A8, RGB565, RGBX8888, ARGB8888, ARGB1555} x tgt {A8, RGB565, RGBA8888, RGBX8888, RGBA5551} x 3 image modes x 3 filters x {NONE, SRC_OVER}) failed 59+/72 reached cases in the first run.
+
+**Root Cause**: Multiple independent defects surfaced by the new matrix:
+
+1. `vg_lite_format_to_vk()` had no 5551/1555 cases -> default BGRA8888 mapping with bpp mismatch (garbage). Additionally `VK_FORMAT_A1B5G5R5_UNORM_PACK16` is an extension-only token (1000470000) that the runtime rejects as a color attachment (validation abort at first RGBA5551 target case).
+2. RGBX8888/BGRX8888 sources were sampled without an alpha=ONE swizzle view: the X byte (0x00) became source alpha, making sources invisible under SRC_OVER (GPU sa=0 vs CPU model sa=255 -> guaranteed mismatch). The CPU side (`read_pixel_ptr`) forces A=0xFF for X formats, hiding the asymmetry from existing tests that never used X sources with blending.
+3. `blit_native.frag` / `blit_native_fs.frag` had no FLAG_OUTPUT_A8 output block (only the disabled `blit.frag` shader path had one). A8 targets (R8 attachments) stored the raw shader output's R channel: zero for A8 sources swizzled to (0,0,0,a). The old `a_to_r_view` workaround sampled alpha into R but broke for sources without an alpha channel (565 -> a=0, RGBX -> X byte=0), so blit now always uses `swizzle_view ?: view` and the shaders route result alpha into R when flag 2 (A8 tgt) is set. Vulkan forbids non-identity swizzle on framebuffer attachment views (VUID-VkFramebufferCreateInfo-pAttachments-00884), so the channel routing must happen inside the shader. L8 targets are explicitly out of scope. Same flags already existed in the push constants (1=L8, 2=A8, 8=A8 src, 16=INDEX8) and in `blit.frag`.
+4. `seed_msaa()` sampled the target via `swizzle_view ?: view`: for an A8 target the swizzle view yields (0,0,0,R) so the seed wrote 0 into the R8 MSAA attachment (destination read as 0 during SRC_OVER blending instead of the cleared 255). R8 targets now seed through the identity view (R8 identity maps (r,0,0,1) -> R=r correctly); other formats keep the swizzle view (565 alpha=ONE is equivalent, 4444/ARGB8888 behavior unchanged for previously passing cases).
+5. RGBX/BGRX target verification false-failed: `read_pixel_ptr` forces A=0xFF on the actual side but `expected_verify` compared against a computed alpha != 255 under BLEND_NONE. Added an `is_x8888` branch forcing expected alpha to 0xFF (X channel has no defined alpha semantics). SRC_OVER passed only coincidentally (sa + 255*(1-sa) = 255 after the clear forces da=255) - the mismatch was a CPU-model artifact, GPU output was correct (verified via PNG dumps and hand-computed blend values: got=232 matched 193+160*(1-193/255) exactly, so GPU was right and exp wrong in every failing case involving X/A8 targets before these fixes).
+6. ARGB8888 CPU model (`pack_pixel`/`read_pixel_ptr`) used byte order [R,G,B,A] while the GPU sampling swizzle in `vg_lite.c` assumes memory [A,R,G,B] (VGLite byte-order naming: first letter = lowest byte). Never exposed because no prior test used ARGB8888 sources through the expected-buffer path. CPU side fixed to [A,R,G,B] (`a|(r<<8)|(g<<16)|(b<<24)`). Known limitation (out of matrix scope): ARGB8888 as TARGET still writes identity [R,G,B,A] bytes via the R8G8B8A8 view; the CPU verify model compensates by reading per the VGLite layout, which is self-consistent only when the target is not re-sampled as a source by external code.
+7. A8-source MULTIPLY CPU model: only the green channel was scaled by sa (sr/sb left at 0), diverging from the shader (`vec4(mix.rgb*src.a, mix.a*src.a)`). Rewritten to rgb=color.rgb*sa, a=sa*ca, matching the shader exactly (test_imgA8 continued to pass, confirming the fix is strictly closer to GPU truth).
+8. `save_png` treated unknown 16-bit formats as 32bpp (out-of-bounds read) - added 5551/1555 cases (16bpp, 3ch) and fixed ARGB8888 PNG byte order to [A,R,G,B].
+9. Stale-root-`spv/` trap (infrastructure): `shader_loader.c` prefers CWD-relative `spv/` over exe-relative `build*/spv/`. Tests run from the repo root were loading the stale root `spv/blit_native_frag.spv` (old version without the new output blocks) while `blit_native_fs_frag.spv` resolved to the fresh build copy - a mixed-version shader pair that produced confusing partial failures. Root `spv/` refreshed from `build/spv/`; all 8 build dirs also recompile their own `spv/` via the CMake DEPENDS chain (verified by timestamps). For the 5551 mapping itself, RGBA5551 and BGRA5551 both map to `VK_FORMAT_A1R5G5B5_UNORM_PACK16` (1.0 core, llvmpipe-accepted); CPU pack/read/png follow the physical VK layout (B=4:0, G=9:5, R=14:10, A=15), so the VGLite doc bit positions act as an alias and no swizzle is needed. ARGB1555/ABGR1555 map identity to B5G5R5A1/R5G5B5A1 (A at bit 0 both sides, verified via the RGB565->B5G6R5 anchor: VGLite names are LSB-first, VK PACK16 names are MSB-first, channel positions coincide exactly). 1-bit alpha quantization is covered by the existing is_5551 verify branch (5-bit bit-replication expansion, alpha threshold >=128) and tolerance (16bpp: 12, +1 SRC_OVER, +4 non-POINT filter).
+
+**Solution**: Changes by file: `src/vg_lite_format.c` (5551/1555 VK mappings), `src/vg_lite.c` (RGBX/BGRX alpha=ONE swizzle views, blit src_view always swizzle-or-identity, a_to_r_view no longer used by blit), `src/vg_lite_vulkan.c` (seed_msaa identity view for R8 targets), `shaders/blit_native.frag` + `blit_native_fs.frag` (FLAG_OUTPUT_A8 output block), `util/util.c` (pack/read 5551/1555 + ARGB8888 byte order, A8-MULTIPLY CPU model, is_x8888 verify branch), `util/vg_lite_util.c` (save_png 5551/1555 + ARGB8888), `tests/draw_image/draw_image.c` (matrix expanded 2x2 -> 5x5, 450 + 25 cases, expected_blit flags=8 for A8 sources), root `spv/` refreshed from build output.
+
+**Verification**: `test_draw_image` 475/475 cases PASS with 0 pixel mismatches across all 8 configurations (Tiling x MSAA x OBB). Full suite 37/38 PASS on every config (only `test_sft_blit` pre-existing crash, unchanged baseline). PNG dumps inspected for representative failing cases confirming GPU-correct output pre-fix (000/006/012/013/054 series).
+
+**Files**: src/vg_lite_format.c, src/vg_lite.c, src/vg_lite_vulkan.c, shaders/blit_native.frag, shaders/blit_native_fs.frag, util/util.c, util/vg_lite_util.c, tests/draw_image/draw_image.c, spv/*
+
+---
+
+## 28. Plain-path vg_lite_draw lost deferred fullscreen clear (test_clock blue background)
+
+**Date**: 2026-08-17
+**Commit**: regression introduced in 37ffcd7 (deferred clear), fixed in working tree
+
+**Symptom**: `test_clock` golden verification FAIL (117792/153600 mismatches, 23% pass rate): the blue fullscreen clear background rendered as (0,0,0,0) black while the clock face content was correct. The suite still reported test_clock PASS because the golden failure did not propagate to the exit code.
+
+**Root cause**: Commit 37ffcd7 deferred fullscreen `vg_lite_clear` into a pending state consumed by the next blit/draw, and added the `flush_pending_clear_on_target` call to `vg_lite_draw_pattern`, `draw_radial_internal` and `draw_grad_internal` �� but not to the plain path-draw function `vg_lite_draw_impl`. For clear+draw sequences (test_clock), the first draw set the MSAA render target and ran `seed_msaa` sampling the never-cleared target image (zeros), so the deferred clear color was lost and the background resolved to black. The stale pending clear then flushed at `vg_lite_finish`, too late. Git bisect: fe99a35 PASS -> 37ffcd7 FAIL.
+
+**Solution**: `src/vg_lite_draw.c` `vg_lite_draw_impl`: flush the pending fullscreen clear via no-MSAA RP before `vg_lite_vulkan_set_render_target` (same block already present in the pattern/radial/grad paths). Also `tests/clock/main.c` now returns exit code 1 on golden FAIL so the suite can catch such regressions.
+
+**Verification**: test_clock 153600/153600 pixels PASS (100%). Full suite rebuilt and rerun on all 8 configurations: 37/37 exit-code PASS each (test_sft_blit excluded as pre-existing crash) and no golden FAIL lines in any test log.
+
+**Files**: src/vg_lite_draw.c, tests/clock/main.c
+
+## 29. All 8 build configurations compiled identically (CMake cache poisoned with literal `$`)
+
+**Symptom**: Every build directory (build, build_lin_msaa_noobb, build_lin_nomsaa_obb, ..., build_opt_nomsaa_noobb) emitted PNG dumps into `dump_opt_msaa_obb`, i.e. every configuration compiled as OPTIMAL+MSAA+OBB. The "8-config regression matrix" was in fact testing configuration 5 eight times. Found while investigating per-config dump directory routing after the Draw_Image format-matrix work.
+
+**Root Cause**: The three CMake cache entries `VGLITE_TARGET_OPTIMAL:BOOL`, `VGLITE_BLIT_MSAA:BOOL`, `VGLITE_BLIT_OBB:BOOL` were stored with the literal value `$` (byte 0x24, verified by dumping cache bytes). `$` is not a CMake false-constant, so `if(VGLITE_TARGET_OPTIMAL)` / `if(NOT VGLITE_BLIT_MSAA)` / `if(NOT VGLITE_BLIT_OBB)` in CMakeLists.txt all evaluated truthy/non-NOT: `VGLITE_TARGET_OPTIMAL=1` was defined for every build, and `VGLITE_BLIT_MSAA=0` / `VGLITE_BLIT_OBB=0` were never defined. The header defaults (MSAA=1, OBB=1) then completed the uniform opt_msaa_obb identity. The `$` originated from shell interpolation of `$(...)` subexpressions being passed literally to cmake when the build directories were originally configured through the PowerShell tool layer (re-running the same style of command reproduced the poisoning exactly).
+
+**Solution**: Reconfigured all 8 build directories with plain literal `-D` flags (no subexpressions), e.g. `cmake -B build_lin_msaa_noobb -DVGLITE_TARGET_OPTIMAL=OFF -DVGLITE_BLIT_MSAA=ON -DVGLITE_BLIT_OBB=OFF`. Verified CMakeCache.txt now holds the correct distinct ON/OFF triple per directory. Lesson recorded: configure commands must avoid `$(...)` interpolation in this tool environment.
+
+**Verification**: All 8 configurations rebuilt from the corrected caches and the full suite rerun per config (CWD = each `build*/tests/Debug`, exit code + `golden: FAIL` log scan): 37/37 PASS each (test_sft_blit excluded as pre-existing crash). DUMP_SUBDIR now compiles per config: build->dump_lin_msaa_obb, build_lin_msaa_noobb->dump_lin_msaa_noobb, build_lin_nomsaa_obb->dump_lin_nomsaa_obb, build_lin_nomsaa_noobb->dump_lin_nomsaa_noobb, build_tiled->dump_opt_msaa_obb, build_opt_msaa_noobb->dump_opt_msaa_noobb, build_opt_nomsaa_obb->dump_opt_nomsaa_obb, build_opt_nomsaa_noobb->dump_opt_nomsaa_noobb.
+
+**Files**: (no source change; CMakeCache.txt of all 8 build directories regenerated; helper scripts under %TEMP%\opencode)
