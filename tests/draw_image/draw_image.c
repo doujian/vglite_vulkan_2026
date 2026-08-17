@@ -2,7 +2,8 @@
 // Port of Draw_Image test cases from VSI_CTS.
 // Tests blitting of different src/dst formats, image modes, filters, blend modes.
 // Uses Vulkan pipeline blend (not shader blend) for NONE and SRC_OVER.
-// Formats restricted to: VG_LITE_BGRA8888, VG_LITE_BGR565
+// Format matrix: src {A8, RGB565, RGBX8888, ARGB8888, ARGB1555}
+//              x tgt {A8, RGB565, RGBA8888, RGBX8888, RGBA5551} (5x5).
 // Blend modes restricted to: VG_LITE_BLEND_NONE, VG_LITE_BLEND_SRC_OVER
 //-----------------------------------------------------------------------------
 #include "vg_lite.h"
@@ -18,14 +19,26 @@
 
 #define ALIGN(value, base)  ((value + base - 1) & ~(base - 1))
 
-#define NUM_FORMATS     2
+#define NUM_SRC_FORMATS 5
+#define NUM_TGT_FORMATS 5
 #define NUM_BLEND_MODES 2
 #define NUM_IMAGE_MODES 3
 #define NUM_FILTERS     3
 
-static vg_lite_buffer_format_t formats[] = {
-    VG_LITE_BGRA8888,
-    VG_LITE_BGR565
+static vg_lite_buffer_format_t src_formats[] = {
+    VG_LITE_A8,
+    VG_LITE_RGB565,
+    VG_LITE_RGBX8888,
+    VG_LITE_ARGB8888,
+    VG_LITE_ARGB1555
+};
+
+static vg_lite_buffer_format_t tgt_formats[] = {
+    VG_LITE_A8,
+    VG_LITE_RGB565,
+    VG_LITE_RGBA8888,
+    VG_LITE_RGBX8888,
+    VG_LITE_RGBA5551
 };
 
 static vg_lite_blend_t blend_modes[] = {
@@ -52,6 +65,13 @@ static const char *format_name(vg_lite_buffer_format_t fmt)
     switch (fmt) {
     case VG_LITE_BGRA8888: return "BGRA8888";
     case VG_LITE_BGR565:   return "BGR565";
+    case VG_LITE_A8:       return "A8";
+    case VG_LITE_RGB565:   return "RGB565";
+    case VG_LITE_RGBA8888: return "RGBA8888";
+    case VG_LITE_RGBX8888: return "RGBX8888";
+    case VG_LITE_ARGB8888: return "ARGB8888";
+    case VG_LITE_ARGB1555: return "ARGB1555";
+    case VG_LITE_RGBA5551: return "RGBA5551";
     default:                return "???";
     }
 }
@@ -141,15 +161,15 @@ static vg_lite_error_t Draw_Image_001(void)
     int case_pass = 0;
     int case_fail = 0;
 
-    for (i = 0; i < NUM_FORMATS; i++) {
-        for (j = 0; j < NUM_FORMATS; j++) {
+    for (i = 0; i < NUM_SRC_FORMATS; i++) {
+        for (j = 0; j < NUM_TGT_FORMATS; j++) {
             for (k = 0; k < NUM_IMAGE_MODES; k++) {
                 for (m = 0; m < NUM_FILTERS; m++) {
                     for (n = 0; n < NUM_BLEND_MODES; n++) {
-                        printf("  [%02d] src=%-8s dst=%-8s imode=%-8s filter=%-8s blend=%-8s ",
+                        printf("  [%03d] src=%-8s dst=%-8s imode=%-8s filter=%-8s blend=%-8s ",
                                case_idx,
-                               format_name(formats[i]),
-                               format_name(formats[j]),
+                               format_name(src_formats[i]),
+                               format_name(tgt_formats[j]),
                                image_mode_name(image_modes[k]),
                                filter_name(filters[m]),
                                blend_name(blend_modes[n]));
@@ -158,8 +178,8 @@ static vg_lite_error_t Draw_Image_001(void)
                         memset(&src_buf, 0, sizeof(src_buf));
                         memset(&dst_buf, 0, sizeof(dst_buf));
 
-                        CHECK_GEN(gen_buffer(i % 2, &src_buf, formats[i], ALIGN(256, 128), 256));
-                        CHECK_ERROR(Allocate_Buffer(&dst_buf, formats[j], 256, 256));
+                        CHECK_GEN(gen_buffer(i % 2, &src_buf, src_formats[i], ALIGN(256, 128), 256));
+                        CHECK_ERROR(Allocate_Buffer(&dst_buf, tgt_formats[j], 256, 256));
                         CHECK_ERROR(vg_lite_clear(&dst_buf, NULL, cc));
 
                         src_buf.image_mode = image_modes[k];
@@ -176,7 +196,9 @@ static vg_lite_error_t Draw_Image_001(void)
                             vg_lite_expected_clear(eb, NULL, cc);
                             vg_lite_expected_blit(eb, &src_buf, &identity_matrix,
                                                   (int)blend_modes[n], (int)filters[m],
-                                                  (int)image_modes[k], 0, image_cc, NULL);
+                                                  (int)image_modes[k],
+                                                  (src_formats[i] == VG_LITE_A8) ? 8 : 0,
+                                                  image_cc, NULL);
                             int fail = vg_lite_expected_verify(eb, &dst_buf, tol);
                             if (fail == 0) {
                                 printf("PASS\n");
@@ -189,8 +211,15 @@ static vg_lite_error_t Draw_Image_001(void)
                             vg_lite_expected_destroy(eb);
                         }
 
-                        char fname[128];
-                        snprintf(fname, sizeof(fname), "Draw_Image_001_%02d.png", case_idx);
+                        char fname[160];
+                        snprintf(fname, sizeof(fname),
+                                 "Draw_Image_001_%03d_src%s_tgt%s_im%s_flt%s_bl%s.png",
+                                 case_idx,
+                                 format_name(src_formats[i]),
+                                 format_name(tgt_formats[j]),
+                                 image_mode_name(image_modes[k]),
+                                 filter_name(filters[m]),
+                                 blend_name(blend_modes[n]));
                         vg_lite_save_png(fname, &dst_buf);
 
                         Free_Buffer(&dst_buf);
@@ -228,19 +257,19 @@ static vg_lite_error_t Draw_Image_002(void)
     int case_pass = 0;
     int case_fail = 0;
 
-    for (i = 0; i < NUM_FORMATS; i++) {
-        for (j = 0; j < NUM_FORMATS; j++) {
-            printf("  [%02d] src=%-8s dst=%-8s blend=NONE     filter=POINT    ",
+    for (i = 0; i < NUM_SRC_FORMATS; i++) {
+        for (j = 0; j < NUM_TGT_FORMATS; j++) {
+            printf("  [%03d] src=%-8s dst=%-8s blend=NONE     filter=POINT    ",
                    case_idx,
-                   format_name(formats[i]),
-                   format_name(formats[j]));
+                   format_name(src_formats[i]),
+                   format_name(tgt_formats[j]));
             fflush(stdout);
 
             memset(&src_buf, 0, sizeof(src_buf));
             memset(&dst_buf, 0, sizeof(dst_buf));
 
-            CHECK_GEN(gen_buffer(i % 2, &src_buf, formats[i], ALIGN(256, 128), 256));
-            CHECK_ERROR(Allocate_Buffer(&dst_buf, formats[j], 256, 256));
+            CHECK_GEN(gen_buffer(i % 2, &src_buf, src_formats[i], ALIGN(256, 128), 256));
+            CHECK_ERROR(Allocate_Buffer(&dst_buf, tgt_formats[j], 256, 256));
             CHECK_ERROR(vg_lite_clear(&dst_buf, NULL, cc));
             CHECK_ERROR(vg_lite_blit(&dst_buf, &src_buf, &identity_matrix,
                                       VG_LITE_BLEND_NONE, image_cc, VG_LITE_FILTER_POINT));
@@ -252,7 +281,9 @@ static vg_lite_error_t Draw_Image_002(void)
                     dst_buf.width, dst_buf.height, dst_buf.format);
                 vg_lite_expected_clear(eb, NULL, cc);
                 vg_lite_expected_blit(eb, &src_buf, &identity_matrix,
-                                      0, 0, 0, 0, image_cc, NULL);
+                                      0, 0, 0,
+                                      (src_formats[i] == VG_LITE_A8) ? 8 : 0,
+                                      image_cc, NULL);
                 int fail = vg_lite_expected_verify(eb, &dst_buf, tol);
                 if (fail == 0) {
                     printf("PASS\n");
@@ -265,8 +296,9 @@ static vg_lite_error_t Draw_Image_002(void)
                 vg_lite_expected_destroy(eb);
             }
 
-            char fname[128];
-            snprintf(fname, sizeof(fname), "Draw_Image_002_%02d.png", case_idx);
+            char fname[160];
+            snprintf(fname, sizeof(fname), "Draw_Image_002_%02d_src%s_tgt%s.png",
+                     case_idx, format_name(src_formats[i]), format_name(tgt_formats[j]));
             vg_lite_save_png(fname, &dst_buf);
 
             Free_Buffer(&dst_buf);
@@ -312,7 +344,8 @@ int main(int argc, char *argv[])
     fflush(stdout);
 
     printf("\n=== Draw_Image Tests (Vulkan Pipeline Blend) ===\n");
-    printf("Formats: BGRA8888, BGR565\n");
+    printf("Src formats: A8, RGB565, RGBX8888, ARGB8888, ARGB1555\n");
+    printf("Dst formats: A8, RGB565, RGBA8888, RGBX8888, RGBA5551\n");
     printf("Blend modes: NONE (pipeline blendEnable=FALSE), SRC_OVER (pipeline blend)\n\n");
 
     for (i = 0; i < num_tests; i++) {
