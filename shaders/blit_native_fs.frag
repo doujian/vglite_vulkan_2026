@@ -31,6 +31,7 @@ layout(location = 0) out vec4 out_color;
 #define IMAGE_MODE_NONE     0x1F03
 #define IMAGE_MODE_RECOLOR  0x1F04
 
+#define FLAG_OUTPUT_A8       2
 #define FLAG_SOURCE_A8       8
 
 vec4 apply_image_mode(vec4 src, uint mix_color)
@@ -71,5 +72,12 @@ void main()
 
     src = apply_image_mode(src, params.color);
 
-    out_color = src;
+    /* A8 target (R8 attachment stores only R): route result alpha into R.
+     * The alpha output keeps blend factors (ONE, ONE_MINUS_SRC_ALPHA)
+     * consistent on R. */
+    if ((params.flags & FLAG_OUTPUT_A8) != 0) {
+        out_color = vec4(src.a, 0.0, 0.0, src.a);
+    } else {
+        out_color = src;
+    }
 }

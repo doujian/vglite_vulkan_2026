@@ -48,6 +48,16 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     case VG_LITE_ABGR8888: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
     case VG_LITE_RGBA4444: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
     case VG_LITE_BGRA4444: return VK_FORMAT_B4G4R4A4_UNORM_PACK16;
+    /* VGLite names 16-bit formats LSB-first (first letter = lowest bits),
+     * VK PACK16 names are MSB-first. Verified against the RGB565->B5G6R5
+     * anchor. RGBA5551 aliases BGRA5551 onto A1R5G5B5 because llvmpipe does
+     * not accept A1B5G5R5 (extension-only token) as an attachment: the CPU
+     * pack/read helpers follow the physical VK layout, so the VGLite doc
+     * bit positions are just an alias and no swizzle is needed. */
+    case VG_LITE_RGBA5551: return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
+    case VG_LITE_BGRA5551: return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
+    case VG_LITE_ARGB1555: return VK_FORMAT_B5G5R5A1_UNORM_PACK16;
+    case VG_LITE_ABGR1555: return VK_FORMAT_R5G5B5A1_UNORM_PACK16;
     default:               return VK_FORMAT_B8G8R8A8_UNORM;
     }
 }

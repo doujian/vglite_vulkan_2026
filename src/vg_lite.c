@@ -278,6 +278,14 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_A;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
+    } else if (buffer->format == VG_LITE_RGBX8888 || buffer->format == VG_LITE_BGRX8888) {
+        /* X byte is don't-care (pack_pixel writes 0x00). Force opaque alpha
+         * so sampling treats the source as fully visible under SRC_OVER. */
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_R;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_G;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_B;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     }
 
     view_ci.components.r = VK_COMPONENT_SWIZZLE_A;
@@ -1107,8 +1115,13 @@ blit_draw_setup:
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
 
-    VkImageView src_view = (target->format == VG_LITE_A8) ? src_int->a_to_r_view :
-        (src_int->swizzle_view ? src_int->swizzle_view : src_int->view);
+    /* Source view: per-format swizzle (A8 -> (0,0,0,a); 565/RGBX -> alpha=ONE;
+     * 4444/ARGB8888 -> channel order). A8/L8 targets rely on the shader
+     * FLAG_OUTPUT_A8/L8 block (writes src.a / luminance into R), so sources
+     * without a real alpha channel correctly sample a=1 via their swizzle view.
+     * (a_to_r_view is unsuitable here: it reads the A component, which is 0
+     * for RGB565/RGBX sources.) */
+    VkImageView src_view = (src_int->swizzle_view ? src_int->swizzle_view : src_int->view);
     VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo di;
     di = si; /* native blend: dst = src (same sampler+view). Shader blend used tmp_view. */

@@ -640,7 +640,11 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     a.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &a, &ds) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
-    VkImageView tview = internal->swizzle_view ? internal->swizzle_view : internal->view;
+    /* Single-channel (A8/L8 -> R8) targets must seed through the identity
+     * view: their swizzle views move the payload to G/B (sampling yields 0
+     * in R) and would write a zero seed into the R8 MSAA attachment. */
+    VkImageView tview = (vkfmt == VK_FORMAT_R8_UNORM) ? internal->view
+        : (internal->swizzle_view ? internal->swizzle_view : internal->view);
     VkDescriptorImageInfo ti = {sampler, tview, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, ds, 0, 0, 1,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ti, NULL, NULL};
