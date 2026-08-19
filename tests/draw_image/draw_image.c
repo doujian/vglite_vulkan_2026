@@ -79,9 +79,17 @@ static const char *format_name(vg_lite_buffer_format_t fmt)
 static const char *blend_name(vg_lite_blend_t b)
 {
     switch (b) {
-    case VG_LITE_BLEND_NONE:     return "NONE";
-    case VG_LITE_BLEND_SRC_OVER: return "SRC_OVER";
-    default:                      return "???";
+    case VG_LITE_BLEND_NONE:          return "NONE";
+    case VG_LITE_BLEND_SRC_OVER:      return "SRC_OVER";
+    case VG_LITE_BLEND_DST_OVER:      return "DST_OVER";
+    case VG_LITE_BLEND_SRC_IN:        return "SRC_IN";
+    case VG_LITE_BLEND_DST_IN:        return "DST_IN";
+    case VG_LITE_BLEND_SCREEN:        return "SCREEN";
+    case VG_LITE_BLEND_ADDITIVE:      return "ADDITIVE";
+    case VG_LITE_BLEND_SUBTRACT:      return "SUBTRACT";
+    case VG_LITE_BLEND_NORMAL_LVGL:   return "NORMAL_LVGL";
+    case VG_LITE_BLEND_ADDITIVE_LVGL: return "ADDITIVE_LVGL";
+    default:                          return "???";
     }
 }
 
@@ -317,6 +325,117 @@ ErrorHandler:
     return error;
 }
 
+/*
+ * Draw_Image_003: Fixed-function blend matrix.
+ * All 9 fixed-blend-capable modes, every src format against every non-A8
+ * target format (A8 targets lack a real dst-alpha channel, so blend modes
+ * that reference Da/SRC_COLOR are skipped there), image_mode=NORMAL,
+ * filter=POINT to isolate blend behavior.
+ */
+#define NUM_BLEND003_MODES 9
+
+static vg_lite_blend_t blend003_modes[NUM_BLEND003_MODES] = {
+    VG_LITE_BLEND_SRC_OVER,
+    VG_LITE_BLEND_DST_OVER,
+    VG_LITE_BLEND_SRC_IN,
+    VG_LITE_BLEND_DST_IN,
+    VG_LITE_BLEND_SCREEN,
+    VG_LITE_BLEND_ADDITIVE,
+    VG_LITE_BLEND_SUBTRACT,
+    VG_LITE_BLEND_NORMAL_LVGL,
+    VG_LITE_BLEND_ADDITIVE_LVGL,
+};
+
+static vg_lite_buffer_format_t tgt003_formats[] = {
+    VG_LITE_RGB565,
+    VG_LITE_RGBA8888,
+    VG_LITE_RGBX8888,
+    VG_LITE_RGBA5551,
+};
+
+static vg_lite_error_t Draw_Image_003(void)
+{
+    vg_lite_buffer_t src_buf, dst_buf;
+    int i, j, n;
+    vg_lite_error_t error = VG_LITE_SUCCESS;
+    vg_lite_color_t cc = 0xffa0a0a0;
+    vg_lite_color_t image_cc = 0xff00ffff;
+    int total_fail = 0;
+    int case_idx = 0;
+    int case_pass = 0;
+    int case_fail = 0;
+    int num_tgts = (int)(sizeof(tgt003_formats) / sizeof(tgt003_formats[0]));
+
+    for (n = 0; n < NUM_BLEND003_MODES; n++) {
+        for (i = 0; i < NUM_SRC_FORMATS; i++) {
+            for (j = 0; j < num_tgts; j++) {
+                printf("  [%03d] src=%-8s dst=%-8s imode=NORMAL   filter=POINT    blend=%-13s ",
+                       case_idx,
+                       format_name(src_formats[i]),
+                       format_name(tgt003_formats[j]),
+                       blend_name(blend003_modes[n]));
+                fflush(stdout);
+
+                memset(&src_buf, 0, sizeof(src_buf));
+                memset(&dst_buf, 0, sizeof(dst_buf));
+
+                CHECK_GEN(gen_buffer(i % 2, &src_buf, src_formats[i], ALIGN(256, 128), 256));
+                CHECK_ERROR(Allocate_Buffer(&dst_buf, tgt003_formats[j], 256, 256));
+                CHECK_ERROR(vg_lite_clear(&dst_buf, NULL, cc));
+
+                src_buf.image_mode = VG_LITE_NORMAL_IMAGE_MODE;
+                CHECK_ERROR(vg_lite_blit(&dst_buf, &src_buf, &identity_matrix,
+                                          blend003_modes[n], image_cc, VG_LITE_FILTER_POINT));
+                CHECK_ERROR(vg_lite_finish());
+
+                {
+                    int tol = get_tolerance(dst_buf.format, blend003_modes[n]);
+                    vg_lite_expected_buffer_t *eb = vg_lite_expected_create(
+                        dst_buf.width, dst_buf.height, dst_buf.format);
+                    vg_lite_expected_clear(eb, NULL, cc);
+                    vg_lite_expected_blit(eb, &src_buf, &identity_matrix,
+                                          (int)blend003_modes[n], (int)VG_LITE_FILTER_POINT,
+                                          (int)VG_LITE_NORMAL_IMAGE_MODE,
+                                          (src_formats[i] == VG_LITE_A8) ? 8 : 0,
+                                          image_cc, NULL);
+                    int fail = vg_lite_expected_verify(eb, &dst_buf, tol);
+                    if (fail == 0) {
+                        printf("PASS\n");
+                        case_pass++;
+                    } else {
+                        printf("FAIL (%d pixels)\n", fail);
+                        case_fail++;
+                        total_fail += fail;
+                    }
+                    vg_lite_expected_destroy(eb);
+                }
+
+                char fname[160];
+                snprintf(fname, sizeof(fname),
+                         "Draw_Image_003_%03d_src%s_tgt%s_bl%s.png",
+                         case_idx,
+                         format_name(src_formats[i]),
+                         format_name(tgt003_formats[j]),
+                         blend_name(blend003_modes[n]));
+                vg_lite_save_png(fname, &dst_buf);
+
+                Free_Buffer(&dst_buf);
+                Free_Buffer(&src_buf);
+                case_idx++;
+            }
+        }
+    }
+
+    printf("  Draw_Image_003: %d cases, %d passed, %d failed, %d total pixel failures\n",
+           case_idx, case_pass, case_fail, total_fail);
+    return (case_fail == 0) ? VG_LITE_SUCCESS : VG_LITE_INVALID_ARGUMENT;
+
+ErrorHandler:
+    if (dst_buf.handle) Free_Buffer(&dst_buf);
+    if (src_buf.handle) Free_Buffer(&src_buf);
+    return error;
+}
+
 int main(int argc, char *argv[])
 {
     vg_lite_error_t error;
@@ -332,6 +451,7 @@ int main(int argc, char *argv[])
     } tests[] = {
         {"Draw_Image_001", Draw_Image_001},
         {"Draw_Image_002", Draw_Image_002},
+        {"Draw_Image_003", Draw_Image_003},
     };
 
     int num_tests = sizeof(tests) / sizeof(tests[0]);
