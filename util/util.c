@@ -204,6 +204,7 @@ static const fmt_desc_t FMT_TABLE[] = {
     { VG_LITE_RGBX8888,    4, MODE_RGBA,       { 0, 8},    { 8, 8},    {16, 8},    { 0, 0} },
     { VG_LITE_RGBA8888,    4, MODE_RGBA,       { 0, 8},    { 8, 8},    {16, 8},    {24, 8} },
     { VG_LITE_A8,          1, MODE_A_REPLICATE, {0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
+{ VG_LITE_A4,          1, MODE_A_REPLICATE, {0, 0},    { 0, 0},    { 0, 0},    { 0, 0} }, /* packed nibbles, special-cased in read_pixel_ptr */
     { VG_LITE_INDEX_8,     1, MODE_RAW_INDEX,  { 0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
     { VG_LITE_L8,          1, MODE_LUMA,       { 0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
 };
@@ -242,6 +243,14 @@ static uint32_t read_pixel_ptr(vg_lite_buffer_t *buffer, const void *base, int x
     case MODE_RAW_INDEX:
         return ptr[off]; /* index only, CLUT lookup happens later */
     case MODE_A_REPLICATE: {
+        /* A4: packed 2 pixels/byte, high nibble = even x; expand by bit
+         * replication (n<<4)|n to match the GPU R8 expansion. */
+        if (buffer->format == VG_LITE_A4) {
+            uint32_t byte = ptr[(size_t)y * buffer->stride + (x >> 1)];
+            uint32_t n = (x & 1) ? (byte & 0x0F) : (byte >> 4);
+            uint32_t a = (n << 4) | n;
+            return a | (a << 8) | (a << 16) | (a << 24);
+        }
         uint32_t a = ptr[off];
         return a | (a << 8) | (a << 16) | (a << 24);
     }

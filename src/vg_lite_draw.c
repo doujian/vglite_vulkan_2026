@@ -723,7 +723,13 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     
     buffer_internal_t *pattern_int = (buffer_internal_t *)pattern_image->handle;
     if (!pattern_int) return VG_LITE_INVALID_ARGUMENT;
-    
+
+    /* A4 pattern sources keep packed 4bpp on the CPU side — expand first */
+    if (pattern_image->format == VG_LITE_A4) {
+        vg_lite_error_t a4_err = vg_lite_a4_sync_to_gpu(pattern_image);
+        if (a4_err != VG_LITE_SUCCESS) return a4_err;
+    }
+
     VlcPath vlc_path;
     vlc_path_init(&vlc_path);
     int cmd_count = vlc_parse_path(path, &vlc_path);

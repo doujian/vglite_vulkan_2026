@@ -238,7 +238,8 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_R;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
-    } else if (buffer->format == VG_LITE_A8) {
+    } else if (buffer->format == VG_LITE_A8 || buffer->format == VG_LITE_A4) {
+        /* Both are R8 on the GPU with alpha in R: sample as (0,0,0,a). */
         view_ci.components.r = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
@@ -344,12 +345,33 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
         VkSubresourceLayout layout;
         vkGetImageSubresourceLayout(g_vk_ctx.device, internal->image, &sub, &layout);
-        buffer->stride = layout.rowPitch;
 
         void *mapped = NULL;
         VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
-        buffer->memory = (uint8_t *)mapped + layout.offset;
         internal->mapped_base = mapped;
+
+        if (buffer->format == VG_LITE_A4) {
+            /* A4: CPU keeps the VGLite packed 4bpp layout in a shadow buffer;
+             * the GPU image holds expanded 1B/px rows at layout.rowPitch. */
+            internal->a4_mapped = (uint8_t *)mapped + layout.offset;
+            internal->gpu_pitch = (uint32_t)layout.rowPitch;
+            internal->a4_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+            if (!internal->a4_shadow) return VG_LITE_OUT_OF_MEMORY;
+            buffer->memory = internal->a4_shadow;
+            /* buffer->stride stays the packed stride from vg_lite_format_stride */
+        } else {
+            buffer->stride = layout.rowPitch;
+            buffer->memory = (uint8_t *)mapped + layout.offset;
+        }
+    }
+
+    if (buffer->format == VG_LITE_A4 && internal->is_optimal) {
+        /* OPTIMAL A4: shadow for packed CPU layout; staging rows are tightly
+         * packed (gpu_pitch = width texels). */
+        internal->a4_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+        if (!internal->a4_shadow) return VG_LITE_OUT_OF_MEMORY;
+        buffer->memory = internal->a4_shadow;
+        internal->gpu_pitch = buffer->width;
     }
 
     buffer->address = 0;
@@ -385,6 +407,7 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->image) vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
     if (internal->mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
     if (internal->cpu_cache) free(internal->cpu_cache);
+    if (internal->a4_shadow) free(internal->a4_shadow);
     if (internal->memory) vkFreeMemory(g_vk_ctx.device, internal->memory, NULL);
     free(internal);
     buffer->handle = NULL;
@@ -396,6 +419,10 @@ void vg_lite_buffer_flush(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (buffer->format == VG_LITE_A4) {
+        vg_lite_a4_sync_to_gpu(buffer);  /* performs its own flush */
+        return;
+    }
     if (!internal->mapped_base) return;
     VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
     range.memory = internal->memory;
@@ -405,12 +432,12 @@ void vg_lite_buffer_flush(vg_lite_buffer_t *buffer)
 }
 
 /* Upload pixel data to OPTIMAL-tiled image via staging buffer.
- * src_data must be buffer->stride * buffer->height bytes in LINEAR layout. */
-static vg_lite_error_t upload_to_image(vg_lite_buffer_t *buffer, const void *src_data)
+ * src_data must be buffer->stride * buffer->height bytes in LINEAR layout.
+ * A4 uses upload_staging directly with an expanded tightly-packed staging. */
+static vg_lite_error_t upload_staging(buffer_internal_t *internal, const void *src_data,
+                                      uint32_t image_size, uint32_t row_px,
+                                      uint32_t w, uint32_t h)
 {
-    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
-    uint32_t image_size = buffer->stride * buffer->height;
-
     /* 1. Create staging buffer */
     VkBufferCreateInfo buf_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     buf_ci.size = image_size;
@@ -460,12 +487,12 @@ static vg_lite_error_t upload_to_image(vg_lite_buffer_t *buffer, const void *src
     /* Copy buffer to image */
     VkBufferImageCopy region = {0};
     region.bufferOffset = 0;
-    region.bufferRowLength = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
-    region.bufferImageHeight = buffer->height;
+    region.bufferRowLength = row_px;
+    region.bufferImageHeight = h;
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
-    region.imageExtent.width = buffer->width;
-    region.imageExtent.height = buffer->height;
+    region.imageExtent.width = w;
+    region.imageExtent.height = h;
     region.imageExtent.depth = 1;
     vkCmdCopyBufferToImage(icb, staging_buf, internal->image,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -498,13 +525,109 @@ static vg_lite_error_t upload_to_image(vg_lite_buffer_t *buffer, const void *src
     return VG_LITE_SUCCESS;
 }
 
-/* Download pixel data from OPTIMAL-tiled image via staging buffer.
- * dst_data receives buffer->stride * buffer->height bytes in LINEAR layout. */
-static vg_lite_error_t download_from_image(vg_lite_buffer_t *buffer, void *dst_data)
+static vg_lite_error_t upload_to_image(vg_lite_buffer_t *buffer, const void *src_data)
 {
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
     uint32_t image_size = buffer->stride * buffer->height;
+    uint32_t row_px = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
+    return upload_staging(internal, src_data, image_size, row_px,
+                          buffer->width, buffer->height);
+}
 
+/* ------------------------------------------------------------------ */
+/* VG_LITE_A4: CPU layout is VGLite packed 4bpp (2 pixels per byte,
+ * high nibble = even x), GPU layout is R8_UNORM expanded 1 byte/pixel
+ * via bit replication (n<<4)|n. The shadow buffer holds the packed
+ * bytes (buffer->memory points at it); sync expands to the GPU image,
+ * readback packs back. Both nibbles of a byte are independent alpha
+ * samples, so nibble order matters and is fixed by this convention
+ * on both the CPU model (util) and the GPU expansion below.         */
+/* ------------------------------------------------------------------ */
+static vg_lite_error_t download_staging(buffer_internal_t *internal, void *dst_data,
+                                        uint32_t image_size, uint32_t row_px,
+                                        uint32_t w, uint32_t h);
+static void a4_expand_row(const uint8_t *packed, uint32_t w, uint8_t *out)
+{
+    for (uint32_t x = 0; x < w; x++) {
+        uint8_t byte = packed[x >> 1];
+        uint8_t n = (x & 1) ? (byte & 0x0F) : (byte >> 4);
+        out[x] = (uint8_t)((n << 4) | n);
+    }
+}
+
+static void a4_pack_row(const uint8_t *exp, uint32_t w, uint8_t *out)
+{
+    for (uint32_t x = 0; x + 1 < w; x += 2)
+        out[x >> 1] = (uint8_t)((exp[x] & 0xF0) | (exp[x + 1] >> 4));
+    if (w & 1)
+        out[w >> 1] = (uint8_t)(exp[w - 1] & 0xF0);
+}
+
+vg_lite_error_t vg_lite_a4_sync_to_gpu(vg_lite_buffer_t *buffer)
+{
+    if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
+    if (buffer->format != VG_LITE_A4) return VG_LITE_SUCCESS;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint8_t *shadow = internal->a4_shadow;
+    if (!shadow) return VG_LITE_INVALID_ARGUMENT;
+
+    if (!internal->is_optimal) {
+        /* LINEAR: expand rows directly into the mapped image memory, then flush */
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_expand_row(shadow + (size_t)y * buffer->stride, buffer->width,
+                          internal->a4_mapped + (size_t)y * internal->gpu_pitch);
+        VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = internal->memory;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        vkFlushMappedMemoryRanges(g_vk_ctx.device, 1, &range);
+    } else {
+        /* OPTIMAL: expand into a tight staging image, upload, drop stale cache */
+        uint32_t size = buffer->width * buffer->height;
+        uint8_t *tmp = malloc(size);
+        if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_expand_row(shadow + (size_t)y * buffer->stride, buffer->width,
+                          tmp + (size_t)y * buffer->width);
+        if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+        vg_lite_error_t err = upload_staging(internal, tmp, size, 0,
+                                             buffer->width, buffer->height);
+        free(tmp);
+        if (err != VG_LITE_SUCCESS) return err;
+    }
+    return VG_LITE_SUCCESS;
+}
+
+/* Pack the expanded GPU pixels back into the packed shadow layout. */
+static vg_lite_error_t a4_download_packed(vg_lite_buffer_t *buffer, uint8_t *dst_packed)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (!internal->is_optimal) {
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_pack_row(internal->a4_mapped + (size_t)y * internal->gpu_pitch,
+                        buffer->width, dst_packed + (size_t)y * buffer->stride);
+        return VG_LITE_SUCCESS;
+    }
+    uint32_t size = buffer->width * buffer->height;
+    uint8_t *tmp = malloc(size);
+    if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+    vg_lite_error_t err = download_staging(internal, tmp, size, 0,
+                                           buffer->width, buffer->height);
+    if (err == VG_LITE_SUCCESS)
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_pack_row(tmp + (size_t)y * buffer->width, buffer->width,
+                        dst_packed + (size_t)y * buffer->stride);
+    free(tmp);
+    return err;
+}
+
+/* Download pixel data from OPTIMAL-tiled image via staging buffer.
+ * dst_data receives image_size bytes in LINEAR layout with row_px texels
+ * per row (0 = tightly packed / width). */
+static vg_lite_error_t download_staging(buffer_internal_t *internal, void *dst_data,
+                                        uint32_t image_size, uint32_t row_px,
+                                        uint32_t w, uint32_t h)
+{
     /* 1. Create staging buffer */
     VkBufferCreateInfo buf_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     buf_ci.size = image_size;
@@ -552,12 +675,12 @@ static vg_lite_error_t download_from_image(vg_lite_buffer_t *buffer, void *dst_d
     /* Copy image to buffer */
     VkBufferImageCopy region = {0};
     region.bufferOffset = 0;
-    region.bufferRowLength = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
-    region.bufferImageHeight = buffer->height;
+    region.bufferRowLength = row_px;
+    region.bufferImageHeight = h;
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
-    region.imageExtent.width = buffer->width;
-    region.imageExtent.height = buffer->height;
+    region.imageExtent.width = w;
+    region.imageExtent.height = h;
     region.imageExtent.depth = 1;
     vkCmdCopyImageToBuffer(icb, internal->image,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buf, 1, &region);
@@ -596,11 +719,25 @@ static vg_lite_error_t download_from_image(vg_lite_buffer_t *buffer, void *dst_d
     return VG_LITE_SUCCESS;
 }
 
+static vg_lite_error_t download_from_image(vg_lite_buffer_t *buffer, void *dst_data)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint32_t image_size = buffer->stride * buffer->height;
+    uint32_t row_px = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
+    return download_staging(internal, dst_data, image_size, row_px,
+                            buffer->width, buffer->height);
+}
+
 /* Public API: upload CPU data to buffer (handles both LINEAR and OPTIMAL) */
 vg_lite_error_t vg_lite_buffer_write(vg_lite_buffer_t *buffer, const void *src_data)
 {
     if (!buffer || !buffer->handle || !src_data) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (buffer->format == VG_LITE_A4) {
+        /* Write packed bytes into the shadow, then expand to the GPU image */
+        memcpy(internal->a4_shadow, src_data, buffer->stride * buffer->height);
+        return vg_lite_a4_sync_to_gpu(buffer);
+    }
     if (internal->is_optimal) {
         /* Invalidate cached CPU data before upload */
         if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
@@ -617,6 +754,11 @@ vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data
 {
     if (!buffer || !buffer->handle || !dst_data) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (buffer->format == VG_LITE_A4) {
+        /* Pack the expanded GPU pixels back into the packed layout */
+        vg_lite_finish();
+        return a4_download_packed(buffer, dst_data);
+    }
     if (internal->is_optimal) {
         return download_from_image(buffer, dst_data);
     } else {
@@ -639,10 +781,29 @@ const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
     }
 
     if (!internal->is_optimal) {
+        if (buffer->format == VG_LITE_A4) {
+            /* GPU may have rendered into the expanded mapped image — refresh
+             * the packed shadow from it before handing out the CPU pointer */
+            vg_lite_finish();
+            for (uint32_t y = 0; y < buffer->height; y++)
+                a4_pack_row(internal->a4_mapped + (size_t)y * internal->gpu_pitch,
+                            buffer->width,
+                            internal->a4_shadow + (size_t)y * buffer->stride);
+        }
         return buffer->memory;
     }
     /* OPTIMAL: download once, cache */
     if (!internal->cpu_cache) {
+        if (buffer->format == VG_LITE_A4) {
+            internal->cpu_cache = malloc(buffer->stride * buffer->height);
+            if (!internal->cpu_cache) return NULL;
+            if (a4_download_packed(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
+                free(internal->cpu_cache);
+                internal->cpu_cache = NULL;
+                return NULL;
+            }
+            return internal->cpu_cache;
+        }
         internal->cpu_cache = malloc(buffer->stride * buffer->height);
         if (!internal->cpu_cache) return NULL;
         if (download_from_image(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
@@ -679,7 +840,7 @@ void vg_lite_color_to_vk_clear(vg_lite_buffer_format_t format, vg_lite_color_t c
     if (format == VG_LITE_L8) {
         float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
         f[0] = lum / 255.0f;
-    } else if (format == VG_LITE_A8) {
+    } else if (format == VG_LITE_A8 || format == VG_LITE_A4) {
         f[0] = (float)a / 255.0f;
     } else if (format == VG_LITE_BGRA4444) {
         /* VK_FORMAT_B4G4R4A4: [0]=B, [1]=G, [2]=R, [3]=A */
@@ -893,7 +1054,7 @@ static vg_lite_error_t create_temp_copy_image(VkFormat vkfmt,
         tmpv_ci.components.g = VK_COMPONENT_SWIZZLE_R;
         tmpv_ci.components.b = VK_COMPONENT_SWIZZLE_R;
         tmpv_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
-    } else if (target->format == VG_LITE_A8) {
+    } else if (target->format == VG_LITE_A8 || target->format == VG_LITE_A4) {
         tmpv_ci.components.r = VK_COMPONENT_SWIZZLE_ZERO;
         tmpv_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
         tmpv_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
@@ -957,6 +1118,13 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (!target || !source) return VG_LITE_INVALID_ARGUMENT;
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
 
+    /* A4 sources keep packed 4bpp on the CPU side — expand to the GPU R8
+     * image before sampling. */
+    if (source->format == VG_LITE_A4) {
+        vg_lite_error_t a4_err = vg_lite_a4_sync_to_gpu(source);
+        if (a4_err != VG_LITE_SUCCESS) return a4_err;
+    }
+
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
     buffer_internal_t *src_int = (buffer_internal_t *)source->handle;
     /* Invalidate cached CPU data — GPU will render to this target */
@@ -967,7 +1135,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     /* Shader blend (mode 0) disabled — all formats use native blend path.
     if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565
         && target->format != VG_LITE_RGBA8888 && target->format != VG_LITE_RGB565
-        && target->format != VG_LITE_A8 && target->format != VG_LITE_L8)
+        && target->format != VG_LITE_A8 && target->format != VG_LITE_A4 && target->format != VG_LITE_L8)
         blend_group = BG_SHADER;
     */
     int native_blend = 1; /* always native blend (was: blend_group != BG_SHADER) */
@@ -1139,8 +1307,8 @@ blit_draw_setup:
     pc.im_mode = (int)source->image_mode;
     pc.flags = 0;
     if (target->format == VG_LITE_L8)  pc.flags |= 1;
-    if (target->format == VG_LITE_A8)  pc.flags |= 2;
-    if (source->format == VG_LITE_A8)  pc.flags |= 8;
+    if (target->format == VG_LITE_A8 || target->format == VG_LITE_A4) pc.flags |= 2;
+    if (source->format == VG_LITE_A8 || source->format == VG_LITE_A4) pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
     /* Default fullscreen triangle corners; OBB path overrides below */

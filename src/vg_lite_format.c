@@ -42,6 +42,7 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     case VG_LITE_RGB565:   return VK_FORMAT_B5G6R5_UNORM_PACK16;
     case VG_LITE_BGR565:   return VK_FORMAT_R5G6B5_UNORM_PACK16;
     case VG_LITE_A8:       return VK_FORMAT_R8_UNORM;
+    case VG_LITE_A4:       return VK_FORMAT_R8_UNORM; /* 4bpp expanded to 1B/px on GPU */
     case VG_LITE_L8:       return VK_FORMAT_R8_UNORM;
     case VG_LITE_INDEX_8:  return VK_FORMAT_R8_UNORM;
     case VG_LITE_ARGB8888: return VK_FORMAT_R8G8B8A8_UNORM;

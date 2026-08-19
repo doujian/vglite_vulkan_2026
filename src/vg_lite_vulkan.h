@@ -57,7 +57,17 @@ typedef struct {
     int has_pending_clear;
     uint32_t pending_clear_color;
     VkRenderPass clear_render_pass;  /* lazily-created MSAA RP with loadOp=CLEAR */
+    /* VG_LITE_A4 only: CPU side stays packed 4bpp (buffer->memory points at
+     * a4_shadow), GPU side is an R8 image with expanded 1 byte/pixel.
+     * a4_mapped = host-mapped GPU pixels (LINEAR only, includes layout offset). */
+    uint8_t *a4_shadow;
+    uint8_t *a4_mapped;
+    uint32_t gpu_pitch;              /* expanded row pitch on the GPU side */
 } buffer_internal_t;
+
+/* Expand+upload the packed A4 shadow to the GPU R8 image. Call before any
+ * GPU use of an A4 buffer (blit/draw source, after CPU writes). */
+vg_lite_error_t vg_lite_a4_sync_to_gpu(vg_lite_buffer_t *buffer);
 
 typedef struct {
     VkPipeline pipeline;
