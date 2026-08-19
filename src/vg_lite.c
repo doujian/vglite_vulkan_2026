@@ -781,14 +781,15 @@ const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
     }
 
     if (!internal->is_optimal) {
-        if (buffer->format == VG_LITE_A4) {
-            /* GPU may have rendered into the expanded mapped image — refresh
-             * the packed shadow from it before handing out the CPU pointer */
+        if (buffer->format == VG_LITE_A4 && internal->a4_gpu_dirty) {
+            /* GPU rendered into the expanded mapped image since last pack —
+             * refresh the packed shadow once, then hand out the CPU pointer */
             vg_lite_finish();
             for (uint32_t y = 0; y < buffer->height; y++)
                 a4_pack_row(internal->a4_mapped + (size_t)y * internal->gpu_pitch,
                             buffer->width,
                             internal->a4_shadow + (size_t)y * buffer->stride);
+            internal->a4_gpu_dirty = 0;
         }
         return buffer->memory;
     }
@@ -903,6 +904,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
 
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
     if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+    if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
 
     int is_fullscreen = (!rect ||
         (rect->x <= 0 && rect->y <= 0 &&
@@ -1129,6 +1131,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     buffer_internal_t *src_int = (buffer_internal_t *)source->handle;
     /* Invalidate cached CPU data — GPU will render to this target */
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
+    if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
     int blend_group = vg_lite_blend_to_group(blend);

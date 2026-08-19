@@ -63,6 +63,7 @@ typedef struct {
     uint8_t *a4_shadow;
     uint8_t *a4_mapped;
     uint32_t gpu_pitch;              /* expanded row pitch on the GPU side */
+int a4_gpu_dirty;                /* GPU rendered into expanded image; shadow needs repack on read */
 } buffer_internal_t;
 
 /* Expand+upload the packed A4 shadow to the GPU R8 image. Call before any
