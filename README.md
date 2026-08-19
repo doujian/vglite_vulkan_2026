@@ -53,7 +53,7 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 - **Matrix ops** - identity, translate, scale, rotate
 - **Blend modes**: NONE, SRC_OVER, DST_OVER, SRC_IN, DST_IN, MULTIPLY, SCREEN, DARKEN, LIGHTEN, ADDITIVE, SUBTRACT, NORMAL_LVGL, ADDITIVE_LVGL, SUBTRACT_LVGL, MULTIPLY_LVGL, OpenVG premultiplied modes
 - **Image modes**: NONE (color only), NORMAL, MULTIPLY, STENCIL, RECOLOR
-- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, RGBA5551, BGRA5551, ARGB1555, ABGR1555, A8, L8, INDEX_8
+- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, RGBA5551, BGRA5551, ARGB1555, ABGR1555, A8, A4, L8, INDEX_8
 - **Filters**: POINT, LINEAR, BI_LINEAR
 - **VLC path opcodes**: MOVE/LINE/QUAD/CUBIC (absolute + relative), END (auto-close)
 
@@ -146,6 +146,7 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_scissor | Scissor clip test: clear + draw within scissor region | PASS |
 | test_radialGrad | Radial gradient, 4 spread modes (PAD/REPEAT/REFLECT/FILL) | PASS (307200/307200 each) |
 | test_imgA8 | A8 source image blit | PASS |
+| test_imgA4 | A4 packed alpha mask blit (GPU-expanded to R8) | PASS |
 | test_rotate | Rotate blit (RGB565) | PASS (fixed: discard out-of-bounds UVs) |
 | test_scale | Scale blit with golden comparison | PASS |
 | test_blit_multi | Multiple blits to single target | PASS |

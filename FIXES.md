@@ -1019,3 +1019,23 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Verification**: test_draw_image 655/655 (001: 450/450, 002: 25/25, 003: 180/180) on build/. Full suite rerun on all 8 primary configurations plus build_noperf and build_tiled_noperf (10 dirs, CWD = build*/tests/Debug, exit-code based): 37/38 PASS each, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline). test_blend_premultiply (PREMULTIPLY_SRC_OVER) 100% PASS.
 
 **Files**: util/util.c
+
+## 31. VG_LITE_A4 format support (packed 4bpp alpha mask, GPU-expanded to R8)
+
+**Date**: 2026-08-19
+
+**Symptom**: VG_LITE_A4 existed only as an enum value (inc/vg_lite.h) and a bpp-table entry (src/vg_lite_format.c returns 4). vg_lite_format_to_vk() had no A4 branch, so allocating an A4 buffer silently created a B8G8R8A8 image; stride arithmetic (packed 2 px/byte) did not match any Vulkan sampling format (Vulkan has no 4-bit sampled format), and no test exercised the format.
+
+**Root Cause**: The Vulkan port never implemented the A4 path. A4 packs 2 alpha pixels per byte (4bpp), which has no direct VK format equivalent for sampling, so it needs an expansion layer analogous to how A8 maps to R8_UNORM.
+
+**Solution**: GPU side uses VK_FORMAT_R8_UNORM with 1 byte/pixel expanded by bit replication (nibble n -> (n<<4)|n); CPU side keeps the VGLite packed 4bpp layout in a shadow buffer (buffer->memory -> a4_shadow, stride = ALIGN(width/2, 64) preserved instead of being overwritten by rowPitch). Nibble order convention: high nibble = even x (self-consistent CPU/GPU; the CTS reference fills uniform bytes so it cannot distinguish order). Changes by file:
+- src/vg_lite_vulkan.h: buffer_internal_t += a4_shadow / a4_mapped / gpu_pitch; vg_lite_a4_sync_to_gpu decl.
+- src/vg_lite_format.c: A4 -> VK_FORMAT_R8_UNORM.
+- src/vg_lite.c: allocate() A4 branches for LINEAR (shadow + a4_mapped + gpu_pitch=rowPitch) and OPTIMAL (shadow + gpu_pitch=width); upload/download refactored into upload_staging()/download_staging() taking explicit row_px (0 = tightly packed) with upload_to_image()/download_from_image() wrappers preserving the old stride-based behavior; a4_expand_row/a4_pack_row, vg_lite_a4_sync_to_gpu (LINEAR: expand into mapped rows + flush; OPTIMAL: expanded tightly-packed staging upload, invalidates cpu_cache), a4_download_packed (LINEAR: pack from a4_mapped; OPTIMAL: tight staging download + pack); buffer_write/flush/download/read_ptr A4 branches (read_ptr OPTIMAL caches packed data, LINEAR refreshes the shadow from mapped memory after finish); free() frees a4_shadow; color_to_vk_clear + both target-A8 checks + swizzle_view branch extended with || A4; blit() syncs A4 sources before rendering; push constants treat A4 like A8 for flags 2 (target) and 8 (source MULTIPLY).
+- src/vg_lite_draw.c: pattern path syncs A4 pattern images.
+- util/util.c: FMT_TABLE A4 row (MODE_A_REPLICATE) + read_pixel_ptr special case (packed nibble select by x&1, bit-replicate expand) so the CPU verify model reads the packed shadow directly.
+- tests/imgA4/imgA4.c (new, registered as test_imgA4): mirrors imgA8 — 128x128 A4 gradient mask (nibble = x&0xF exercises all 16 levels), MULTIPLY + SRC_OVER blit (color 0xFF00FF00, POINT, 2x scale) onto RGBA8888 cleared red, expected-verify with flags=8.
+
+**Verification**: test_imgA4 65536/65536 pixels PASS on both LINEAR (build/) and OPTIMAL (build_tiled/) tilings on first run. Full suite on all 10 build directories (8-config matrix + build_noperf + build_tiled_noperf): 38/39 PASS each (sole failure test_sft_blit=-1, pre-existing crash, unchanged baseline).
+
+**Files**: src/vg_lite_vulkan.h, src/vg_lite_format.c, src/vg_lite.c, src/vg_lite_draw.c, util/util.c, tests/imgA4/imgA4.c, tests/CMakeLists.txt
