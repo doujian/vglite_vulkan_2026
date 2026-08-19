@@ -1005,3 +1005,17 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Verification**: All 8 configurations rebuilt from the corrected caches and the full suite rerun per config (CWD = each `build*/tests/Debug`, exit code + `golden: FAIL` log scan): 37/37 PASS each (test_sft_blit excluded as pre-existing crash). DUMP_SUBDIR now compiles per config: build->dump_lin_msaa_obb, build_lin_msaa_noobb->dump_lin_msaa_noobb, build_lin_nomsaa_obb->dump_lin_nomsaa_obb, build_lin_nomsaa_noobb->dump_lin_nomsaa_noobb, build_tiled->dump_opt_msaa_obb, build_opt_msaa_noobb->dump_opt_msaa_noobb, build_opt_nomsaa_obb->dump_opt_nomsaa_obb, build_opt_nomsaa_noobb->dump_opt_nomsaa_noobb.
 
 **Files**: (no source change; CMakeCache.txt of all 8 build directories regenerated; helper scripts under %TEMP%\opencode)
+
+## 30. NORMAL_LVGL CPU model off-by-1 (missing +127 rounding) in compute_expected_blit_pixel
+
+**Date**: 2026-08-19
+
+**Symptom**: New blend-matrix test Draw_Image_003 (9 blend modes x 5 src x 4 dst formats) failed 4/180 cases, all NORMAL_LVGL with intermediate-alpha sources (A8, ARGB8888) onto alpha-carrying targets (RGBA8888, RGBX8888): 32896-65536 mismatched pixels each. Alpha channel always matched; every RGB mismatch was exactly off-by-1 (got = expected or expected+1). RGB565/RGBA5551 targets and constant-alpha sources passed (quantization tolerance masked the off-by-1).
+
+**Root Cause**: util/util.c compute_expected_blit_pixel() case 11 (NORMAL_LVGL, same value as PREMULTIPLY_SRC_OVER) computed rgb = (sr*sa + dr*(255-sa))/255 with truncating integer division, while the Vulkan fixed-function blend stage rounds to nearest. For odd products the GPU result is CPU or CPU+1. The earlier hypothesis (BG_NORMAL_LVGL alpha factor choice) was a red herring: with Da=255, ONE/ONE and ONE/ONE_MINUS_SRC_ALPHA clamp to the same 255, so alpha never diverged and the factor change had zero effect on the failing pixels. RGB565/5551 targets pass only because the format quantization tolerance absorbs a 1-bit RGB delta.
+
+**Solution**: util/util.c case 11: add +127 rounding to the three RGB divisions ((sr*sa + dr*(255-sa) + 127)/255 etc.); output alpha stays oa=0xFF. Also part of the same work batch (context, not this fix): added case 12 ADDITIVE_LVGL (rgb = (s*sa+127)/255 + d, matching the fixed-blend factor pair SRC_ALPHA/ONE), extended vg_lite_vulkan blend groups (BG_SRC_IN/DST_IN/SCREEN/ADDITIVE_LVGL) and Draw_Image_003 blend matrix registration.
+
+**Verification**: test_draw_image 655/655 (001: 450/450, 002: 25/25, 003: 180/180) on build/. Full suite rerun on all 8 primary configurations plus build_noperf and build_tiled_noperf (10 dirs, CWD = build*/tests/Debug, exit-code based): 37/38 PASS each, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline). test_blend_premultiply (PREMULTIPLY_SRC_OVER) 100% PASS.
+
+**Files**: util/util.c
