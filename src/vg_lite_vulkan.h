@@ -20,7 +20,11 @@
 #define BG_SUBTRACT   4
 #define BG_NONE       5
 #define BG_NORMAL_LVGL 6
-#define BG_COUNT      7
+#define BG_SRC_IN     7   /* S*Da:                  DST_ALPHA / ZERO          */
+#define BG_DST_IN     8   /* D*Sa:                  ZERO / SRC_ALPHA          */
+#define BG_SCREEN     9   /* S + D - S*D = S + D*(1-S): ONE / ONE_MINUS_SRC_COLOR */
+#define BG_ADDITIVE_LVGL 10 /* (S+D)*Sa + D*(1-Sa) = S*Sa + D: SRC_ALPHA / ONE */
+#define BG_COUNT      11
 void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachmentState *cba);
 void vg_lite_color_to_vk_clear(vg_lite_buffer_format_t format, vg_lite_color_t color, VkClearValue *out);
 

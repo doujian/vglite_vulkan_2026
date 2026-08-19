@@ -931,6 +931,14 @@ int vg_lite_blend_to_group(vg_lite_blend_t blend)
         return BG_ADDITIVE;
     case VG_LITE_BLEND_SUBTRACT:
         return BG_SUBTRACT;
+    case VG_LITE_BLEND_SRC_IN:
+        return BG_SRC_IN;
+    case VG_LITE_BLEND_DST_IN:
+        return BG_DST_IN;
+    case VG_LITE_BLEND_SCREEN:
+        return BG_SCREEN;
+    case VG_LITE_BLEND_ADDITIVE_LVGL:
+        return BG_ADDITIVE_LVGL;
     default:
         return BG_SHADER;
     }
@@ -958,8 +966,10 @@ void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachm
         cba->colorBlendOp = VK_BLEND_OP_ADD;
         cba->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        /* Out alpha matches the CPU reference model (oa = 0xFF for opaque
+         * dst): ONE/ONE clamps to min(255, Sa+Da) = 255 when Da = 255. */
         cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         break;
     case BG_DST_OVER:
         cba->blendEnable = VK_TRUE;
@@ -983,6 +993,38 @@ void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachm
         cba->srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
         cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
+    case BG_SRC_IN: /* S*Da */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        break;
+    case BG_DST_IN: /* D*Sa */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        break;
+    case BG_SCREEN: /* S + D - S*D = S + D*(1-S) */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
+    case BG_ADDITIVE_LVGL: /* (S+D)*Sa + D*(1-Sa) = S*Sa + D */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         break;
     default:
