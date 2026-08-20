@@ -510,13 +510,14 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
         ob  = (db * (255 - sa) + 127) / 255;
         oa  = (da * (255 - sa) + 127) / 255;
         break;
-    case 11: /* NORMAL_LVGL (premultiplied): S*Sa + D*(1-Sa) */
+    case 11: /* NORMAL_LVGL (non-premultiplied): RGB = S*Sa + D*(1-Sa),
+              * A = Da + (Sa-Da)*Sa = Sa*Sa + Da*(1-Sa) (same lerp) */
         /* +127: GPU fixed-function blend rounds to nearest, plain
          * truncation is off by one against the hardware. */
         or_ = (sr * sa + dr * (255 - sa) + 127) / 255;
         og  = (sg * sa + dg * (255 - sa) + 127) / 255;
         ob  = (sb * sa + db * (255 - sa) + 127) / 255;
-        oa  = 0xFF;
+        oa  = (sa * sa + da * (255 - sa) + 127) / 255;
         break;
     case 12: /* ADDITIVE_LVGL: (S+D)*Sa + D*(1-Sa) = S*Sa + D */
         or_ = (sr * sa + 127) / 255 + dr;

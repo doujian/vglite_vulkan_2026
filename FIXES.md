@@ -1053,3 +1053,17 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Verification**: test_imgA4: 153600/153600 (100%) on no-MSAA configs; 99% + tolerance PASS on MSAA configs; completes in seconds (hang gone). Full suite on all 8 configuration build dirs: 39/39 counted, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline).
 
 **Files**: src/vg_lite_vulkan.h, src/vg_lite.c, src/vg_lite_draw.c, tests/imgA4/imgA4.c
+
+## 33. NORMAL_LVGL alpha deviated from documented formula (Da + (Sa-Da)*Sa)
+
+**Date**: 2026-08-20
+
+**Symptom**: VG_LITE_NORMAL_LVGL blended the alpha channel with ONE/ONE factors (clamped Sa+Da) and the CPU reference model hard-coded oa = 0xFF, while the documentation specifies the alpha channel uses the same lerp as RGB: A = Da + (Sa-Da)*Sa = Sa*Sa + Da*(1-Sa). With an opaque destination (Da=255) and partial source alpha the output alpha must come out below 255 (e.g. Sa=128 -> ~191); the old implementation always wrote 255. The deviation was invisible to tests because GPU and CPU model were wrong in the same way (self-consistent).
+
+**Root Cause**: The alpha factors were "simplified" to ONE/ONE during Draw_Image_003 debugging (they appeared to make no difference - the actual failures back then were RGB rounding, fixed in #30) and oa=0xFF was rationalized as the Da=255 fixed point instead of following the documented formula, which applies the same (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) factor pair to the alpha channel.
+
+**Solution**: src/vg_lite_vulkan.c BG_NORMAL_LVGL: srcAlphaBlendFactor ONE -> SRC_ALPHA, dstAlphaBlendFactor ONE -> ONE_MINUS_SRC_ALPHA (comment cites the doc formula). util/util.c compute_expected_blit_pixel() case 11: oa = (sa*sa + da*(255-sa) + 127)/255 (+127 round-to-nearest, same as the RGB channels per #30).
+
+**Verification**: Config 1: test_draw_image Draw_Image_003 180/180 (decisive cases: A8/ARGB8888 gradient-alpha sources onto RGBA8888 dst), test_blend_premultiply 120000/120000. Full suite on all 8 configuration build dirs: 39/39 counted, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline).
+
+**Files**: src/vg_lite_vulkan.c, util/util.c
