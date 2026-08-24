@@ -326,6 +326,36 @@ static int transform_point(vg_lite_float_t inv[3][3], float dx, float dy, float 
     return 1;
 }
 
+/* sRGB EOTF: sRGB-encoded byte -> linear-domain byte (rounded).
+ * Matches Vulkan _SRGB texel decode: c <= 0.04045 ? c/12.92 : ((c+0.055)/1.055)^2.4
+ * Alpha is never converted. */
+static uint8_t srgb_decode_8[256];
+static int srgb_decode_ready = 0;
+static void srgb_decode_init(void)
+{
+    if (srgb_decode_ready) return;
+    srgb_decode_ready = 1;
+    for (int i = 0; i < 256; i++) {
+        float c = (float)i / 255.0f;
+        float l = (c <= 0.04045f) ? c / 12.92f
+                                  : powf((c + 0.055f) / 1.055f, 2.4f);
+        int v = (int)(l * 255.0f + 0.5f);
+        srgb_decode_8[i] = (uint8_t)(v > 255 ? 255 : v);
+    }
+}
+
+/* Vulkan _SRGB sampling: per spec the sRGB->linear decode happens in the
+ * texel output pipeline BEFORE filtering, so each fetched texel's RGB is
+ * decoded prior to the (bi)linear weights being applied. Alpha untouched. */
+static void srgb_decode_texel(vg_lite_buffer_t *src, int *r, int *g, int *b)
+{
+    if (src->format != OPENVG_sRGBA_8888) return;
+    srgb_decode_init();
+    *r = srgb_decode_8[*r];
+    *g = srgb_decode_8[*g];
+    *b = srgb_decode_8[*b];
+}
+
 /* Vulkan spec §15.1 LINEAR sampling:
  *   texel center at (i+0.5)/size, i = floor(u - 0.5), alpha = frac(u - 0.5)
  *   result = tex[i]*(1-a) + tex[i+1]*a, clamp-to-edge: i,i+1 ∈ [0,size-1] */
@@ -350,6 +380,11 @@ static void vulkan_linear_sample(vg_lite_buffer_t *src, float sx, float sy,
     unpack_rgba(vg_lite_read_pixel(src, x0, y1), &r01, &g01, &b01, &a01);
     unpack_rgba(vg_lite_read_pixel(src, x1, y1), &r11, &g11, &b11, &a11);
 
+    srgb_decode_texel(src, &r00, &g00, &b00);
+    srgb_decode_texel(src, &r10, &g10, &b10);
+    srgb_decode_texel(src, &r01, &g01, &b01);
+    srgb_decode_texel(src, &r11, &g11, &b11);
+
     float w00 = (1-fx)*(1-fy), w10 = fx*(1-fy), w01 = (1-fx)*fy, w11 = fx*fy;
     *sr = (int)(r00*w00 + r10*w10 + r01*w01 + r11*w11 + 0.5f);
     *sg = (int)(g00*w00 + g10*w10 + g01*w01 + g11*w11 + 0.5f);
@@ -367,6 +402,7 @@ static void vulkan_nearest_sample(vg_lite_buffer_t *src, float sx, float sy,
     if (ix < 0) ix = 0; else if (ix >= w) ix = w - 1;
     if (iy < 0) iy = 0; else if (iy >= h) iy = h - 1;
     unpack_rgba(vg_lite_read_pixel(src, ix, iy), sr, sg, sb, sa);
+    srgb_decode_texel(src, sr, sg, sb);
 }
 
 static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,

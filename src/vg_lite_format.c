@@ -48,11 +48,12 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     case VG_LITE_INDEX_8:  return VK_FORMAT_R8_UNORM;
     case VG_LITE_ARGB8888: return VK_FORMAT_R8G8B8A8_UNORM;
     /* OpenVG sRGBA_8888 is MSB-first named: word bits R=31:24,G=23:16,B=15:8,
-     * A=7:0, i.e. mem [A,B,G,R] - the VG_LITE_ABGR8888 layout. Sampled via
-     * R8G8B8A8 + swizzle_view (A8B8G8R8_PACK32 has poor sampling support).
-     * The "sRGB" prefix is semantic only: values are stored/sampled as-is,
-     * no gamma conversion (same as the reference hardware). */
-    case OPENVG_sRGBA_8888: return VK_FORMAT_R8G8B8A8_UNORM;
+     * A=7:0, i.e. CPU/VGLite memory [A,B,G,R]. The GPU image stores rotated
+     * [R,G,B,A] words (vg_lite_srgb_sync_to_gpu rotates on upload) so the
+     * _SRGB hardware decode hits exactly R,G,B and alpha passes through.
+     * A view swizzle cannot be used: llvmpipe decodes BEFORE the swizzle,
+     * which would decode the VGLite alpha byte instead. */
+    case OPENVG_sRGBA_8888: return VK_FORMAT_R8G8B8A8_SRGB;
     case VG_LITE_ABGR8888: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
     case VG_LITE_RGBA4444: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
     case VG_LITE_BGRA4444: return VK_FORMAT_B4G4R4A4_UNORM_PACK16;

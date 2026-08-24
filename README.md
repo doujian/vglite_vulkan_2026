@@ -53,7 +53,7 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 - **Matrix ops** - identity, translate, scale, rotate
 - **Blend modes**: NONE, SRC_OVER, DST_OVER, SRC_IN, DST_IN, MULTIPLY, SCREEN, DARKEN, LIGHTEN, ADDITIVE, SUBTRACT, NORMAL_LVGL, ADDITIVE_LVGL, SUBTRACT_LVGL, MULTIPLY_LVGL, OpenVG premultiplied modes
 - **Image modes**: NONE (color only), NORMAL, MULTIPLY, STENCIL, RECOLOR
-- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, RGBA5551, BGRA5551, ARGB1555, ABGR1555, A8, A4, L8, INDEX_8, OPENVG_sRGBA_8888 (OpenVG MSB-first sRGBA, layout = ABGR8888, sRGB semantic only)
+- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, RGBA5551, BGRA5551, ARGB1555, ABGR1555, A8, A4, L8, INDEX_8, OPENVG_sRGBA_8888 (OpenVG MSB-first sRGBA, layout = ABGR8888, VK _SRGB auto sRGB→linear decode on sample)
 - **Filters**: POINT, LINEAR, BI_LINEAR
 - **VLC path opcodes**: MOVE/LINE/QUAD/CUBIC (absolute + relative), END (auto-close)
 

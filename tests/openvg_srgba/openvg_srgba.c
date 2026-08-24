@@ -2,12 +2,15 @@
  *
  * OpenVG formats are MSB-first named: R=31:24, G=23:16, B=15:8, A=7:0,
  * i.e. the LE memory word packs [A,B,G,R] per pixel (VG_LITE_ABGR8888
- * layout). The "sRGB" prefix is semantic only - values are stored and
- * sampled as-is, no gamma conversion.
+ * layout). The buffer is backed by VK_FORMAT_R8G8B8A8_SRGB, so Vulkan's
+ * automatic conversion applies: sampling decodes sRGB->linear (RGB only,
+ * alpha untouched); the target here is UNORM so decoded values are stored
+ * directly.
  *
  * Case 1: BLEND_NONE passthrough blit (2x scale) -> output must equal the
- *         source colors expanded onto the RGBA8888 target.
- * Case 2: SRC_OVER with gradient alpha over a solid background.
+ *         sRGB-decoded source colors on the RGBA8888 target.
+ * Case 2: SRC_OVER with gradient alpha over a solid background (blend in
+ *         linear space).
  * Both are verified against the CPU reference model (util/).
  */
 #include <stdio.h>

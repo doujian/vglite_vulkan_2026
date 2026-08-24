@@ -279,18 +279,6 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_A;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
-    } else if (buffer->format == OPENVG_sRGBA_8888) {
-        /* OpenVG MSB-first naming: R=31:24 G=23:16 B=15:8 A=7:0
-         * VGLite word (LE): byte0=A, byte1=B, byte2=G, byte3=R
-         * VK R8G8B8A8: comp R=byte0, G=byte1, B=byte2, A=byte3
-         * -> comp R shows A, comp G shows B, comp B shows G, comp A shows R
-         * Swizzle: shader.r=A(byte3=VGR), shader.g=B(byte2=VGB),
-         *          shader.b=G(byte1=VGG), shader.a=R(byte0=VGA) */
-        view_ci.components.r = VK_COMPONENT_SWIZZLE_A;
-        view_ci.components.g = VK_COMPONENT_SWIZZLE_B;
-        view_ci.components.b = VK_COMPONENT_SWIZZLE_G;
-        view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
-        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     } else if (buffer->format == VG_LITE_RGBX8888 || buffer->format == VG_LITE_BGRX8888) {
         /* X byte is don't-care (pack_pixel writes 0x00). Force opaque alpha
          * so sampling treats the source as fully visible under SRC_OVER. */
@@ -371,6 +359,15 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
             if (!internal->a4_shadow) return VG_LITE_OUT_OF_MEMORY;
             buffer->memory = internal->a4_shadow;
             /* buffer->stride stays the packed stride from vg_lite_format_stride */
+        } else if (buffer->format == OPENVG_sRGBA_8888) {
+            /* sRGBA: CPU keeps the VGLite [A,B,G,R] words in a shadow buffer;
+             * the GPU image holds rotated [R,G,B,A] words (R8G8B8A8_SRGB) at
+             * layout.rowPitch so the hardware sRGB decode hits R,G,B only. */
+            internal->srgb_mapped = (uint8_t *)mapped + layout.offset;
+            internal->gpu_pitch = (uint32_t)layout.rowPitch;
+            internal->srgb_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+            if (!internal->srgb_shadow) return VG_LITE_OUT_OF_MEMORY;
+            buffer->memory = internal->srgb_shadow;
         } else {
             buffer->stride = layout.rowPitch;
             buffer->memory = (uint8_t *)mapped + layout.offset;
@@ -384,6 +381,14 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         if (!internal->a4_shadow) return VG_LITE_OUT_OF_MEMORY;
         buffer->memory = internal->a4_shadow;
         internal->gpu_pitch = buffer->width;
+    }
+
+    if (buffer->format == OPENVG_sRGBA_8888 && internal->is_optimal) {
+        /* OPTIMAL sRGBA: shadow for the VGLite [A,B,G,R] CPU layout; staging
+         * rows are tightly packed rotated [R,G,B,A] words. */
+        internal->srgb_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+        if (!internal->srgb_shadow) return VG_LITE_OUT_OF_MEMORY;
+        buffer->memory = internal->srgb_shadow;
     }
 
     buffer->address = 0;
@@ -420,6 +425,7 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
     if (internal->cpu_cache) free(internal->cpu_cache);
     if (internal->a4_shadow) free(internal->a4_shadow);
+    if (internal->srgb_shadow) free(internal->srgb_shadow);
     if (internal->memory) vkFreeMemory(g_vk_ctx.device, internal->memory, NULL);
     free(internal);
     buffer->handle = NULL;
@@ -433,6 +439,10 @@ void vg_lite_buffer_flush(vg_lite_buffer_t *buffer)
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
     if (buffer->format == VG_LITE_A4) {
         vg_lite_a4_sync_to_gpu(buffer);  /* performs its own flush */
+        return;
+    }
+    if (buffer->format == OPENVG_sRGBA_8888) {
+        vg_lite_srgb_sync_to_gpu(buffer);  /* performs its own flush */
         return;
     }
     if (!internal->mapped_base) return;
@@ -633,6 +643,94 @@ static vg_lite_error_t a4_download_packed(vg_lite_buffer_t *buffer, uint8_t *dst
     return err;
 }
 
+/* ------------------------------------------------------------------ */
+/* OPENVG_sRGBA_8888 shadow sync                                       */
+/*                                                                     */
+/* The GPU image is R8G8B8A8_SRGB and stores rotated [R,G,B,A] words:  */
+/* the physical RGB channels carry the VGLite R,G,B so the Vulkan      */
+/* sRGB->linear auto-decode (which llvmpipe applies BEFORE the view    */
+/* swizzle) hits exactly those channels, while the VGLite alpha rides  */
+/* the physical A channel and passes through untouched. The CPU shadow */
+/* keeps the VGLite contract layout [A,B,G,R] per word.                */
+/* cpu word = 0xRRGGBBAA, gpu word = 0xAABBGGRR (full byte reverse). */
+/* ------------------------------------------------------------------ */
+static uint32_t srgb_bswap(uint32_t v)
+{
+    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
+           ((v & 0x00FF0000u) >> 8)  |  (v >> 24);
+}
+
+static void srgb_rotate_row_fwd(const uint8_t *cpu, uint32_t w, uint8_t *gpu)
+{
+    const uint32_t *s = (const uint32_t *)cpu;
+    uint32_t *d = (uint32_t *)gpu;
+    for (uint32_t x = 0; x < w; x++)
+        d[x] = srgb_bswap(s[x]);            /* [A,B,G,R] -> [R,G,B,A] */
+}
+
+static void srgb_rotate_row_inv(const uint8_t *gpu, uint32_t w, uint8_t *cpu)
+{
+    srgb_rotate_row_fwd(gpu, w, cpu);       /* byte reverse is self-inverse */
+}
+
+vg_lite_error_t vg_lite_srgb_sync_to_gpu(vg_lite_buffer_t *buffer)
+{
+    if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
+    if (buffer->format != OPENVG_sRGBA_8888) return VG_LITE_SUCCESS;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint8_t *shadow = internal->srgb_shadow;
+    if (!shadow) return VG_LITE_INVALID_ARGUMENT;
+
+    if (!internal->is_optimal) {
+        /* LINEAR: rotate rows directly into the mapped image memory, flush */
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_fwd(shadow + (size_t)y * buffer->stride, buffer->width,
+                                internal->srgb_mapped + (size_t)y * internal->gpu_pitch);
+        VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = internal->memory;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        vkFlushMappedMemoryRanges(g_vk_ctx.device, 1, &range);
+    } else {
+        /* OPTIMAL: rotate into a tight staging image, upload, drop stale cache */
+        uint32_t size = buffer->width * buffer->height * 4;
+        uint8_t *tmp = malloc(size);
+        if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_fwd(shadow + (size_t)y * buffer->stride, buffer->width,
+                                tmp + (size_t)y * buffer->width * 4);
+        if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+        vg_lite_error_t err = upload_staging(internal, tmp, size, 0,
+                                             buffer->width, buffer->height);
+        free(tmp);
+        if (err != VG_LITE_SUCCESS) return err;
+    }
+    return VG_LITE_SUCCESS;
+}
+
+/* Rotate the GPU [R,G,B,A] pixels back into the VGLite [A,B,G,R] layout. */
+static vg_lite_error_t srgb_download_vglite(vg_lite_buffer_t *buffer, uint8_t *dst)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (!internal->is_optimal) {
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_inv(internal->srgb_mapped + (size_t)y * internal->gpu_pitch,
+                                buffer->width, dst + (size_t)y * buffer->stride);
+        return VG_LITE_SUCCESS;
+    }
+    uint32_t size = buffer->width * buffer->height * 4;
+    uint8_t *tmp = malloc(size);
+    if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+    vg_lite_error_t err = download_staging(internal, tmp, size, 0,
+                                           buffer->width, buffer->height);
+    if (err == VG_LITE_SUCCESS)
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_inv(tmp + (size_t)y * buffer->width * 4, buffer->width,
+                                dst + (size_t)y * buffer->stride);
+    free(tmp);
+    return err;
+}
+
 /* Download pixel data from OPTIMAL-tiled image via staging buffer.
  * dst_data receives image_size bytes in LINEAR layout with row_px texels
  * per row (0 = tightly packed / width). */
@@ -750,6 +848,11 @@ vg_lite_error_t vg_lite_buffer_write(vg_lite_buffer_t *buffer, const void *src_d
         memcpy(internal->a4_shadow, src_data, buffer->stride * buffer->height);
         return vg_lite_a4_sync_to_gpu(buffer);
     }
+    if (buffer->format == OPENVG_sRGBA_8888) {
+        /* Write [A,B,G,R] words into the shadow, then rotate to the GPU */
+        memcpy(internal->srgb_shadow, src_data, buffer->stride * buffer->height);
+        return vg_lite_srgb_sync_to_gpu(buffer);
+    }
     if (internal->is_optimal) {
         /* Invalidate cached CPU data before upload */
         if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
@@ -770,6 +873,11 @@ vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data
         /* Pack the expanded GPU pixels back into the packed layout */
         vg_lite_finish();
         return a4_download_packed(buffer, dst_data);
+    }
+    if (buffer->format == OPENVG_sRGBA_8888) {
+        /* Rotate the GPU [R,G,B,A] pixels back into [A,B,G,R] */
+        vg_lite_finish();
+        return srgb_download_vglite(buffer, dst_data);
     }
     if (internal->is_optimal) {
         return download_from_image(buffer, dst_data);
@@ -803,6 +911,16 @@ const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
                             internal->a4_shadow + (size_t)y * buffer->stride);
             internal->a4_gpu_dirty = 0;
         }
+        if (buffer->format == OPENVG_sRGBA_8888 && internal->srgb_gpu_dirty) {
+            /* GPU rendered into the rotated mapped image since last rotate —
+             * refresh the [A,B,G,R] shadow once */
+            vg_lite_finish();
+            for (uint32_t y = 0; y < buffer->height; y++)
+                srgb_rotate_row_inv(internal->srgb_mapped + (size_t)y * internal->gpu_pitch,
+                                    buffer->width,
+                                    internal->srgb_shadow + (size_t)y * buffer->stride);
+            internal->srgb_gpu_dirty = 0;
+        }
         return buffer->memory;
     }
     /* OPTIMAL: download once, cache */
@@ -811,6 +929,16 @@ const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
             internal->cpu_cache = malloc(buffer->stride * buffer->height);
             if (!internal->cpu_cache) return NULL;
             if (a4_download_packed(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
+                free(internal->cpu_cache);
+                internal->cpu_cache = NULL;
+                return NULL;
+            }
+            return internal->cpu_cache;
+        }
+        if (buffer->format == OPENVG_sRGBA_8888) {
+            internal->cpu_cache = malloc(buffer->stride * buffer->height);
+            if (!internal->cpu_cache) return NULL;
+            if (srgb_download_vglite(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
                 free(internal->cpu_cache);
                 internal->cpu_cache = NULL;
                 return NULL;
@@ -917,6 +1045,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
     if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
 
     int is_fullscreen = (!rect ||
         (rect->x <= 0 && rect->y <= 0 &&
@@ -1133,10 +1262,15 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
 
     /* A4 sources keep packed 4bpp on the CPU side — expand to the GPU R8
-     * image before sampling. */
+     * image before sampling. sRGBA sources keep [A,B,G,R] words on the CPU
+     * side — rotate to the GPU [R,G,B,A] _SRGB image before sampling. */
     if (source->format == VG_LITE_A4) {
         vg_lite_error_t a4_err = vg_lite_a4_sync_to_gpu(source);
         if (a4_err != VG_LITE_SUCCESS) return a4_err;
+    }
+    if (source->format == OPENVG_sRGBA_8888) {
+        vg_lite_error_t s_err = vg_lite_srgb_sync_to_gpu(source);
+        if (s_err != VG_LITE_SUCCESS) return s_err;
     }
 
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
@@ -1144,6 +1278,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     /* Invalidate cached CPU data — GPU will render to this target */
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
     int blend_group = vg_lite_blend_to_group(blend);

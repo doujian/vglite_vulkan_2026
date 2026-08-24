@@ -488,6 +488,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     /* Invalidate cached CPU data — GPU will render to this buffer */
     if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
 
     int need_flush = (internal->msaa_dirty);
     if (need_flush) {
@@ -725,10 +726,15 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     buffer_internal_t *pattern_int = (buffer_internal_t *)pattern_image->handle;
     if (!pattern_int) return VG_LITE_INVALID_ARGUMENT;
 
-    /* A4 pattern sources keep packed 4bpp on the CPU side — expand first */
+    /* A4 pattern sources keep packed 4bpp on the CPU side — expand first.
+     * sRGBA pattern sources keep [A,B,G,R] words — rotate first. */
     if (pattern_image->format == VG_LITE_A4) {
         vg_lite_error_t a4_err = vg_lite_a4_sync_to_gpu(pattern_image);
         if (a4_err != VG_LITE_SUCCESS) return a4_err;
+    }
+    if (pattern_image->format == OPENVG_sRGBA_8888) {
+        vg_lite_error_t s_err = vg_lite_srgb_sync_to_gpu(pattern_image);
+        if (s_err != VG_LITE_SUCCESS) return s_err;
     }
 
     VlcPath vlc_path;
@@ -771,6 +777,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     /* Invalidate cached CPU data — GPU will render to this buffer */
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
     if (target_int->msaa_dirty)
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
         if (target_int->has_pending_clear) {

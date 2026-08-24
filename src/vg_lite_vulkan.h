@@ -60,15 +60,27 @@ typedef struct {
     /* VG_LITE_A4 only: CPU side stays packed 4bpp (buffer->memory points at
      * a4_shadow), GPU side is an R8 image with expanded 1 byte/pixel.
      * a4_mapped = host-mapped GPU pixels (LINEAR only, includes layout offset). */
-    uint8_t *a4_shadow;
-    uint8_t *a4_mapped;
-    uint32_t gpu_pitch;              /* expanded row pitch on the GPU side */
+uint8_t *a4_shadow;
+uint8_t *a4_mapped;
+uint32_t gpu_pitch;              /* expanded row pitch on the GPU side */
 int a4_gpu_dirty;                /* GPU rendered into expanded image; shadow needs repack on read */
+/* OPENVG_sRGBA_8888: CPU keeps the VGLite [A,B,G,R] word layout in
+ * srgb_shadow; the GPU image is R8G8B8A8_SRGB holding rotated [R,G,B,A]
+ * words so the hardware sRGB decode hits exactly R,G,B and alpha passes
+ * through. srgb_mapped = host-mapped rotated pixels (LINEAR only, includes
+ * layout offset; row pitch shared with gpu_pitch). */
+uint8_t *srgb_shadow;
+uint8_t *srgb_mapped;
+int srgb_gpu_dirty;
 } buffer_internal_t;
 
 /* Expand+upload the packed A4 shadow to the GPU R8 image. Call before any
  * GPU use of an A4 buffer (blit/draw source, after CPU writes). */
 vg_lite_error_t vg_lite_a4_sync_to_gpu(vg_lite_buffer_t *buffer);
+
+/* Rotate+upload the [A,B,G,R] srgb shadow to the GPU [R,G,B,A] _SRGB image.
+ * Call before any GPU use of an OPENVG_sRGBA_8888 buffer. */
+vg_lite_error_t vg_lite_srgb_sync_to_gpu(vg_lite_buffer_t *buffer);
 
 typedef struct {
     VkPipeline pipeline;
