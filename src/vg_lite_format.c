@@ -9,6 +9,7 @@ uint32_t vg_lite_format_bpp(vg_lite_buffer_format_t format)
     case VG_LITE_RGBA8888: case VG_LITE_BGRA8888: case VG_LITE_RGBX8888:
     case VG_LITE_BGRX8888: case VG_LITE_ARGB8888: case VG_LITE_ABGR8888:
     case VG_LITE_XBGR8888: case VG_LITE_XRGB8888:
+    case OPENVG_sRGBA_8888:
         return 32;
     case VG_LITE_RGB565: case VG_LITE_BGR565:
     case VG_LITE_RGBA4444: case VG_LITE_BGRA4444:
@@ -46,6 +47,12 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     case VG_LITE_L8:       return VK_FORMAT_R8_UNORM;
     case VG_LITE_INDEX_8:  return VK_FORMAT_R8_UNORM;
     case VG_LITE_ARGB8888: return VK_FORMAT_R8G8B8A8_UNORM;
+    /* OpenVG sRGBA_8888 is MSB-first named: word bits R=31:24,G=23:16,B=15:8,
+     * A=7:0, i.e. mem [A,B,G,R] - the VG_LITE_ABGR8888 layout. Sampled via
+     * R8G8B8A8 + swizzle_view (A8B8G8R8_PACK32 has poor sampling support).
+     * The "sRGB" prefix is semantic only: values are stored/sampled as-is,
+     * no gamma conversion (same as the reference hardware). */
+    case OPENVG_sRGBA_8888: return VK_FORMAT_R8G8B8A8_UNORM;
     case VG_LITE_ABGR8888: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
     case VG_LITE_RGBA4444: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
     case VG_LITE_BGRA4444: return VK_FORMAT_B4G4R4A4_UNORM_PACK16;
