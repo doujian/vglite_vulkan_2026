@@ -68,6 +68,9 @@ add_dependencies(test_imgA8 spirv_compilation)
 add_executable(test_imgA4 imgA4/imgA4.c)
 add_dependencies(test_imgA4 spirv_compilation)
 
+add_executable(test_openvg_srgba openvg_srgba/openvg_srgba.c)
+add_dependencies(test_openvg_srgba spirv_compilation)
+
 add_executable(test_imgIndex imgIndex/imgIndex.c)
 add_dependencies(test_imgIndex spirv_compilation)
 
