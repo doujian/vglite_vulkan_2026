@@ -279,18 +279,6 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_A;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
-    } else if (buffer->format == OPENVG_sRGBA_8888) {
-        /* OpenVG MSB-first naming: R=31:24 G=23:16 B=15:8 A=7:0
-         * VGLite word (LE): byte0=A, byte1=B, byte2=G, byte3=R
-         * VK R8G8B8A8: comp R=byte0, G=byte1, B=byte2, A=byte3
-         * -> comp R shows A, comp G shows B, comp B shows G, comp A shows R
-         * Swizzle: shader.r=A(byte3=VGR), shader.g=B(byte2=VGB),
-         *          shader.b=G(byte1=VGG), shader.a=R(byte0=VGA) */
-        view_ci.components.r = VK_COMPONENT_SWIZZLE_A;
-        view_ci.components.g = VK_COMPONENT_SWIZZLE_B;
-        view_ci.components.b = VK_COMPONENT_SWIZZLE_G;
-        view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
-        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     } else if (buffer->format == VG_LITE_RGBX8888 || buffer->format == VG_LITE_BGRX8888) {
         /* X byte is don't-care (pack_pixel writes 0x00). Force opaque alpha
          * so sampling treats the source as fully visible under SRC_OVER. */

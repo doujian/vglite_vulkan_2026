@@ -203,8 +203,6 @@ static const fmt_desc_t FMT_TABLE[] = {
     { VG_LITE_BGRX8888,    4, MODE_RGBA,       {16, 8},    { 8, 8},    { 0, 8},    { 0, 0} },
     { VG_LITE_RGBX8888,    4, MODE_RGBA,       { 0, 8},    { 8, 8},    {16, 8},    { 0, 0} },
     { VG_LITE_RGBA8888,    4, MODE_RGBA,       { 0, 8},    { 8, 8},    {16, 8},    {24, 8} },
-    /* OpenVG MSB-first naming: R=31:24 G=23:16 B=15:8 A=7:0 (same word as ABGR8888) */
-    { OPENVG_sRGBA_8888,   4, MODE_RGBA,       {24, 8},    {16, 8},    { 8, 8},    { 0, 8} },
     { VG_LITE_A8,          1, MODE_A_REPLICATE, {0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
 { VG_LITE_A4,          1, MODE_A_REPLICATE, {0, 0},    { 0, 0},    { 0, 0},    { 0, 0} }, /* packed nibbles, special-cased in read_pixel_ptr */
     { VG_LITE_INDEX_8,     1, MODE_RAW_INDEX,  { 0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
