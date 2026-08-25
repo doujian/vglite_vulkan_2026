@@ -158,3 +158,6 @@ add_dependencies(test_multi_draw spirv_compilation)
 add_executable(test_stroke stroke/stroke.c)
 add_dependencies(test_stroke spirv_compilation)
 
+add_executable(test_optimal_roundtrip optimal_roundtrip/optimal_roundtrip.c)
+add_dependencies(test_optimal_roundtrip spirv_compilation)
+
