@@ -9,6 +9,7 @@ uint32_t vg_lite_format_bpp(vg_lite_buffer_format_t format)
     case VG_LITE_RGBA8888: case VG_LITE_BGRA8888: case VG_LITE_RGBX8888:
     case VG_LITE_BGRX8888: case VG_LITE_ARGB8888: case VG_LITE_ABGR8888:
     case VG_LITE_XBGR8888: case VG_LITE_XRGB8888:
+    case OPENVG_sRGBA_8888:
         return 32;
     case VG_LITE_RGB565: case VG_LITE_BGR565:
     case VG_LITE_RGBA4444: case VG_LITE_BGRA4444:
@@ -42,12 +43,30 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     case VG_LITE_RGB565:   return VK_FORMAT_B5G6R5_UNORM_PACK16;
     case VG_LITE_BGR565:   return VK_FORMAT_R5G6B5_UNORM_PACK16;
     case VG_LITE_A8:       return VK_FORMAT_R8_UNORM;
+    case VG_LITE_A4:       return VK_FORMAT_R8_UNORM; /* 4bpp expanded to 1B/px on GPU */
     case VG_LITE_L8:       return VK_FORMAT_R8_UNORM;
     case VG_LITE_INDEX_8:  return VK_FORMAT_R8_UNORM;
     case VG_LITE_ARGB8888: return VK_FORMAT_R8G8B8A8_UNORM;
+    /* OpenVG sRGBA_8888 is MSB-first named: word bits R=31:24,G=23:16,B=15:8,
+     * A=7:0, i.e. CPU/VGLite memory [A,B,G,R]. The GPU image stores rotated
+     * [R,G,B,A] words (vg_lite_srgb_sync_to_gpu rotates on upload) so the
+     * _SRGB hardware decode hits exactly R,G,B and alpha passes through.
+     * A view swizzle cannot be used: llvmpipe decodes BEFORE the swizzle,
+     * which would decode the VGLite alpha byte instead. */
+    case OPENVG_sRGBA_8888: return VK_FORMAT_R8G8B8A8_SRGB;
     case VG_LITE_ABGR8888: return VK_FORMAT_A8B8G8R8_UNORM_PACK32;
     case VG_LITE_RGBA4444: return VK_FORMAT_R4G4B4A4_UNORM_PACK16;
     case VG_LITE_BGRA4444: return VK_FORMAT_B4G4R4A4_UNORM_PACK16;
+    /* VGLite names 16-bit formats LSB-first (first letter = lowest bits),
+     * VK PACK16 names are MSB-first. Verified against the RGB565->B5G6R5
+     * anchor. RGBA5551 aliases BGRA5551 onto A1R5G5B5 because llvmpipe does
+     * not accept A1B5G5R5 (extension-only token) as an attachment: the CPU
+     * pack/read helpers follow the physical VK layout, so the VGLite doc
+     * bit positions are just an alias and no swizzle is needed. */
+    case VG_LITE_RGBA5551: return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
+    case VG_LITE_BGRA5551: return VK_FORMAT_A1R5G5B5_UNORM_PACK16;
+    case VG_LITE_ARGB1555: return VK_FORMAT_B5G5R5A1_UNORM_PACK16;
+    case VG_LITE_ABGR1555: return VK_FORMAT_R5G5B5A1_UNORM_PACK16;
     default:               return VK_FORMAT_B8G8R8A8_UNORM;
     }
 }

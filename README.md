@@ -1,4 +1,4 @@
-# vglite_by_vulkan
+﻿# vglite_by_vulkan
 
 VGLite API implementation based on Vulkan. Provides `vg_lite_clear`, `vg_lite_blit`, `vg_lite_draw`, and related functionality using Vulkan graphics pipeline, compatible with the VGLite API interface.
 
@@ -55,18 +55,22 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 - **Matrix ops** - identity, translate, scale, rotate
 - **Blend modes**: NONE, SRC_OVER, DST_OVER, SRC_IN, DST_IN, MULTIPLY, SCREEN, DARKEN, LIGHTEN, ADDITIVE, SUBTRACT, NORMAL_LVGL, ADDITIVE_LVGL, SUBTRACT_LVGL, MULTIPLY_LVGL, OpenVG premultiplied modes
 - **Image modes**: NONE (color only), NORMAL, MULTIPLY, STENCIL, RECOLOR
-- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, A8, L8, INDEX_8
+- **Pixel formats**: RGBA8888, BGRA8888, ARGB8888, ABGR8888, RGBX8888, BGRX8888, RGB565, BGR565, RGBA4444, BGRA4444, RGBA5551, BGRA5551, ARGB1555, ABGR1555, A8, A4, L8, INDEX_8, OPENVG_sRGBA_8888 (OpenVG MSB-first sRGBA, layout = ABGR8888, VK _SRGB auto sRGB→linear decode on sample)
 - **Filters**: POINT, LINEAR, BI_LINEAR
 - **VLC path opcodes**: MOVE/LINE/QUAD/CUBIC (absolute + relative), END (auto-close)
 
-### Two Blit Paths
+### Blit Path
 
-| Path | Shader | MSAA | Blend | Supported Targets |
-|------|--------|------|-------|-------------------|
-| Native blend | `blit_native.frag` | 4x | Vulkan hardware pipeline blend + target seeding | BGRA8888, BGR565, RGBA8888, RGB565, A8, L8 |
-| Shader blend | `blit.frag` | 4x | Shader-based (temp copy for dst) | All formats |
+All blits use the native path: `blit_native.frag` (OBB quad) / `blit_native_fs.frag` (fullscreen triangle) with Vulkan hardware pipeline blend (e.g. SRC_OVER = ONE, ONE_MINUS_SRC_ALPHA) + target seeding. Pipelines are cached per (VkFormat, blend group); render passes are generic per format. A seed draw copies the target's content into the 4x MSAA attachment at the start of each new render pass so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). Single-channel targets are handled by shader output flags (A8 -> alpha, L8 -> luminance) and seed through identity views. The legacy shader-blend path (`blit.frag`) is currently disabled in code.
 
-Native blend is used for NONE/SRC_OVER/DST_OVER/ADDITIVE/SUBTRACT on common formats. It uses 4x MSAA with hardware pipeline blend. A seed draw copies the target's content into the MSAA at the start of each new render pass, so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). All other format/blend combinations use shader blend (also 4x MSAA, but computes blend in the shader with a temp copy of the target as dst).
+### Delayed Clear Optimization
+
+Fullscreen `vg_lite_clear` (rect==NULL or covers entire target) is deferred — no GPU operations are executed immediately. The clear color is stored as pending state on the target buffer. When the next `vg_lite_blit` or `vg_lite_draw` targets the same buffer, the clear is merged into the render pass begin:
+
+- **no-MSAA path**: clear and blit/draw share a single render pass (saves 1 RP open/close).
+- **MSAA path**: pending clear is flushed to the target via a no-MSAA RP, then normal `seed_msaa` follows. (Cannot merge into MSAA RP due to llvmpipe `vkCmdClearAttachments` bug on 4x MSAA B5G6R5 attachments.)
+- **Flush points**: `vg_lite_finish` and `vg_lite_buffer_read_ptr` automatically flush any unconsumed pending clear.
+- **Partial clear** (rect != fullscreen): unchanged — executes immediately via `vkCmdClearAttachments`.
 
 ## Build
 
@@ -81,6 +85,32 @@ Requirements:
 ./build.sh test     # Build and run tests with Vulkan validation layer
 ./build.sh run      # Build and run tests
 ```
+
+### Buffer Tiling Mode
+
+The backend supports two image tiling modes, controlled by `VGLITE_TARGET_OPTIMAL`:
+
+| Mode | Flag | Memory Type | Description |
+|------|------|------------|-------------|
+| LINEAR (default) | `-DVGLITE_TARGET_OPTIMAL=OFF` | HOST_VISIBLE | CPU-direct pointer access, original behavior |
+| OPTIMAL | `-DVGLITE_TARGET_OPTIMAL=ON` | DEVICE_LOCAL | GPU-private memory, staging transfer for CPU access |
+
+```bash
+# LINEAR mode (default)
+cmake -B build -DVGLITE_TARGET_OPTIMAL=OFF
+cmake --build build
+
+# OPTIMAL mode
+cmake -B build_tiled -DVGLITE_TARGET_OPTIMAL=ON
+cmake --build build_tiled
+```
+
+In OPTIMAL mode, CPU access to buffer pixels goes through staging buffers via:
+- `vg_lite_buffer_write(buf, src)` — upload
+- `vg_lite_buffer_download(buf, dst)` — download
+- `vg_lite_buffer_read_ptr(buf)` — cached read-only pointer
+
+Test PNG outputs are automatically routed to `dump_linear/` or `dump_optimal/` subdirectories.
 
 ### Shader System
 
@@ -102,7 +132,7 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_clear_unit | Clear unit test with expected buffer | PASS (100%) |
 | test_clear_dl | 1920x1080 RGB565 clear | PASS |
 | test_align16 | 16-pixel alignment check | PASS |
-| test_draw_image | 72 cases: src/dst formats × image modes | PASS |
+| test_draw_image | 475 cases: 5x5 src/tgt format matrix x image modes x filters x blends (NONE, SRC_OVER) | PASS (0 pixel failures) |
 | test_recolor | RECOLOR mode with rotate/scale/translate | PASS |
 | test_tiled | Tiled rendering test | PASS |
 | test_gfx1 | Full buffer clear | PASS |
@@ -120,6 +150,9 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_scissor | Scissor clip test: clear + draw within scissor region | PASS |
 | test_radialGrad | Radial gradient, 4 spread modes (PAD/REPEAT/REFLECT/FILL) | PASS (307200/307200 each) |
 | test_imgA8 | A8 source image blit | PASS |
+| test_imgA4 | A4 packed alpha mask blit (GPU-expanded to R8) | PASS |
+| test_openvg_srgba | OPENVG_sRGBA_8888 source blit (BLEND_NONE + SRC_OVER vs CPU model) | PASS |
+| test_optimal_roundtrip | landscape.raw upload (OPTIMAL) → download → byte-exact compare + png dump | PASS (480000/480000, 8 configs) |
 | test_rotate | Rotate blit (RGB565) | PASS (fixed: discard out-of-bounds UVs) |
 | test_scale | Scale blit with golden comparison | PASS |
 | test_blit_multi | Multiple blits to single target | PASS |

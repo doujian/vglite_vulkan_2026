@@ -32,13 +32,20 @@ int main(int argc, const char *argv[])
     srcbuf.format = VG_LITE_RGBA8888;
     CHECK_ERROR(vg_lite_allocate(&srcbuf));
 
-    memset(srcbuf.memory, 0xffffffff, srcbuf.stride * srcbuf.height);
-    memcpy(srcbuf.memory, &color_data[0], 8);
-    memcpy((char *)srcbuf.memory + srcbuf.stride, &color_data[2], 8);
+    {
+        uint32_t total = srcbuf.stride * srcbuf.height;
+        uint32_t *tmp = (uint32_t *)malloc(total);
+        memset(tmp, 0xff, total);
+        memcpy(tmp, &color_data[0], 8);
+        memcpy((uint8_t *)tmp + srcbuf.stride, &color_data[2], 8);
+        vg_lite_buffer_write(&srcbuf, tmp);
+        free(tmp);
+    }
 
     dstbuf.width = fb_width;
     dstbuf.height = fb_height;
     dstbuf.format = VG_LITE_RGBA8888;
+    dstbuf.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&dstbuf));
 
     CHECK_ERROR(vg_lite_blit(&dstbuf, &srcbuf, &matrix, VG_LITE_BLEND_NONE, 0, filter));

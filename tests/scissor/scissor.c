@@ -55,6 +55,7 @@ int main(int argc, const char *argv[])
     buffer.width = fb_width;
     buffer.height = fb_height;
     buffer.format = VG_LITE_RGBA8888;
+    buffer.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&buffer));
 
     /* Step 1: Clear entire buffer to blue */
@@ -86,7 +87,7 @@ int main(int argc, const char *argv[])
     vg_lite_save_png("scissors.png", &buffer);
 
     {
-        uint8_t *mem = (uint8_t*)buffer.memory;
+        const uint8_t *mem = (const uint8_t *)vg_lite_buffer_read_ptr(&buffer);
         printf("Left edge  (0,0):     [%02x %02x %02x %02x] (expect blue)\n",
                mem[0], mem[1], mem[2], mem[3]);
         printf("Right edge (319,0):   [%02x %02x %02x %02x] (expect blue)\n",
@@ -101,6 +102,7 @@ int main(int argc, const char *argv[])
                mem[240*buffer.stride + 180*4+1],
                mem[240*buffer.stride + 180*4+2],
                mem[240*buffer.stride + 180*4+3]);
+        vg_lite_buffer_read_ptr_release(&buffer);
     }
 
     printf("Saved: scissors.png (%dx%d)\n", fb_width, fb_height);

@@ -224,6 +224,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     /* Query timestamp period for GPU timing */
     VkPhysicalDeviceProperties phys_props;
     vkGetPhysicalDeviceProperties(g_vk_ctx.physical_device, &phys_props);
+#if VGLITE_BLIT_PERF
     g_vk_ctx.timestamp_period = (float)phys_props.limits.timestampPeriod;
 
     /* Create timestamp query pool */
@@ -232,6 +233,7 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     qp_ci.queryCount = VGLITE_TIMESTAMP_QUERY_COUNT;
     VK_CHECK(vkCreateQueryPool(g_vk_ctx.device, &qp_ci, NULL, &g_vk_ctx.timestamp_query_pool));
     g_vk_ctx.timestamp_slot_counter = 0;
+#endif
 
     VkCommandPoolCreateInfo pool_ci = {0};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -323,7 +325,9 @@ vg_lite_error_t vg_lite_vulkan_destroy(void)
     if (g_vk_ctx.descriptor_pool) { vkDestroyDescriptorPool(g_vk_ctx.device, g_vk_ctx.descriptor_pool, NULL); g_vk_ctx.descriptor_pool = VK_NULL_HANDLE; }
     if (g_vk_ctx.fence) { vkDestroyFence(g_vk_ctx.device, g_vk_ctx.fence, NULL); g_vk_ctx.fence = VK_NULL_HANDLE; }
     if (g_vk_ctx.command_pool) { vkFreeCommandBuffers(g_vk_ctx.device, g_vk_ctx.command_pool, 1, &g_vk_ctx.cmd_buf); vkFreeCommandBuffers(g_vk_ctx.device, g_vk_ctx.command_pool, 1, &g_vk_ctx.init_cmd_buf); vkDestroyCommandPool(g_vk_ctx.device, g_vk_ctx.command_pool, NULL); g_vk_ctx.command_pool = VK_NULL_HANDLE; }
+#if VGLITE_BLIT_PERF
     if (g_vk_ctx.timestamp_query_pool) { vkDestroyQueryPool(g_vk_ctx.device, g_vk_ctx.timestamp_query_pool, NULL); g_vk_ctx.timestamp_query_pool = VK_NULL_HANDLE; }
+#endif
     if (g_vk_ctx.device) { vkDestroyDevice(g_vk_ctx.device, NULL); g_vk_ctx.device = VK_NULL_HANDLE; }
     if (g_vk_ctx.debug_messenger) { destroy_debug_messenger(g_vk_ctx.instance, g_vk_ctx.debug_messenger); g_vk_ctx.debug_messenger = VK_NULL_HANDLE; }
     if (g_vk_ctx.instance) { vkDestroyInstance(g_vk_ctx.instance, NULL); g_vk_ctx.instance = VK_NULL_HANDLE; }
@@ -340,9 +344,11 @@ vg_lite_error_t vg_lite_vulkan_begin_command(void)
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(g_vk_ctx.cmd_buf, &bi));
     g_vk_ctx.cmd_buf_recording = 1;
+#if VGLITE_BLIT_PERF
     g_vk_ctx.timestamp_slot_counter = 0;
     if (g_vk_ctx.timestamp_query_pool)
         vkCmdResetQueryPool(g_vk_ctx.cmd_buf, g_vk_ctx.timestamp_query_pool, 0, VGLITE_TIMESTAMP_QUERY_COUNT);
+#endif
     return VG_LITE_SUCCESS;
 }
 
@@ -459,6 +465,85 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
     return rp;
 }
 
+/* MSAA render pass with loadOp=CLEAR on color attachment.
+ * Used for delayed clear optimization: when fullscreen clear is pending,
+ * the next blit/draw RP begins with loadOp=CLEAR instead of LOAD+seed_msaa.
+ * Identical to vg_lite_vulkan_create_render_pass except attachment[0].loadOp = CLEAR. */
+VkRenderPass vg_lite_vulkan_create_render_pass_clear(VkFormat format)
+{
+    VkAttachmentDescription attachments[3] = {0};
+    attachments[0].format = format;
+    attachments[0].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[1].format = format;
+    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    attachments[2].format = VK_FORMAT_D24_UNORM_S8_UINT;
+    attachments[2].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[2].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference resolve_ref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+    VkAttachmentReference stencil_ref = {2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription sub = {0};
+    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    sub.colorAttachmentCount = 1;
+    sub.pColorAttachments = &color_ref;
+    sub.pResolveAttachments = &resolve_ref;
+    sub.pDepthStencilAttachment = &stencil_ref;
+
+    VkSubpassDependency deps[3] = {0};
+    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].dstSubpass = 0;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[0].dependencyFlags = 0;
+    deps[1].srcSubpass = 0;
+    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].dependencyFlags = 0;
+    deps[2].srcSubpass = 0;
+    deps[2].dstSubpass = 0;
+    deps[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[2].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[2].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[2].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+    VkRenderPassCreateInfo ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    ci.attachmentCount = 3;
+    ci.pAttachments = attachments;
+    ci.subpassCount = 1;
+    ci.pSubpasses = &sub;
+    ci.dependencyCount = 3;
+    ci.pDependencies = deps;
+
+    VkRenderPass rp;
+    if (vkCreateRenderPass(g_vk_ctx.device, &ci, NULL, &rp) != VK_SUCCESS) return VK_NULL_HANDLE;
+    return rp;
+}
 static int create_attachment(
     VkImage *out_image, VkDeviceMemory *out_memory, VkImageView *out_view,
     uint32_t width, uint32_t height,
@@ -521,6 +606,7 @@ static int create_attachment(
 }
 
 /* GPU timestamp utilities */
+#if VGLITE_BLIT_PERF
 void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage)
 {
     if (!g_vk_ctx.timestamp_query_pool || !g_vk_ctx.cmd_buf_recording) return;
@@ -551,6 +637,7 @@ double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot)
     if (start == 0 || end == 0 || end < start) return 0.0;
     return (double)(end - start) * (double)g_vk_ctx.timestamp_period;
 }
+#endif
 
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler)
 {
@@ -567,7 +654,11 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     a.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &a, &ds) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
-    VkImageView tview = internal->swizzle_view ? internal->swizzle_view : internal->view;
+    /* Single-channel (A8/L8 -> R8) targets must seed through the identity
+     * view: their swizzle views move the payload to G/B (sampling yields 0
+     * in R) and would write a zero seed into the R8 MSAA attachment. */
+    VkImageView tview = (vkfmt == VK_FORMAT_R8_UNORM) ? internal->view
+        : (internal->swizzle_view ? internal->swizzle_view : internal->view);
     VkDescriptorImageInfo ti = {sampler, tview, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, ds, 0, 0, 1,
         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ti, NULL, NULL};
@@ -599,22 +690,30 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     return VG_LITE_SUCCESS;
 }
 
-vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
+vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, const VkClearValue *clear_value)
 {
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
 
     if (g_vk_ctx.current_fb_image == internal->image && !g_vk_ctx.current_fb_is_no_msaa) return VG_LITE_SUCCESS;
-    
+
     if (g_vk_ctx.current_fb) {
         vg_lite_vulkan_end_render_pass();
         if (g_vk_ctx.current_fb_internal && g_vk_ctx.current_fb_internal->msaa_dirty)
             vg_lite_vulkan_resolve_msaa_to_target(g_vk_ctx.current_fb_internal);
     }
-    
-    if (internal->render_pass == VK_NULL_HANDLE) {
-        VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-        internal->render_pass = vg_lite_vulkan_create_render_pass(vkfmt);
+
+    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    VkRenderPass rp;
+    if (clear_value) {
+        /* Use CLEAR variant RP */
+        if (internal->clear_render_pass == VK_NULL_HANDLE)
+            internal->clear_render_pass = vg_lite_vulkan_create_render_pass_clear(vkfmt);
+        rp = internal->clear_render_pass;
+    } else {
+        if (internal->render_pass == VK_NULL_HANDLE)
+            internal->render_pass = vg_lite_vulkan_create_render_pass(vkfmt);
+        rp = internal->render_pass;
     }
     
     if (internal->msaa_color_image == VK_NULL_HANDLE) {
@@ -654,7 +753,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     VkImageView fb_views[3] = {internal->msaa_color_view, internal->resolve_view, internal->msaa_depth_view};
     VkFramebufferCreateInfo fb_ci = {0};
     fb_ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb_ci.renderPass = internal->render_pass;
+    fb_ci.renderPass = rp;
     fb_ci.attachmentCount = 3;
     fb_ci.pAttachments = fb_views;
     fb_ci.width = target->width;
@@ -674,16 +773,16 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
     g_vk_ctx.current_fb_internal = internal;
     
     VkClearValue clear_values[3] = {0};
-    clear_values[0].color.float32[0] = 0.0f;
-    clear_values[0].color.float32[1] = 0.0f;
-    clear_values[0].color.float32[2] = 0.0f;
-    clear_values[0].color.float32[3] = 0.0f;
+    if (clear_value) {
+        clear_values[0] = *clear_value;  /* MSAA color: use pending clear color */
+    }
+    /* depth/stencil clear values stay at default (0.0 / 0) */
     clear_values[2].depthStencil.depth = 0.0f;
     clear_values[2].depthStencil.stencil = 0;
-    
+
     VkRenderPassBeginInfo rpbi = {0};
     rpbi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    rpbi.renderPass = internal->render_pass;
+    rpbi.renderPass = rp;
     rpbi.framebuffer = fb;
     rpbi.renderArea.offset.x = 0;
     rpbi.renderArea.offset.y = 0;
@@ -694,6 +793,11 @@ vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
 
     vkCmdBeginRenderPass(g_vk_ctx.cmd_buf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target)
+{
+    return vg_lite_vulkan_set_render_target_ex(target, NULL);
 }
 
 vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *internal)
@@ -841,6 +945,14 @@ int vg_lite_blend_to_group(vg_lite_blend_t blend)
         return BG_ADDITIVE;
     case VG_LITE_BLEND_SUBTRACT:
         return BG_SUBTRACT;
+    case VG_LITE_BLEND_SRC_IN:
+        return BG_SRC_IN;
+    case VG_LITE_BLEND_DST_IN:
+        return BG_DST_IN;
+    case VG_LITE_BLEND_SCREEN:
+        return BG_SCREEN;
+    case VG_LITE_BLEND_ADDITIVE_LVGL:
+        return BG_ADDITIVE_LVGL;
     default:
         return BG_SHADER;
     }
@@ -868,7 +980,10 @@ void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachm
         cba->colorBlendOp = VK_BLEND_OP_ADD;
         cba->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        /* Same factor pair as color, per the documentation the alpha
+         * channel is blended with the same lerp: A = Da + (Sa-Da)*Sa
+         * = Sa*Sa + Da*(1-Sa). */
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         break;
     case BG_DST_OVER:
@@ -895,12 +1010,44 @@ void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachm
         cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
         cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         break;
+    case BG_SRC_IN: /* S*Da */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_DST_ALPHA;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        break;
+    case BG_DST_IN: /* D*Sa */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        break;
+    case BG_SCREEN: /* S + D - S*D = S + D*(1-S) */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
+    case BG_ADDITIVE_LVGL: /* (S+D)*Sa + D*(1-Sa) = S*Sa + D */
+        cba->blendEnable = VK_TRUE;
+        cba->colorBlendOp = VK_BLEND_OP_ADD;
+        cba->srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba->dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        break;
     default:
         break;
     }
 }
 
-static VkRenderPass create_render_pass_no_msaa(VkFormat format);
+static VkRenderPass create_render_pass_no_msaa(VkFormat format, VkAttachmentLoadOp load_op);
 
 static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group, int mode)
 {
@@ -977,7 +1124,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     ds.depthWriteEnable = VK_FALSE;
     ds.stencilTestEnable = VK_FALSE;
 
-    VkRenderPass rp = (mode == 1) ? create_render_pass_no_msaa(format) : vg_lite_vulkan_create_render_pass(format);
+    VkRenderPass rp = (mode == 1) ? create_render_pass_no_msaa(format, VK_ATTACHMENT_LOAD_OP_LOAD) : vg_lite_vulkan_create_render_pass(format);
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vs.viewportCount = 1;
@@ -1041,12 +1188,12 @@ VkPipeline vg_lite_vulkan_get_pipeline(VkFormat format, int blend_group)
 }
 */
 
-static VkRenderPass create_render_pass_no_msaa(VkFormat format)
+static VkRenderPass create_render_pass_no_msaa(VkFormat format, VkAttachmentLoadOp load_op)
 {
     VkAttachmentDescription attachment = {0};
     attachment.format = format;
     attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.loadOp = load_op;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -1167,7 +1314,7 @@ static VkPipeline create_blit_obb_pipeline_internal(VkFormat format, int blend_g
     ds.depthWriteEnable = VK_FALSE;
     ds.stencilTestEnable = VK_FALSE;
 
-    VkRenderPass rp = (mode == 1) ? create_render_pass_no_msaa(format) : vg_lite_vulkan_create_render_pass(format);
+    VkRenderPass rp = (mode == 1) ? create_render_pass_no_msaa(format, VK_ATTACHMENT_LOAD_OP_LOAD) : vg_lite_vulkan_create_render_pass(format);
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vs.viewportCount = 1;
@@ -1232,7 +1379,7 @@ VkPipeline vg_lite_vulkan_get_pipeline_obb_native_msaa(VkFormat format, int blen
     return pipeline;
 }
 
-vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target)
+vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa_ex(vg_lite_buffer_t *target, const VkClearValue *clear_value)
 {
     if (!target->handle) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
@@ -1247,7 +1394,8 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
     }
 
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-    VkRenderPass rp = create_render_pass_no_msaa(vkfmt);
+    VkAttachmentLoadOp load_op = clear_value ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+    VkRenderPass rp = create_render_pass_no_msaa(vkfmt, load_op);
     if (!rp) return VG_LITE_OUT_OF_MEMORY;
 
     VkImageView fb_view = internal->view;
@@ -1306,7 +1454,12 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
     rpbi.framebuffer = fb;
     rpbi.renderArea.extent.width = target->width;
     rpbi.renderArea.extent.height = target->height;
-    rpbi.clearValueCount = 0;
+    if (clear_value) {
+        rpbi.clearValueCount = 1;
+        rpbi.pClearValues = clear_value;
+    } else {
+        rpbi.clearValueCount = 0;
+    }
 
     /* Transition target image to SHADER_READ so seed_msaa and draw can
      * sample it as a texture. This barrier must be outside the render pass
@@ -1330,6 +1483,11 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *targe
 
     vkCmdBeginRenderPass(g_vk_ctx.cmd_buf, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
     return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target)
+{
+    return vg_lite_vulkan_set_render_target_no_msaa_ex(target, NULL);
 }
 
 void vg_lite_vulkan_destroy_pipelines(void)

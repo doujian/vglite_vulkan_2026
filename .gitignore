@@ -1,5 +1,25 @@
 # Build artifacts
 build/
+build_*/
+build_tiled/
+
+# Test output images (root-level stray PNGs from manual test runs)
+*.png
+
+# Test output data (root-level stray raw files from manual test runs)
+landscape.raw
+
+# Dump directories
+dump_*/
+
+# Temp / debug files
+*.obj
+*.zip
+bc_err.txt
+bc_out.txt
+msg*.txt
+nul
+.omo/
 
 # IDE
 .vscode/
@@ -21,6 +41,3 @@ Thumbs.db
 *.so
 *.a
 *.spv
-
-# Test output images (build output only, keep test data)
-build/tests/*.png

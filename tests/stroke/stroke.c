@@ -115,6 +115,7 @@ int main(int argc, const char *argv[])
     buffer.width  = fb_width;
     buffer.height = fb_height;
     buffer.format = VG_LITE_BGRA8888;
+    buffer.tiled = VGLITE_TARGET_TILING;
     CHECK_ERROR(vg_lite_allocate(&buffer));
     fb = &buffer;
 

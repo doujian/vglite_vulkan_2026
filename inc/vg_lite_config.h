@@ -51,6 +51,24 @@
 #define MAX_PIPELINE_CACHE 64
 #endif
 
+/* =========================================================================
+ * Buffer tiling configuration
+ * ========================================================================= */
+
+/* Use VK_IMAGE_TILING_OPTIMAL (GPU-private, DEVICE_LOCAL) for target buffers.
+ * 0 = LINEAR (CPU-visible, default), 1 = OPTIMAL (GPU-optimal, requires staging).
+ * When enabled, test cases that set target.tiled = VGLITE_TARGET_TILING
+ * will get OPTIMAL tiling; sources stay LINEAR for CPU upload. */
+#ifndef VGLITE_TARGET_OPTIMAL
+#define VGLITE_TARGET_OPTIMAL 0
+#endif
+
+#if VGLITE_TARGET_OPTIMAL
+#define VGLITE_TARGET_TILING VG_LITE_TILED
+#else
+#define VGLITE_TARGET_TILING VG_LITE_LINEAR
+#endif
+
 #ifndef MAX_PENDING_FB
 #define MAX_PENDING_FB 32
 #endif

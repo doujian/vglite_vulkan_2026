@@ -20,8 +20,13 @@
 #define BG_SUBTRACT   4
 #define BG_NONE       5
 #define BG_NORMAL_LVGL 6
-#define BG_COUNT      7
+#define BG_SRC_IN     7   /* S*Da:                  DST_ALPHA / ZERO          */
+#define BG_DST_IN     8   /* D*Sa:                  ZERO / SRC_ALPHA          */
+#define BG_SCREEN     9   /* S + D - S*D = S + D*(1-S): ONE / ONE_MINUS_SRC_COLOR */
+#define BG_ADDITIVE_LVGL 10 /* (S+D)*Sa + D*(1-Sa) = S*Sa + D: SRC_ALPHA / ONE */
+#define BG_COUNT      11
 void vg_lite_vulkan_get_blend_state(int blend_group, VkPipelineColorBlendAttachmentState *cba);
+void vg_lite_color_to_vk_clear(vg_lite_buffer_format_t format, vg_lite_color_t color, VkClearValue *out);
 
 typedef struct {
     VkImage image;
@@ -43,10 +48,39 @@ typedef struct {
     VkImageView resolve_view;
     VkDeviceMemory resolve_memory;
     int msaa_needs_seed;  /* Set when no-MSAA RP wrote to target; draw must seed MSAA before use */
+    int is_optimal;       /* 1 = OPTIMAL tiling + DEVICE_LOCAL, CPU access via staging */
+    void *cpu_cache;      /* cached CPU copy for OPTIMAL buffers (read-pixel support) */
     uint32_t width;
     uint32_t height;
     int msaa_dirty;
+    /* Delayed clear state: fullscreen clear deferred to next RP loadOp=CLEAR */
+    int has_pending_clear;
+    uint32_t pending_clear_color;
+    VkRenderPass clear_render_pass;  /* lazily-created MSAA RP with loadOp=CLEAR */
+    /* VG_LITE_A4 only: CPU side stays packed 4bpp (buffer->memory points at
+     * a4_shadow), GPU side is an R8 image with expanded 1 byte/pixel.
+     * a4_mapped = host-mapped GPU pixels (LINEAR only, includes layout offset). */
+uint8_t *a4_shadow;
+uint8_t *a4_mapped;
+uint32_t gpu_pitch;              /* expanded row pitch on the GPU side */
+int a4_gpu_dirty;                /* GPU rendered into expanded image; shadow needs repack on read */
+/* OPENVG_sRGBA_8888: CPU keeps the VGLite [A,B,G,R] word layout in
+ * srgb_shadow; the GPU image is R8G8B8A8_SRGB holding rotated [R,G,B,A]
+ * words so the hardware sRGB decode hits exactly R,G,B and alpha passes
+ * through. srgb_mapped = host-mapped rotated pixels (LINEAR only, includes
+ * layout offset; row pitch shared with gpu_pitch). */
+uint8_t *srgb_shadow;
+uint8_t *srgb_mapped;
+int srgb_gpu_dirty;
 } buffer_internal_t;
+
+/* Expand+upload the packed A4 shadow to the GPU R8 image. Call before any
+ * GPU use of an A4 buffer (blit/draw source, after CPU writes). */
+vg_lite_error_t vg_lite_a4_sync_to_gpu(vg_lite_buffer_t *buffer);
+
+/* Rotate+upload the [A,B,G,R] srgb shadow to the GPU [R,G,B,A] _SRGB image.
+ * Call before any GPU use of an OPENVG_sRGBA_8888 buffer. */
+vg_lite_error_t vg_lite_srgb_sync_to_gpu(vg_lite_buffer_t *buffer);
 
 typedef struct {
     VkPipeline pipeline;
@@ -176,6 +210,7 @@ uint8_t use_obb_blit;                /* 0 = original fullscreen, 1 = OBB pipelin
 pipeline_cache_entry_t blit_obb_pipeline_cache[MAX_PIPELINE_CACHE];
 int blit_obb_pipeline_cache_count;
 
+#if VGLITE_BLIT_PERF
     /* GPU timestamp query pool */
     VkQueryPool timestamp_query_pool;
     float timestamp_period;             /* nanoseconds per timestamp tick */
@@ -185,6 +220,7 @@ int blit_obb_pipeline_cache_count;
     /* Blit perf statistics (accumulated across blits within a batch) */
     uint32_t blit_perf_count;           /* number of timed blits in current batch */
     uint64_t blit_perf_total_ns;        /* sum of elapsed ns across all timed blits */
+#endif
 } vk_context_t;
 
 /* Helper: set scissor at draw time — uses user scissor if enabled, else full framebuffer */
@@ -198,6 +234,8 @@ vg_lite_error_t vg_lite_vulkan_init(void);
 vg_lite_error_t vg_lite_vulkan_destroy(void);
 
 vg_lite_error_t vg_lite_vulkan_set_render_target(vg_lite_buffer_t *target);
+vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, const VkClearValue *clear_value);
+VkRenderPass vg_lite_vulkan_create_render_pass_clear(VkFormat format);
 vg_lite_error_t vg_lite_vulkan_end_render_pass(void);
 /* End the currently-active render pass (if any), resolving the MSAA color
  * attachment to the OPTIMAL intermediate and copying it to the LINEAR target.
@@ -217,12 +255,15 @@ VkPipeline vg_lite_vulkan_get_pipeline_obb_no_msaa(VkFormat format, int blend_gr
 VkPipeline vg_lite_vulkan_get_pipeline_obb_native_msaa(VkFormat format, int blend_group);
 
 /* GPU timestamp utilities */
+#if VGLITE_BLIT_PERF
 void vg_lite_vulkan_write_timestamp(VkPipelineStageFlagBits stage);
 uint64_t vg_lite_vulkan_read_timestamp(uint32_t slot);
 double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot);
+#endif
 
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler);
 vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa(vg_lite_buffer_t *target);
+vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa_ex(vg_lite_buffer_t *target, const VkClearValue *clear_value);
 vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *internal);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_init_pattern_pipeline(VkFormat format);

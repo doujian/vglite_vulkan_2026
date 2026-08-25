@@ -65,6 +65,12 @@ add_dependencies(test_patternFill spirv_compilation)
 add_executable(test_imgA8 imgA8/imgA8.c)
 add_dependencies(test_imgA8 spirv_compilation)
 
+add_executable(test_imgA4 imgA4/imgA4.c)
+add_dependencies(test_imgA4 spirv_compilation)
+
+add_executable(test_openvg_srgba openvg_srgba/openvg_srgba.c)
+add_dependencies(test_openvg_srgba spirv_compilation)
+
 add_executable(test_imgIndex imgIndex/imgIndex.c)
 add_dependencies(test_imgIndex spirv_compilation)
 
@@ -157,4 +163,7 @@ add_dependencies(test_uploadBuffer spirv_compilation)
 
 add_executable(test_uploadTiled uploadTiled/uploadTiled.c)
 add_dependencies(test_uploadTiled spirv_compilation)
+
+add_executable(test_optimal_roundtrip optimal_roundtrip/optimal_roundtrip.c)
+add_dependencies(test_optimal_roundtrip spirv_compilation)
 

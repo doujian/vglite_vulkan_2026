@@ -35,6 +35,7 @@ int main(int argc, char *argv[])
     dst.width  = 256;
     dst.height = 256;
     dst.format = VG_LITE_BGRA8888;
+    dst.tiled = VGLITE_TARGET_TILING;
 
     CHECK_ERROR(vg_lite_allocate(&dst));
 

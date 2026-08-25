@@ -47,6 +47,7 @@ static int run_test(const char *name, vg_lite_buffer_format_t dst_format, vg_lit
     buffer.width  = fb_width;
     buffer.height = fb_height;
     buffer.format = dst_format;
+    buffer.tiled = VGLITE_TARGET_TILING;
 
     CHECK_ERROR(vg_lite_allocate(&buffer));
     fb = &buffer;

@@ -22,6 +22,7 @@ int main(int argc, char *argv[])
     buffer.width  = width;
     buffer.height = height;
     buffer.format = VG_LITE_RGBA8888;
+    buffer.tiled = VGLITE_TARGET_TILING;
 
     error = vg_lite_allocate(&buffer);
     if (error != VG_LITE_SUCCESS) {
@@ -40,7 +41,12 @@ int main(int argc, char *argv[])
     error = vg_lite_finish();
     if (error != VG_LITE_SUCCESS) printf("finish failed: %d\n", error);
 
-    vg_lite_save_png("clear.png", &buffer); uint8_t* mem = (uint8_t*)buffer.memory; printf("First 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n", mem[0], mem[1], mem[2], mem[3], mem[4], mem[5], mem[6], mem[7]);
+    vg_lite_save_png("clear.png", &buffer);
+    {
+        const uint8_t *mem = (const uint8_t *)vg_lite_buffer_read_ptr(&buffer);
+        printf("First 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x\n", mem[0], mem[1], mem[2], mem[3], mem[4], mem[5], mem[6], mem[7]);
+        vg_lite_buffer_read_ptr_release(&buffer);
+    }
     printf("clear test done - saved clear.png\n");
 
     {

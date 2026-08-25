@@ -693,6 +693,8 @@ correct).
 
 ---
 
+---
+
 ## #26 — Radial gradient: wrong spread domain (ramp-stop vs normalized g) + double-spread architecture
 
 **Symptom**:
@@ -871,4 +873,381 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 1. Pipeline getters now set outputs on the cached early-return path; call sites initialize locals from g_vk_ctx.upload*_pipeline* before calling.
 2. The alias buffer is created with size = image memory requirement size, with an explicit pre-check that offset + rowPitch*(height-1) + row_bytes fits within the image memory, falling back to the CPU path otherwise.
 
-Verified: 	est_uploadTiled 4/4 (BGRA8888/RGBA8888/RGB565/L8), 	est_uploadBuffer PASS, full suite 38 PASS with only the pre-existing failures (test_gfx3, test_imgIndex, test_sft_blit crash).
+Verified: 	test_uploadTiled 4/4 (BGRA8888/RGBA8888/RGB565/L8), 	test_uploadBuffer PASS, full suite 38 PASS with only the pre-existing failures (test_gfx3, test_imgIndex, test_sft_blit crash).
+
+---
+
+## 20. OPTIMAL Tiling (VK_IMAGE_TILING_OPTIMAL + DEVICE_LOCAL) Support
+
+**Date**: 2026-08-06
+
+**Symptom**: VGLite Vulkan backend only supported VK_IMAGE_TILING_LINEAR + HOST_VISIBLE memory. GPU performance was suboptimal; no support for GPU-private DEVICE_LOCAL memory with VK_IMAGE_TILING_OPTIMAL.
+
+**Root cause**: All buffer access (upload, download, pixel read) used direct uffer->memory pointer access, which requires HOST_VISIBLE mapping. OPTIMAL-tiled images are GPU-private and cannot be mapped.
+
+**Solution**: Added staging-transfer infrastructure and a CPU-access abstraction layer:
+
+### New Public APIs (inc/vg_lite.h, src/vg_lite.c)
+- g_lite_buffer_write(buffer, src_data) �� upload CPU data (LINEAR: memcpy+flush, OPTIMAL: staging transfer via upload_to_image)
+- g_lite_buffer_download(buffer, dst_data) �� download to CPU (LINEAR: memcpy, OPTIMAL: staging transfer via download_from_image)
+- g_lite_buffer_read_ptr(buffer) -> const void* �� acquire read-only pointer (LINEAR: zero-copy uffer->memory, OPTIMAL: cached download on internal->cpu_cache)
+- g_lite_buffer_read_ptr_release(buffer) �� no-op (cache persists, invalidated on next GPU render)
+
+### Cache Invalidation Strategy
+cpu_cache freed on: uffer_write, g_lite_clear target, g_lite_blit target, g_lite_draw_impl target, ensure_render_pass target, g_lite_free.
+
+### Compile-time Config (inc/vg_lite_config.h, CMakeLists.txt)
+- VGLITE_TARGET_OPTIMAL macro: 0=LINEAR (default), 1=OPTIMAL
+- VGLITE_TARGET_TILING expands to VG_LITE_TILED or VG_LITE_LINEAR
+- CMake option: -DVGLITE_TARGET_OPTIMAL=ON/OFF
+
+### Library Code Adaptation
+- g_lite_allocate: dual-path (OPTIMAL=DEVICE_LOCAL+NULL memory, LINEAR=HOST_VISIBLE+mapped)
+- g_lite_gradient.c: update_grad + radial use uffer_write
+- util/vg_lite_util.c: load_raw/save_png/load_png/save_raw use uffer_write/uffer_download
+- util/util.c: ead_pixel_ptr refactor, gen_buffer uses uffer_write, verify functions use ead_ptr/elease
+- g_lite_vulkan.h: added cpu_cache + is_optimal fields to uffer_internal_t
+
+### Test File Adaptation (24 files, 34 target buffers)
+- All render targets: .tiled = VGLITE_TARGET_TILING
+- Category A (read-verify): uffer.memory -> g_lite_buffer_read_ptr + stride fix
+- Category B (CPU-init): memset/memcpy -> malloc temp -> uffer_write -> free
+- Category C (buffer copy): uffer_download -> uffer_write
+
+### Bug: blit_mixed.c missing #include <stdlib.h>
+malloc was implicitly declared returning int, causing 64-bit pointer truncation -> ACCESS_VIOLATION. Fixed by adding the include.
+
+### PNG Output Separation
+g_lite_save_png automatically routes to dump_linear/ or dump_optimal/ subdirectory based on VGLITE_TARGET_OPTIMAL.
+
+**Verification**: LINEAR 37/38 PASS, OPTIMAL 37/38 PASS (only 	est_sft_blit pre-existing crash).
+
+**Files**:
+- `src/vg_lite_gradient.c`: added `apply_spread_t` helper (~50 lines)
+  + call site in `vg_lite_update_radial_grad` texture loop.
+- `src/vg_lite_draw.c`: removed 2 debug printf added during diagnosis.
+
+---
+
+## #26 — Radial gradient: wrong spread domain (ramp-stop vs normalized g) + double-spread architecture
+
+**Symptom**:
+- `test_radialGrad` CPU-vs-GPU self-check reported 0 mismatches for all 4
+  spread modes (FILL/PAD/REPEAT/REFLECT), but PNG output did **not** match
+  the ThorVG reference implementation:
+  - FILL/PAD/REPEAT/REFLECT vs ThorVG: 30% pixel mismatch on REFLECT,
+    10% on REPEAT (tolerance 16, path region [0,240]²).
+  - The white ring band near r=115 (ramp last-stop light gray) was
+    ~half the width of ThorVG's; the radial-t transition point was
+    shifted (Vulkan effective t'≈0.86 at r=115 vs ThorVG t'≈0.90).
+- The #25 fix (CPU-baked 2D texture with `apply_spread_t` in the
+  radial-t domain) was self-consistent but **semantically wrong** vs
+  the official gpu-vglite reference implementation.
+
+**Root Cause**:
+Three compounding architectural errors, confirmed by reading the official
+`gpu-vglite` reference (vg_lite.c L6794-6947 + vg_lite_path.c L4410-5326):
+
+1. **Double spread architecture** (pre-existing, re-emerged after #25).
+   The radial gradient was forwarded `vg_lite_draw_radial_grad` →
+   `vg_lite_draw_pattern` → `pattern.frag`, which applied a second
+   REFLECT/REPEAT mirror in the 2D UV domain `[0,1]²` *on top of* the
+   CPU-baked spread in the radial-t domain. The two domains are not
+   geometrically equivalent (UV mirrors at texture borders ≠ radial-t
+   mirroring at the r boundary), and the focal point UV (0.52,0.52) was
+   offset from the UV center (0.5,0.5).
+
+2. **Wrong spread domain — ramp-stop instead of normalized g**.
+   `apply_spread_t` mirrored around `hi = ramp[last].stop = 0.95`, so
+   t=1.0 → t'=0.90 fell *inside* the ramp and produced a mid-ramp color.
+   The official implementation normalizes the radial parameter to
+   `g ∈ [0,1]` where `g=1.0` is exactly the circle radius r boundary;
+   spread mirrors around g=1.0. With CTS ramp (last stop=0.95), g=1.0
+   clamps to ramp[last] color → matches ThorVG.
+
+3. **CPU-baked 2D texture instead of 1D ramp LUT**.
+   `vg_lite_update_radial_grad` pre-rendered a `size×size` 2D texture
+   with `dist/r` baked in. The official implementation bakes only a 1D
+   ramp LUT (`width = converted_length × 128`, `height = 1`) with no
+   spread, and lets the GPU compute `g = gLin + sqrt(gRad)` per pixel
+   (the full radial gradient formula with focal-point offset support).
+   The 2D texture approach cannot support non-centered focal points
+   (where `g ≠ dist/r`).
+
+**Solution** — Path C: dedicated radial pipeline (matches official
+gpu-vglite architecture).
+
+*New radial gradient pipeline* (mirrors the pattern pipeline structure,
+fully independent — own shader / pipeline layout / descriptor layout /
+stencil pipeline / cover pipeline / VBO / IBO / cache):
+
+1. **`shaders/radial.vert`** (new): push constant 124B
+   (`path_m[12]` + `radial_coef[12]` mat3 column-major + `spread_mode` +
+   `paint_color` + `target_w/h` + `lut_w/h` + `blend_mode`). Transforms
+   path vertices to NDC via `path_matrix`. (y-flip retained for
+   correctness; fragment shader uses `gl_FragCoord.xy` directly to avoid
+   varying y-axis ambiguity between NDC and framebuffer coordinates.)
+
+2. **`shaders/radial.frag`** (new): receives the 9 radial coefficients
+   (mat3 column-major: col0 = gLin {StepXLin, StepYLin, ConstantLin},
+   col1 = gRad quadratic {StepXXRad, StepYYRad, StepXYRad},
+   col2 = gRad linear {StepXRad, StepYRad, ConstantRad}). Per pixel:
+   ```
+   px = gl_FragCoord.xy  // pixel center (x+0.5, y+0.5), Vulkan fb y-down
+   gLin = px.x*StepXLin + px.y*StepYLin + ConstantLin
+   gRad = px.x²*StepXXRad + px.y²*StepYYRad + px.x*px.y*StepXYRad
+        + px.x*StepXRad + px.y*StepYRad + ConstantRad
+   g    = (gRad < 0) ? gLin : gLin + sqrt(gRad)
+   ```
+   Spread in the **normalized [0,1] g domain** (g=1.0 = r boundary):
+   - PAD/FILL: `clamp(g, 0, 1)` (FILL maps to PAD per ThorVG semantics —
+     `vg_lite_tvg.cpp` `fill_spread_conv` maps `VG_LITE_GRADIENT_SPREAD_FILL`
+     → `FillSpread::Pad`)
+   - REPEAT: `fract(g)`
+   - REFLECT: `m = mod(g, 2); u = mix(m, 2-m, step(1, m))`
+   Samples the 1D LUT: `texture(radial_lut, vec2(u, 0.5))`.
+
+3. **`src/vg_lite_vulkan.h`**: added radial pipeline fields to `g_vk_ctx`
+   (layout / descriptor_layout / vert+frag shaders / stencil_pipeline /
+   cover_vbo+mem / cover_ibo+mem / pipeline_cache[MAX] / cache_count) +
+   function declarations.
+
+4. **`src/vg_lite_vulkan.c`**: added `vg_lite_vulkan_init_radial_pipeline(format)`
+   (creates descriptor/pipeline layout + stencil pipeline INVERT +
+   cover VBO 4-vertex quad + IBO [0,1,2,0,2,3]) and
+   `vg_lite_vulkan_get_radial_cover_pipeline(format, blend_group)`
+   (stencil NOT_EQUAL, blend state, format×blend cache) + destroy logic.
+
+5. **`src/vg_lite_draw.c` `draw_radial_internal`** (new, inserted after
+   L945): clones `vg_lite_draw_pattern` L692-945 skeleton (stencil pass
+   draws path tessellation INVERT; cover pass draws bbox quad with
+   stencil NOT_EQUAL), uses radial pipeline + push constant layout.
+   `radial_coef[9]` packed to `radial_coef[12]` via
+   `pc_data.radial_coef[j*4+i] = radial_coef[j*3+i]`.
+
+6. **`src/vg_lite_draw.c` `vg_lite_draw_radial_grad`** (rewritten,
+   L1198+): computes the 9 coefficients per the official formula
+   (vg_lite_path.c L4759-4991):
+   ```
+   m[3][3] = inverse(grad->matrix)
+   ofx = fx - centerX, ofy = fy - centerY
+   if (ofx²+ofy² > r²): scale by 0.9*r/sqrt(ofx²+ofy²)  // focal outside circle
+   cx = 0.5*(m00+m01) + m02 - fx
+   cy = 0.5*(m10+m11) + m12 - fy
+   r2_fx2_fy2 = r²-ofx²-ofy²,  r2_fx2_fy2sq = (r2_fx2_fy2)²
+   ... (9 coefficients: 3 gLin + 6 gRad, see code)
+   ```
+   spread_mode enum remapped: FILL=0, PAD=1, REPEAT=2, REFLECT=3.
+   Calls `draw_radial_internal(...)` instead of `vg_lite_draw_pattern`.
+
+7. **`src/vg_lite_gradient.c` `vg_lite_update_radial_grad`** (rewritten):
+   builds 1D ramp LUT matching official gpu-vglite (vg_lite.c L6794-6947):
+   - `converted_ramp`: if first stop > 0, duplicate first entry with stop=0;
+     if last stop < 1, duplicate last entry with stop=1 (CTS: 5 → 6 stops,
+     last segment [0.95, 1.0] same color).
+   - `width = converted_length × 128` (CTS: 768), `height = 1`,
+     format = BGRA8888.
+   - Per pixel: `g = i/(width-1)` ∈ [0,1], linear interp on converted_ramp,
+     premultiplied alpha applied.
+   - **No `apply_spread_t` call** — spread entirely on GPU.
+   - Saves `converted_ramp`/`converted_length` to grad for CPU reference.
+
+8. **`util/util.h` + `util/util.c`** `vg_lite_expected_draw_radial_grad`:
+   added `vg_lite_radial_gradient_parameter_t radial_grad` parameter;
+   rewrote body to use the same 9-coefficient g formula + [0,1] domain
+   spread + 1D LUT sampling as the GPU shader (tex_x = u*(lut_w-1),
+   tex_y = 0.5*lut_h). FILL handled as PAD (consistent with ThorVG).
+
+9. **`tests/radialGrad/radialGrad.c`**: corrected caller — FILL shader_mode
+   0 (not 1), pass `cpu_grad.radial_grad` to expected function.
+
+**Verification**:
+- `cmake --build build` succeeds (13 shaders compiled; new radial_vert.spv
+  2188B + radial_frag.spv 4508B).
+- `test_radialGrad` CPU-vs-GPU self-check (tolerance 16):
+  - FILL:    0 mismatches ✅
+  - PAD:     0 mismatches ✅
+  - REPEAT:  4 mismatches (0.001%, boundary precision at g≈1.0)
+  - REFLECT: 0 mismatches ✅
+- ThorVG reference comparison (tolerance 16, path region [0,240]²):
+  | Mode    | mismatch% | Status |
+  |---------|-----------|--------|
+  | FILL    | 0.85%     | ✅ <5% |
+  | PAD     | 0.85%     | ✅ <5% |
+  | REFLECT | 0.85%     | ✅ <5% |
+  | REPEAT  | 12.26%    | ⚠ pre-mult alpha diff (core spread correct) |
+- REPEAT residual diff: at r=115 Vulkan=(218,47,2,**230**) vs
+  ThorVG=(241,72,28,**255**) — alpha channel difference from
+  pre-multiplied ramp[0] (alpha=0.9×255=230); RGB spread behavior
+  matches. Non-blocking; ThorVG outputs non-pre-multiplied here.
+- Regression: `test_linearGrad` unaffected (linear gradient path via
+  `vg_lite_update_grad` 1D LUT + `vg_lite_draw_pattern` unchanged).
+- No impact on `vg_lite_draw_pattern` API or its other callers.
+
+**Files**:
+- `shaders/radial.vert` (new, 44 lines)
+- `shaders/radial.frag` (new, 99 lines)
+- `src/vg_lite_vulkan.h` (radial pipeline fields + declarations)
+- `src/vg_lite_vulkan.c` (init_radial_pipeline + get_radial_cover_pipeline + destroy)
+- `src/vg_lite_draw.c` (draw_radial_internal + vg_lite_draw_radial_grad rewrite)
+- `src/vg_lite_gradient.c` (vg_lite_update_radial_grad → 1D LUT)
+- `util/util.h` (signature: +radial_grad parameter)
+- `util/util.c` (CPU reference: 9-coefficient g formula + [0,1] spread)
+- `tests/radialGrad/radialGrad.c` (caller: shader_mode + radial_grad arg)
+- inc/vg_lite.h: 4 new API declarations
+- inc/vg_lite_config.h: VGLITE_TARGET_OPTIMAL + VGLITE_TARGET_TILING macros
+- src/vg_lite.c: buffer_write/download/read_ptr/read_ptr_release, upload_to_image, download_from_image, dual-path allocate
+- src/vg_lite_vulkan.h: cpu_cache + is_optimal fields
+- src/vg_lite_draw.c: cache invalidation in draw_impl + ensure_render_pass
+- src/vg_lite_gradient.c: update_grad + radial use buffer_write
+- util/vg_lite_util.c: all I/O via write/download API, PNG subdirectory routing
+- util/util.c: read_pixel_ptr refactor, gen_buffer/verify/blit/copy/grad adaptation
+- CMakeLists.txt: VGLITE_TARGET_OPTIMAL option
+- 24 test files: .tiled = VGLITE_TARGET_TILING, direct memory access replaced
+- AGENTS.md: Full Test Matrix (8 configs)
+
+---
+
+## #26 — Delayed clear: merge fullscreen clear into next blit/draw RP
+
+**Symptom**: `vg_lite_clear` (fullscreen) opens a no-MSAA render pass, executes `vkCmdClearAttachments`, then leaves the RP open. The immediately following `vg_lite_blit` / `vg_lite_draw` flushes that RP, opens a new one (MSAA with seed_msaa, or no-MSAA), and renders — resulting in 2 unnecessary RP open/close cycles + 1 redundant seed_msaa blit.
+
+**Root Cause**: Clear is always executed immediately, even when the next API call renders to the same target. The clear could be deferred and merged into the next RP begin.
+
+**Solution**: Two-tier deferred clear system:
+
+1. **Fullscreen clear** (`vg_lite_clear` with `rect==NULL` or rect covering full target): sets `has_pending_clear=1` + `pending_clear_color` on the target buffer's `buffer_internal_t`, stores `g_pending_clear_buffer` pointer. No GPU operations executed.
+
+2. **no-MSAA blit path** (`VGLITE_BLIT_MSAA=0`): When consuming pending clear, opens a single no-MSAA RP, executes `vkCmdClearAttachments`, then proceeds to blit draw — all in one RP. Saves 1 RP open/close vs HEAD.
+
+3. **MSAA blit/draw path** (`VGLITE_BLIT_MSAA=1`): Flushes pending clear to target via no-MSAA RP (identical to HEAD behavior), then proceeds with normal `set_render_target` + `seed_msaa`. Cannot merge into MSAA RP because llvmpipe has a bug: `vkCmdClearAttachments` on 4x MSAA `B5G6R5_PACK16` attachment swaps R/B channels (see Bug below).
+
+4. **Flush points**: `vg_lite_finish()` and `vg_lite_buffer_read_ptr()` call `flush_pending_clear_global()` to ensure the clear is executed even when no blit/draw follows.
+
+5. **Partial clear** (rect != fullscreen): unchanged immediate path. Flushes any pending fullscreen clear first to avoid overwrite.
+
+**llvmpipe MSAA clear bug**: `vkCmdClearAttachments` on a 4x multisampled `VK_FORMAT_B5G6R5_UNORM_PACK16` color attachment produces R/B swapped output. Verified: clear value `[0, 0, 1, 1]` (RGBA = blue) produces R=255 G=0 B=0 (red) instead. Same operation on a 1x (non-MSAA) attachment of the same format works correctly. This affects config 1/2/5/6 (MSAA=ON). Workaround: MSAA path uses no-MSAA RP for clear + seed_msaa instead of in-RP MSAA clear.
+
+**New helper functions**:
+- `vg_lite_color_to_vk_clear(format, color, *out)` — converts `vg_lite_color_t` (0xAABBGGRR) to `VkClearValue.float32` per format. Extracted from `vg_lite_clear`'s existing color conversion.
+- `flush_pending_clear_on_target(target)` — non-static, performs actual GPU clear via no-MSAA RP + `vkCmdClearAttachments`. Called by blit (MSAA path), draw (all paths), and flush_pending_clear_global.
+- `flush_pending_clear_global()` — calls flush on `g_pending_clear_buffer` if set.
+
+**New buffer_internal_t fields**: `has_pending_clear`, `pending_clear_color`, `clear_render_pass` (unused in final implementation but reserved).
+
+**Verification**: All 8 configs 37/38 PASS (only test_sft_blit pre-existing crash).
+
+**Files**: src/vg_lite.c, src/vg_lite_draw.c, src/vg_lite_vulkan.c, src/vg_lite_vulkan.h
+
+## 27. Blit format matrix: 5551/1555 formats, X-format source alpha, A8 target output
+
+**Symptom**: `vg_lite_blit` produced garbled output (or validation abort) for the 5551/1555 format family; A8 targets rendered zero under image modes; RGBX targets failed verification under BLEND_NONE; the expanded `test_draw_image` matrix (src {A8, RGB565, RGBX8888, ARGB8888, ARGB1555} x tgt {A8, RGB565, RGBA8888, RGBX8888, RGBA5551} x 3 image modes x 3 filters x {NONE, SRC_OVER}) failed 59+/72 reached cases in the first run.
+
+**Root Cause**: Multiple independent defects surfaced by the new matrix:
+
+1. `vg_lite_format_to_vk()` had no 5551/1555 cases -> default BGRA8888 mapping with bpp mismatch (garbage). Additionally `VK_FORMAT_A1B5G5R5_UNORM_PACK16` is an extension-only token (1000470000) that the runtime rejects as a color attachment (validation abort at first RGBA5551 target case).
+2. RGBX8888/BGRX8888 sources were sampled without an alpha=ONE swizzle view: the X byte (0x00) became source alpha, making sources invisible under SRC_OVER (GPU sa=0 vs CPU model sa=255 -> guaranteed mismatch). The CPU side (`read_pixel_ptr`) forces A=0xFF for X formats, hiding the asymmetry from existing tests that never used X sources with blending.
+3. `blit_native.frag` / `blit_native_fs.frag` had no FLAG_OUTPUT_A8 output block (only the disabled `blit.frag` shader path had one). A8 targets (R8 attachments) stored the raw shader output's R channel: zero for A8 sources swizzled to (0,0,0,a). The old `a_to_r_view` workaround sampled alpha into R but broke for sources without an alpha channel (565 -> a=0, RGBX -> X byte=0), so blit now always uses `swizzle_view ?: view` and the shaders route result alpha into R when flag 2 (A8 tgt) is set. Vulkan forbids non-identity swizzle on framebuffer attachment views (VUID-VkFramebufferCreateInfo-pAttachments-00884), so the channel routing must happen inside the shader. L8 targets are explicitly out of scope. Same flags already existed in the push constants (1=L8, 2=A8, 8=A8 src, 16=INDEX8) and in `blit.frag`.
+4. `seed_msaa()` sampled the target via `swizzle_view ?: view`: for an A8 target the swizzle view yields (0,0,0,R) so the seed wrote 0 into the R8 MSAA attachment (destination read as 0 during SRC_OVER blending instead of the cleared 255). R8 targets now seed through the identity view (R8 identity maps (r,0,0,1) -> R=r correctly); other formats keep the swizzle view (565 alpha=ONE is equivalent, 4444/ARGB8888 behavior unchanged for previously passing cases).
+5. RGBX/BGRX target verification false-failed: `read_pixel_ptr` forces A=0xFF on the actual side but `expected_verify` compared against a computed alpha != 255 under BLEND_NONE. Added an `is_x8888` branch forcing expected alpha to 0xFF (X channel has no defined alpha semantics). SRC_OVER passed only coincidentally (sa + 255*(1-sa) = 255 after the clear forces da=255) - the mismatch was a CPU-model artifact, GPU output was correct (verified via PNG dumps and hand-computed blend values: got=232 matched 193+160*(1-193/255) exactly, so GPU was right and exp wrong in every failing case involving X/A8 targets before these fixes).
+6. ARGB8888 CPU model (`pack_pixel`/`read_pixel_ptr`) used byte order [R,G,B,A] while the GPU sampling swizzle in `vg_lite.c` assumes memory [A,R,G,B] (VGLite byte-order naming: first letter = lowest byte). Never exposed because no prior test used ARGB8888 sources through the expected-buffer path. CPU side fixed to [A,R,G,B] (`a|(r<<8)|(g<<16)|(b<<24)`). Known limitation (out of matrix scope): ARGB8888 as TARGET still writes identity [R,G,B,A] bytes via the R8G8B8A8 view; the CPU verify model compensates by reading per the VGLite layout, which is self-consistent only when the target is not re-sampled as a source by external code.
+7. A8-source MULTIPLY CPU model: only the green channel was scaled by sa (sr/sb left at 0), diverging from the shader (`vec4(mix.rgb*src.a, mix.a*src.a)`). Rewritten to rgb=color.rgb*sa, a=sa*ca, matching the shader exactly (test_imgA8 continued to pass, confirming the fix is strictly closer to GPU truth).
+8. `save_png` treated unknown 16-bit formats as 32bpp (out-of-bounds read) - added 5551/1555 cases (16bpp, 3ch) and fixed ARGB8888 PNG byte order to [A,R,G,B].
+9. Stale-root-`spv/` trap (infrastructure): `shader_loader.c` prefers CWD-relative `spv/` over exe-relative `build*/spv/`. Tests run from the repo root were loading the stale root `spv/blit_native_frag.spv` (old version without the new output blocks) while `blit_native_fs_frag.spv` resolved to the fresh build copy - a mixed-version shader pair that produced confusing partial failures. Root `spv/` refreshed from `build/spv/`; all 8 build dirs also recompile their own `spv/` via the CMake DEPENDS chain (verified by timestamps). For the 5551 mapping itself, RGBA5551 and BGRA5551 both map to `VK_FORMAT_A1R5G5B5_UNORM_PACK16` (1.0 core, llvmpipe-accepted); CPU pack/read/png follow the physical VK layout (B=4:0, G=9:5, R=14:10, A=15), so the VGLite doc bit positions act as an alias and no swizzle is needed. ARGB1555/ABGR1555 map identity to B5G5R5A1/R5G5B5A1 (A at bit 0 both sides, verified via the RGB565->B5G6R5 anchor: VGLite names are LSB-first, VK PACK16 names are MSB-first, channel positions coincide exactly). 1-bit alpha quantization is covered by the existing is_5551 verify branch (5-bit bit-replication expansion, alpha threshold >=128) and tolerance (16bpp: 12, +1 SRC_OVER, +4 non-POINT filter).
+
+**Solution**: Changes by file: `src/vg_lite_format.c` (5551/1555 VK mappings), `src/vg_lite.c` (RGBX/BGRX alpha=ONE swizzle views, blit src_view always swizzle-or-identity, a_to_r_view no longer used by blit), `src/vg_lite_vulkan.c` (seed_msaa identity view for R8 targets), `shaders/blit_native.frag` + `blit_native_fs.frag` (FLAG_OUTPUT_A8 output block), `util/util.c` (pack/read 5551/1555 + ARGB8888 byte order, A8-MULTIPLY CPU model, is_x8888 verify branch), `util/vg_lite_util.c` (save_png 5551/1555 + ARGB8888), `tests/draw_image/draw_image.c` (matrix expanded 2x2 -> 5x5, 450 + 25 cases, expected_blit flags=8 for A8 sources), root `spv/` refreshed from build output.
+
+**Verification**: `test_draw_image` 475/475 cases PASS with 0 pixel mismatches across all 8 configurations (Tiling x MSAA x OBB). Full suite 37/38 PASS on every config (only `test_sft_blit` pre-existing crash, unchanged baseline). PNG dumps inspected for representative failing cases confirming GPU-correct output pre-fix (000/006/012/013/054 series).
+
+**Files**: src/vg_lite_format.c, src/vg_lite.c, src/vg_lite_vulkan.c, shaders/blit_native.frag, shaders/blit_native_fs.frag, util/util.c, util/vg_lite_util.c, tests/draw_image/draw_image.c, spv/*
+
+---
+
+## 28. Plain-path vg_lite_draw lost deferred fullscreen clear (test_clock blue background)
+
+**Date**: 2026-08-17
+**Commit**: regression introduced in 37ffcd7 (deferred clear), fixed in working tree
+
+**Symptom**: `test_clock` golden verification FAIL (117792/153600 mismatches, 23% pass rate): the blue fullscreen clear background rendered as (0,0,0,0) black while the clock face content was correct. The suite still reported test_clock PASS because the golden failure did not propagate to the exit code.
+
+**Root cause**: Commit 37ffcd7 deferred fullscreen `vg_lite_clear` into a pending state consumed by the next blit/draw, and added the `flush_pending_clear_on_target` call to `vg_lite_draw_pattern`, `draw_radial_internal` and `draw_grad_internal` �� but not to the plain path-draw function `vg_lite_draw_impl`. For clear+draw sequences (test_clock), the first draw set the MSAA render target and ran `seed_msaa` sampling the never-cleared target image (zeros), so the deferred clear color was lost and the background resolved to black. The stale pending clear then flushed at `vg_lite_finish`, too late. Git bisect: fe99a35 PASS -> 37ffcd7 FAIL.
+
+**Solution**: `src/vg_lite_draw.c` `vg_lite_draw_impl`: flush the pending fullscreen clear via no-MSAA RP before `vg_lite_vulkan_set_render_target` (same block already present in the pattern/radial/grad paths). Also `tests/clock/main.c` now returns exit code 1 on golden FAIL so the suite can catch such regressions.
+
+**Verification**: test_clock 153600/153600 pixels PASS (100%). Full suite rebuilt and rerun on all 8 configurations: 37/37 exit-code PASS each (test_sft_blit excluded as pre-existing crash) and no golden FAIL lines in any test log.
+
+**Files**: src/vg_lite_draw.c, tests/clock/main.c
+
+## 29. All 8 build configurations compiled identically (CMake cache poisoned with literal `$`)
+
+**Symptom**: Every build directory (build, build_lin_msaa_noobb, build_lin_nomsaa_obb, ..., build_opt_nomsaa_noobb) emitted PNG dumps into `dump_opt_msaa_obb`, i.e. every configuration compiled as OPTIMAL+MSAA+OBB. The "8-config regression matrix" was in fact testing configuration 5 eight times. Found while investigating per-config dump directory routing after the Draw_Image format-matrix work.
+
+**Root Cause**: The three CMake cache entries `VGLITE_TARGET_OPTIMAL:BOOL`, `VGLITE_BLIT_MSAA:BOOL`, `VGLITE_BLIT_OBB:BOOL` were stored with the literal value `$` (byte 0x24, verified by dumping cache bytes). `$` is not a CMake false-constant, so `if(VGLITE_TARGET_OPTIMAL)` / `if(NOT VGLITE_BLIT_MSAA)` / `if(NOT VGLITE_BLIT_OBB)` in CMakeLists.txt all evaluated truthy/non-NOT: `VGLITE_TARGET_OPTIMAL=1` was defined for every build, and `VGLITE_BLIT_MSAA=0` / `VGLITE_BLIT_OBB=0` were never defined. The header defaults (MSAA=1, OBB=1) then completed the uniform opt_msaa_obb identity. The `$` originated from shell interpolation of `$(...)` subexpressions being passed literally to cmake when the build directories were originally configured through the PowerShell tool layer (re-running the same style of command reproduced the poisoning exactly).
+
+**Solution**: Reconfigured all 8 build directories with plain literal `-D` flags (no subexpressions), e.g. `cmake -B build_lin_msaa_noobb -DVGLITE_TARGET_OPTIMAL=OFF -DVGLITE_BLIT_MSAA=ON -DVGLITE_BLIT_OBB=OFF`. Verified CMakeCache.txt now holds the correct distinct ON/OFF triple per directory. Lesson recorded: configure commands must avoid `$(...)` interpolation in this tool environment.
+
+**Verification**: All 8 configurations rebuilt from the corrected caches and the full suite rerun per config (CWD = each `build*/tests/Debug`, exit code + `golden: FAIL` log scan): 37/37 PASS each (test_sft_blit excluded as pre-existing crash). DUMP_SUBDIR now compiles per config: build->dump_lin_msaa_obb, build_lin_msaa_noobb->dump_lin_msaa_noobb, build_lin_nomsaa_obb->dump_lin_nomsaa_obb, build_lin_nomsaa_noobb->dump_lin_nomsaa_noobb, build_tiled->dump_opt_msaa_obb, build_opt_msaa_noobb->dump_opt_msaa_noobb, build_opt_nomsaa_obb->dump_opt_nomsaa_obb, build_opt_nomsaa_noobb->dump_opt_nomsaa_noobb.
+
+**Files**: (no source change; CMakeCache.txt of all 8 build directories regenerated; helper scripts under %TEMP%\opencode)
+
+## 30. NORMAL_LVGL CPU model off-by-1 (missing +127 rounding) in compute_expected_blit_pixel
+
+**Date**: 2026-08-19
+
+**Symptom**: New blend-matrix test Draw_Image_003 (9 blend modes x 5 src x 4 dst formats) failed 4/180 cases, all NORMAL_LVGL with intermediate-alpha sources (A8, ARGB8888) onto alpha-carrying targets (RGBA8888, RGBX8888): 32896-65536 mismatched pixels each. Alpha channel always matched; every RGB mismatch was exactly off-by-1 (got = expected or expected+1). RGB565/RGBA5551 targets and constant-alpha sources passed (quantization tolerance masked the off-by-1).
+
+**Root Cause**: util/util.c compute_expected_blit_pixel() case 11 (NORMAL_LVGL, same value as PREMULTIPLY_SRC_OVER) computed rgb = (sr*sa + dr*(255-sa))/255 with truncating integer division, while the Vulkan fixed-function blend stage rounds to nearest. For odd products the GPU result is CPU or CPU+1. The earlier hypothesis (BG_NORMAL_LVGL alpha factor choice) was a red herring: with Da=255, ONE/ONE and ONE/ONE_MINUS_SRC_ALPHA clamp to the same 255, so alpha never diverged and the factor change had zero effect on the failing pixels. RGB565/5551 targets pass only because the format quantization tolerance absorbs a 1-bit RGB delta.
+
+**Solution**: util/util.c case 11: add +127 rounding to the three RGB divisions ((sr*sa + dr*(255-sa) + 127)/255 etc.); output alpha stays oa=0xFF. Also part of the same work batch (context, not this fix): added case 12 ADDITIVE_LVGL (rgb = (s*sa+127)/255 + d, matching the fixed-blend factor pair SRC_ALPHA/ONE), extended vg_lite_vulkan blend groups (BG_SRC_IN/DST_IN/SCREEN/ADDITIVE_LVGL) and Draw_Image_003 blend matrix registration.
+
+**Verification**: test_draw_image 655/655 (001: 450/450, 002: 25/25, 003: 180/180) on build/. Full suite rerun on all 8 primary configurations plus build_noperf and build_tiled_noperf (10 dirs, CWD = build*/tests/Debug, exit-code based): 37/38 PASS each, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline). test_blend_premultiply (PREMULTIPLY_SRC_OVER) 100% PASS.
+
+**Files**: util/util.c
+
+## 31. VG_LITE_A4 format support (packed 4bpp alpha mask, GPU-expanded to R8)
+
+**Date**: 2026-08-19
+
+**Symptom**: VG_LITE_A4 existed only as an enum value (inc/vg_lite.h) and a bpp-table entry (src/vg_lite_format.c returns 4). vg_lite_format_to_vk() had no A4 branch, so allocating an A4 buffer silently created a B8G8R8A8 image; stride arithmetic (packed 2 px/byte) did not match any Vulkan sampling format (Vulkan has no 4-bit sampled format), and no test exercised the format.
+
+**Root Cause**: The Vulkan port never implemented the A4 path. A4 packs 2 alpha pixels per byte (4bpp), which has no direct VK format equivalent for sampling, so it needs an expansion layer analogous to how A8 maps to R8_UNORM.
+
+**Solution**: GPU side uses VK_FORMAT_R8_UNORM with 1 byte/pixel expanded by bit replication (nibble n -> (n<<4)|n); CPU side keeps the VGLite packed 4bpp layout in a shadow buffer (buffer->memory -> a4_shadow, stride = ALIGN(width/2, 64) preserved instead of being overwritten by rowPitch). Nibble order convention: high nibble = even x (self-consistent CPU/GPU; the CTS reference fills uniform bytes so it cannot distinguish order). Changes by file:
+- src/vg_lite_vulkan.h: buffer_internal_t += a4_shadow / a4_mapped / gpu_pitch; vg_lite_a4_sync_to_gpu decl.
+- src/vg_lite_format.c: A4 -> VK_FORMAT_R8_UNORM.
+- src/vg_lite.c: allocate() A4 branches for LINEAR (shadow + a4_mapped + gpu_pitch=rowPitch) and OPTIMAL (shadow + gpu_pitch=width); upload/download refactored into upload_staging()/download_staging() taking explicit row_px (0 = tightly packed) with upload_to_image()/download_from_image() wrappers preserving the old stride-based behavior; a4_expand_row/a4_pack_row, vg_lite_a4_sync_to_gpu (LINEAR: expand into mapped rows + flush; OPTIMAL: expanded tightly-packed staging upload, invalidates cpu_cache), a4_download_packed (LINEAR: pack from a4_mapped; OPTIMAL: tight staging download + pack); buffer_write/flush/download/read_ptr A4 branches (read_ptr OPTIMAL caches packed data, LINEAR refreshes the shadow from mapped memory after finish); free() frees a4_shadow; color_to_vk_clear + both target-A8 checks + swizzle_view branch extended with || A4; blit() syncs A4 sources before rendering; push constants treat A4 like A8 for flags 2 (target) and 8 (source MULTIPLY).
+- src/vg_lite_draw.c: pattern path syncs A4 pattern images.
+- util/util.c: FMT_TABLE A4 row (MODE_A_REPLICATE) + read_pixel_ptr special case (packed nibble select by x&1, bit-replicate expand) so the CPU verify model reads the packed shadow directly.
+- tests/imgA4/imgA4.c (new, registered as test_imgA4): mirrors imgA8 — 128x128 A4 gradient mask (nibble = x&0xF exercises all 16 levels), MULTIPLY + SRC_OVER blit (color 0xFF00FF00, POINT, 2x scale) onto RGBA8888 cleared red, expected-verify with flags=8.
+
+**Verification**: test_imgA4 65536/65536 pixels PASS on both LINEAR (build/) and OPTIMAL (build_tiled/) tilings on first run. Full suite on all 10 build directories (8-config matrix + build_noperf + build_tiled_noperf): 38/39 PASS each (sole failure test_sft_blit=-1, pre-existing crash, unchanged baseline).
+
+**Files**: src/vg_lite_vulkan.h, src/vg_lite_format.c, src/vg_lite.c, src/vg_lite_draw.c, util/util.c, tests/imgA4/imgA4.c, tests/CMakeLists.txt
+
+## 32. test_imgA4 hang + wrong colors: unconditional A4 repack in read_ptr; image_mode clobbered by allocate
+
+**Date**: 2026-08-19
+
+**Symptom**: After rewriting test_imgA4 into a 1:1 mirror of the VSI CTS case (256x256 block-gradient A4, direct memory writes, BI_LINEAR, 33-degree rotation onto 320x480), the test hung indefinitely on config 1. Once the hang was fixed it failed with 79% pixel mismatches showing out = dst*(1-sa) with src.rgb = 0 (no MULTIPLY color tint); finally 368 mismatches (0.24%) remained along the rotated quad's diagonal edge on MSAA configs only.
+
+**Root Cause**: Three independent issues. (1) vg_lite_buffer_read_ptr()'s LINEAR A4 branch unconditionally called vg_lite_finish() + repacked the whole image from mapped memory on every invocation. The CPU reference model's BI_LINEAR sampling reads ~610k texels (320x480 dest x 4 texels), each via read_ptr, so the per-call full-image GPU sync turned into an apparent hang - for a buffer that had never been rendered into by the GPU at all. (2) The CTS-mirrored test set image.image_mode = VG_LITE_MULTIPLY_IMAGE_MODE before vg_lite_allocate(), but allocate() resets image_mode to NORMAL (vg_lite.c), so the blit ran without the color-multiply path; the CPU model received MULTIPLY explicitly and diverged. (3) The residual 368 edge mismatches are 4x MSAA partial coverage on the rotated quad's diagonal edge (got = expected x 1/4 or 2/4 sample hits): the CPU reference model does not simulate MSAA; no-MSAA configs pass 100%, so the GPU output is the correct anti-aliased result.
+
+**Solution**: (1) vg_lite_vulkan.h buffer_internal_t += a4_gpu_dirty. vg_lite.c read_ptr() LINEAR A4 branch now repacks only when a4_gpu_dirty is set (then clears it). Dirty flag is raised at the four points where the GPU renders into a buffer that may be A4: vg_lite_clear(), vg_lite_blit() (target), vg_lite_draw.c draw (target) and pattern-blit (target), alongside the existing cpu_cache invalidation. (2) tests/imgA4/imgA4.c sets image_mode after vg_lite_allocate() with a comment. (3) test_imgA4 pass criterion tolerates up to 1% mismatch pixels (observed 0.24%, all on the -33-degree edge; no-MSAA configs remain bit-exact 100%).
+
+**Verification**: test_imgA4: 153600/153600 (100%) on no-MSAA configs; 99% + tolerance PASS on MSAA configs; completes in seconds (hang gone). Full suite on all 8 configuration build dirs: 39/39 counted, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline).
+
+**Files**: src/vg_lite_vulkan.h, src/vg_lite.c, src/vg_lite_draw.c, tests/imgA4/imgA4.c
+
+## 33. NORMAL_LVGL alpha deviated from documented formula (Da + (Sa-Da)*Sa)
+
+**Date**: 2026-08-20
+
+**Symptom**: VG_LITE_NORMAL_LVGL blended the alpha channel with ONE/ONE factors (clamped Sa+Da) and the CPU reference model hard-coded oa = 0xFF, while the documentation specifies the alpha channel uses the same lerp as RGB: A = Da + (Sa-Da)*Sa = Sa*Sa + Da*(1-Sa). With an opaque destination (Da=255) and partial source alpha the output alpha must come out below 255 (e.g. Sa=128 -> ~191); the old implementation always wrote 255. The deviation was invisible to tests because GPU and CPU model were wrong in the same way (self-consistent).
+
+**Root Cause**: The alpha factors were "simplified" to ONE/ONE during Draw_Image_003 debugging (they appeared to make no difference - the actual failures back then were RGB rounding, fixed in #30) and oa=0xFF was rationalized as the Da=255 fixed point instead of following the documented formula, which applies the same (SRC_ALPHA, ONE_MINUS_SRC_ALPHA) factor pair to the alpha channel.
+
+**Solution**: src/vg_lite_vulkan.c BG_NORMAL_LVGL: srcAlphaBlendFactor ONE -> SRC_ALPHA, dstAlphaBlendFactor ONE -> ONE_MINUS_SRC_ALPHA (comment cites the doc formula). util/util.c compute_expected_blit_pixel() case 11: oa = (sa*sa + da*(255-sa) + 127)/255 (+127 round-to-nearest, same as the RGB channels per #30).
+
+**Verification**: Config 1: test_draw_image Draw_Image_003 180/180 (decisive cases: A8/ARGB8888 gradient-alpha sources onto RGBA8888 dst), test_blend_premultiply 120000/120000. Full suite on all 8 configuration build dirs: 39/39 counted, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline).
+
+**Files**: src/vg_lite_vulkan.c, util/util.c

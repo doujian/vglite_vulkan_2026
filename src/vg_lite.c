@@ -10,6 +10,14 @@
 #include "vg_lite_math.h"
 #include "shader_loader.h"
 
+/* Global pointer to the buffer with a pending fullscreen clear.
+ * Set by vg_lite_clear, consumed by blit/draw, flushed by finish/read_ptr. */
+vg_lite_buffer_t *g_pending_clear_buffer = NULL;
+
+/* Forward declarations */
+void flush_pending_clear_on_target(vg_lite_buffer_t *target);
+static void flush_pending_clear_global(void);
+
 #if VGLITE_BLIT_PERF
 #define BOTTOM_OF_PIPE_BIT 0x00002000
 
@@ -149,17 +157,18 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 {
     if (!buffer) return VG_LITE_INVALID_ARGUMENT;
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
+
     buffer->stride = vg_lite_format_stride(buffer->format, buffer->width);
     if (buffer->tiled != VG_LITE_TILED)
         buffer->tiled = VG_LITE_LINEAR;
     else if (vg_lite_is_yuv_format(buffer->format) ||
-             buffer->format == VG_LITE_A4 ||
              buffer->format == VG_LITE_INDEX_1 ||
              buffer->format == VG_LITE_INDEX_2 ||
              buffer->format == VG_LITE_INDEX_4)
-        return VG_LITE_NOT_SUPPORT; /* tiled allocation: single-plane >=8bpp only */
-    int tiled_alloc = (buffer->tiled == VG_LITE_TILED);
+        return VG_LITE_NOT_SUPPORT; /* tiled allocation: single-plane formats with full-byte CPU layout only */
     VkFormat vkfmt = vg_lite_format_to_vk(buffer->format);
+    VkImageTiling tiling = (buffer->tiled == VG_LITE_TILED) ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
+    int tiled_alloc = (tiling == VK_IMAGE_TILING_OPTIMAL);
 
     /* Some packed 16bpp formats (e.g. B5G6R5) lack STORAGE support on OPTIMAL
      * tiling on many devices. Create the image as R16_UINT (same 16-bit
@@ -178,8 +187,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 
     VkImageFormatProperties img_fmt_props;
     if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, image_fmt,
-            VK_IMAGE_TYPE_2D,
-            tiled_alloc ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR,
+            VK_IMAGE_TYPE_2D, tiling,
             usage,
             tiled_alloc ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
             &img_fmt_props) != VK_SUCCESS) {
@@ -196,7 +204,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     img_ci.mipLevels = 1;
     img_ci.arrayLayers = 1;
     img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    img_ci.tiling = tiled_alloc ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
+    img_ci.tiling = tiling;
     img_ci.usage = usage;
     img_ci.flags = tiled_alloc ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
     img_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -213,12 +221,14 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     alloc_ci.allocationSize = mem_req.size;
     int32_t mem_type;
     if (tiled_alloc) {
-        /* Tiled buffers are GPU-resident: prefer device-local, no host mapping. */
+        /* OPTIMAL: prefer DEVICE_LOCAL, fall back to HOST_VISIBLE */
         mem_type = find_memory_type(mem_req.memoryTypeBits,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (mem_type < 0)
-            mem_type = find_memory_type(mem_req.memoryTypeBits, 0);
+            mem_type = find_memory_type(mem_req.memoryTypeBits,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     } else {
+        /* LINEAR: HOST_VISIBLE + HOST_COHERENT for CPU direct access */
         mem_type = find_memory_type(mem_req.memoryTypeBits,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
@@ -251,7 +261,8 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_R;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
-    } else if (buffer->format == VG_LITE_A8) {
+    } else if (buffer->format == VG_LITE_A8 || buffer->format == VG_LITE_A4) {
+        /* Both are R8 on the GPU with alpha in R: sample as (0,0,0,a). */
         view_ci.components.r = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
         view_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
@@ -291,6 +302,14 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         view_ci.components.b = VK_COMPONENT_SWIZZLE_A;
         view_ci.components.a = VK_COMPONENT_SWIZZLE_R;
         VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
+    } else if (buffer->format == VG_LITE_RGBX8888 || buffer->format == VG_LITE_BGRX8888) {
+        /* X byte is don't-care (pack_pixel writes 0x00). Force opaque alpha
+         * so sampling treats the source as fully visible under SRC_OVER. */
+        view_ci.components.r = VK_COMPONENT_SWIZZLE_R;
+        view_ci.components.g = VK_COMPONENT_SWIZZLE_G;
+        view_ci.components.b = VK_COMPONENT_SWIZZLE_B;
+        view_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
+        VK_CHECK(vkCreateImageView(g_vk_ctx.device, &view_ci, NULL, &internal->swizzle_view));
     }
 
     view_ci.components.r = VK_COMPONENT_SWIZZLE_A;
@@ -302,22 +321,10 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     internal->render_pass = VK_NULL_HANDLE;
     internal->sampler = VK_NULL_HANDLE;
     internal->mapped_base = NULL;
+    internal->is_optimal = (tiling == VK_IMAGE_TILING_OPTIMAL) ? 1 : 0;
     internal->width = buffer->width;
     internal->height = buffer->height;
     internal->msaa_dirty = 0;
-
-    /* Get actual image layout in memory (offset and row pitch; linear only) */
-    void *mapped = NULL;
-    VkDeviceSize sub_offset = 0;
-    if (!tiled_alloc) {
-        VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
-        VkSubresourceLayout layout;
-        vkGetImageSubresourceLayout(g_vk_ctx.device, internal->image, &sub, &layout);
-        buffer->stride = layout.rowPitch;
-        sub_offset = layout.offset;
-
-        VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
-    }
 
     /* Layout transition on a separate command buffer (does not interrupt main cmd_buf render pass) */
     {
@@ -329,7 +336,9 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         VK_CHECK(vkBeginCommandBuffer(icb, &bi));
         VkImageMemoryBarrier init_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         init_bar.srcAccessMask = 0;
-        init_bar.dstAccessMask = VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+        init_bar.dstAccessMask = internal->is_optimal
+            ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+            : (VK_ACCESS_HOST_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT);
         init_bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         init_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         init_bar.image = internal->image;
@@ -337,7 +346,8 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         init_bar.subresourceRange.levelCount = 1;
         init_bar.subresourceRange.layerCount = 1;
         vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &init_bar);
+            internal->is_optimal ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT : VK_PIPELINE_STAGE_HOST_BIT,
+            0, 0, NULL, 0, NULL, 1, &init_bar);
         VK_CHECK(vkEndCommandBuffer(icb));
         VkSubmitInfo si = {0};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -349,11 +359,63 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     }
 
     buffer->handle = internal;
-    buffer->memory = mapped ? (uint8_t *)mapped + sub_offset : NULL;
-    buffer->address = 0;
-    buffer->image_mode = VG_LITE_NORMAL_IMAGE_MODE;  /* Initialize to default */
 
-    internal->mapped_base = mapped;
+    if (internal->is_optimal) {
+        /* OPTIMAL: no direct CPU access, stride from format_stride (already set) */
+        buffer->memory = NULL;
+    } else {
+        /* LINEAR: get subresource layout for CPU direct access */
+        VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+        VkSubresourceLayout layout;
+        vkGetImageSubresourceLayout(g_vk_ctx.device, internal->image, &sub, &layout);
+
+        void *mapped = NULL;
+        VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+        internal->mapped_base = mapped;
+
+        if (buffer->format == VG_LITE_A4) {
+            /* A4: CPU keeps the VGLite packed 4bpp layout in a shadow buffer;
+             * the GPU image holds expanded 1B/px rows at layout.rowPitch. */
+            internal->a4_mapped = (uint8_t *)mapped + layout.offset;
+            internal->gpu_pitch = (uint32_t)layout.rowPitch;
+            internal->a4_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+            if (!internal->a4_shadow) return VG_LITE_OUT_OF_MEMORY;
+            buffer->memory = internal->a4_shadow;
+            /* buffer->stride stays the packed stride from vg_lite_format_stride */
+        } else if (buffer->format == OPENVG_sRGBA_8888) {
+            /* sRGBA: CPU keeps the VGLite [A,B,G,R] words in a shadow buffer;
+             * the GPU image holds rotated [R,G,B,A] words (R8G8B8A8_SRGB) at
+             * layout.rowPitch so the hardware sRGB decode hits R,G,B only. */
+            internal->srgb_mapped = (uint8_t *)mapped + layout.offset;
+            internal->gpu_pitch = (uint32_t)layout.rowPitch;
+            internal->srgb_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+            if (!internal->srgb_shadow) return VG_LITE_OUT_OF_MEMORY;
+            buffer->memory = internal->srgb_shadow;
+        } else {
+            buffer->stride = layout.rowPitch;
+            buffer->memory = (uint8_t *)mapped + layout.offset;
+        }
+    }
+
+    if (buffer->format == VG_LITE_A4 && internal->is_optimal) {
+        /* OPTIMAL A4: shadow for packed CPU layout; staging rows are tightly
+         * packed (gpu_pitch = width texels). */
+        internal->a4_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+        if (!internal->a4_shadow) return VG_LITE_OUT_OF_MEMORY;
+        buffer->memory = internal->a4_shadow;
+        internal->gpu_pitch = buffer->width;
+    }
+
+    if (buffer->format == OPENVG_sRGBA_8888 && internal->is_optimal) {
+        /* OPTIMAL sRGBA: shadow for the VGLite [A,B,G,R] CPU layout; staging
+         * rows are tightly packed rotated [R,G,B,A] words. */
+        internal->srgb_shadow = calloc(1, (size_t)buffer->stride * buffer->height);
+        if (!internal->srgb_shadow) return VG_LITE_OUT_OF_MEMORY;
+        buffer->memory = internal->srgb_shadow;
+    }
+
+    buffer->address = 0;
+    buffer->image_mode = VG_LITE_NORMAL_IMAGE_MODE;
     return VG_LITE_SUCCESS;
 }
 
@@ -381,8 +443,12 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (internal->swizzle_view) vkDestroyImageView(g_vk_ctx.device, internal->swizzle_view, NULL);
     if (internal->a_to_r_view) vkDestroyImageView(g_vk_ctx.device, internal->a_to_r_view, NULL);
     if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
+    if (internal->clear_render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->clear_render_pass, NULL);
     if (internal->image) vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
     if (internal->mapped_base) vkUnmapMemory(g_vk_ctx.device, internal->memory);
+    if (internal->cpu_cache) free(internal->cpu_cache);
+    if (internal->a4_shadow) free(internal->a4_shadow);
+    if (internal->srgb_shadow) free(internal->srgb_shadow);
     if (internal->memory) vkFreeMemory(g_vk_ctx.device, internal->memory, NULL);
     free(internal);
     buffer->handle = NULL;
@@ -394,6 +460,14 @@ void vg_lite_buffer_flush(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (buffer->format == VG_LITE_A4) {
+        vg_lite_a4_sync_to_gpu(buffer);  /* performs its own flush */
+        return;
+    }
+    if (buffer->format == OPENVG_sRGBA_8888) {
+        vg_lite_srgb_sync_to_gpu(buffer);  /* performs its own flush */
+        return;
+    }
     if (!internal->mapped_base) return;
     VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
     range.memory = internal->memory;
@@ -402,72 +476,625 @@ void vg_lite_buffer_flush(vg_lite_buffer_t *buffer)
     vkFlushMappedMemoryRanges(g_vk_ctx.device, 1, &range);
 }
 
-vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rect, vg_lite_color_t color)
+/* Upload pixel data to OPTIMAL-tiled image via staging buffer.
+ * src_data must be buffer->stride * buffer->height bytes in LINEAR layout.
+ * A4 uses upload_staging directly with an expanded tightly-packed staging. */
+static vg_lite_error_t upload_staging(buffer_internal_t *internal, const void *src_data,
+                                      uint32_t image_size, uint32_t row_px,
+                                      uint32_t w, uint32_t h)
 {
-    if (!target) return VG_LITE_INVALID_ARGUMENT;
-    if (!g_initialized) return VG_LITE_NO_CONTEXT;
-    
-    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-    
-    VkClearAttachment clear_att = {0};
-    clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    clear_att.colorAttachment = 0;
-    
-    /* VGLite color is 0xAABBGGRR: A at bits 24-31, B at bits 16-23, G at bits 8-15, R at bits 0-7 */
+    /* 1. Create staging buffer */
+    VkBufferCreateInfo buf_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buf_ci.size = image_size;
+    buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging_buf;
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &buf_ci, NULL, &staging_buf));
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, staging_buf, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    int32_t mt = find_memory_type(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) { vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL); return VG_LITE_OUT_OF_MEMORY; }
+    alloc.memoryTypeIndex = (uint32_t)mt;
+    VkDeviceMemory staging_mem;
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &alloc, NULL, &staging_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, staging_buf, staging_mem, 0));
+
+    /* 2. Fill staging with data */
+    void *mapped;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, staging_mem, 0, image_size, 0, &mapped));
+    memcpy(mapped, src_data, image_size);
+    vkUnmapMemory(g_vk_ctx.device, staging_mem);
+
+    /* 3. Record copy on init_cmd_buf (doesn't interrupt main render pass) */
+    VkCommandBuffer icb = g_vk_ctx.init_cmd_buf;
+    VK_CHECK(vkResetCommandBuffer(icb, 0));
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(icb, &bi));
+
+    /* Barrier: image GENERAL -> TRANSFER_DST */
+    VkImageMemoryBarrier dst_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    dst_bar.srcAccessMask = 0;
+    dst_bar.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dst_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    dst_bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dst_bar.image = internal->image;
+    dst_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    dst_bar.subresourceRange.levelCount = 1;
+    dst_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &dst_bar);
+
+    /* Copy buffer to image */
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = row_px;
+    region.bufferImageHeight = h;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = w;
+    region.imageExtent.height = h;
+    region.imageExtent.depth = 1;
+    vkCmdCopyBufferToImage(icb, staging_buf, internal->image,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    /* Barrier: image TRANSFER_DST -> GENERAL */
+    VkImageMemoryBarrier gen_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    gen_bar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    gen_bar.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    gen_bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    gen_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    gen_bar.image = internal->image;
+    gen_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    gen_bar.subresourceRange.levelCount = 1;
+    gen_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &gen_bar);
+
+    VK_CHECK(vkEndCommandBuffer(icb));
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &icb;
+    VK_CHECK(vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence));
+    VK_CHECK(vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence));
+    VK_CHECK(vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX));
+
+    /* 4. Cleanup staging */
+    vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL);
+    vkFreeMemory(g_vk_ctx.device, staging_mem, NULL);
+    return VG_LITE_SUCCESS;
+}
+
+static vg_lite_error_t upload_to_image(vg_lite_buffer_t *buffer, const void *src_data)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint32_t image_size = buffer->stride * buffer->height;
+    uint32_t row_px = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
+    return upload_staging(internal, src_data, image_size, row_px,
+                          buffer->width, buffer->height);
+}
+
+/* ------------------------------------------------------------------ */
+/* VG_LITE_A4: CPU layout is VGLite packed 4bpp (2 pixels per byte,
+ * high nibble = even x), GPU layout is R8_UNORM expanded 1 byte/pixel
+ * via bit replication (n<<4)|n. The shadow buffer holds the packed
+ * bytes (buffer->memory points at it); sync expands to the GPU image,
+ * readback packs back. Both nibbles of a byte are independent alpha
+ * samples, so nibble order matters and is fixed by this convention
+ * on both the CPU model (util) and the GPU expansion below.         */
+/* ------------------------------------------------------------------ */
+static vg_lite_error_t download_staging(buffer_internal_t *internal, void *dst_data,
+                                        uint32_t image_size, uint32_t row_px,
+                                        uint32_t w, uint32_t h);
+static void a4_expand_row(const uint8_t *packed, uint32_t w, uint8_t *out)
+{
+    for (uint32_t x = 0; x < w; x++) {
+        uint8_t byte = packed[x >> 1];
+        uint8_t n = (x & 1) ? (byte & 0x0F) : (byte >> 4);
+        out[x] = (uint8_t)((n << 4) | n);
+    }
+}
+
+static void a4_pack_row(const uint8_t *exp, uint32_t w, uint8_t *out)
+{
+    for (uint32_t x = 0; x + 1 < w; x += 2)
+        out[x >> 1] = (uint8_t)((exp[x] & 0xF0) | (exp[x + 1] >> 4));
+    if (w & 1)
+        out[w >> 1] = (uint8_t)(exp[w - 1] & 0xF0);
+}
+
+vg_lite_error_t vg_lite_a4_sync_to_gpu(vg_lite_buffer_t *buffer)
+{
+    if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
+    if (buffer->format != VG_LITE_A4) return VG_LITE_SUCCESS;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint8_t *shadow = internal->a4_shadow;
+    if (!shadow) return VG_LITE_INVALID_ARGUMENT;
+
+    if (!internal->is_optimal) {
+        /* LINEAR: expand rows directly into the mapped image memory, then flush */
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_expand_row(shadow + (size_t)y * buffer->stride, buffer->width,
+                          internal->a4_mapped + (size_t)y * internal->gpu_pitch);
+        VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = internal->memory;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        vkFlushMappedMemoryRanges(g_vk_ctx.device, 1, &range);
+    } else {
+        /* OPTIMAL: expand into a tight staging image, upload, drop stale cache */
+        uint32_t size = buffer->width * buffer->height;
+        uint8_t *tmp = malloc(size);
+        if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_expand_row(shadow + (size_t)y * buffer->stride, buffer->width,
+                          tmp + (size_t)y * buffer->width);
+        if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+        vg_lite_error_t err = upload_staging(internal, tmp, size, 0,
+                                             buffer->width, buffer->height);
+        free(tmp);
+        if (err != VG_LITE_SUCCESS) return err;
+    }
+    return VG_LITE_SUCCESS;
+}
+
+/* Pack the expanded GPU pixels back into the packed shadow layout. */
+static vg_lite_error_t a4_download_packed(vg_lite_buffer_t *buffer, uint8_t *dst_packed)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (!internal->is_optimal) {
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_pack_row(internal->a4_mapped + (size_t)y * internal->gpu_pitch,
+                        buffer->width, dst_packed + (size_t)y * buffer->stride);
+        return VG_LITE_SUCCESS;
+    }
+    uint32_t size = buffer->width * buffer->height;
+    uint8_t *tmp = malloc(size);
+    if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+    vg_lite_error_t err = download_staging(internal, tmp, size, 0,
+                                           buffer->width, buffer->height);
+    if (err == VG_LITE_SUCCESS)
+        for (uint32_t y = 0; y < buffer->height; y++)
+            a4_pack_row(tmp + (size_t)y * buffer->width, buffer->width,
+                        dst_packed + (size_t)y * buffer->stride);
+    free(tmp);
+    return err;
+}
+
+/* ------------------------------------------------------------------ */
+/* OPENVG_sRGBA_8888 shadow sync                                       */
+/*                                                                     */
+/* The GPU image is R8G8B8A8_SRGB and stores rotated [R,G,B,A] words:  */
+/* the physical RGB channels carry the VGLite R,G,B so the Vulkan      */
+/* sRGB->linear auto-decode (which llvmpipe applies BEFORE the view    */
+/* swizzle) hits exactly those channels, while the VGLite alpha rides  */
+/* the physical A channel and passes through untouched. The CPU shadow */
+/* keeps the VGLite contract layout [A,B,G,R] per word.                */
+/* cpu word = 0xRRGGBBAA, gpu word = 0xAABBGGRR (full byte reverse). */
+/* ------------------------------------------------------------------ */
+static uint32_t srgb_bswap(uint32_t v)
+{
+    return ((v & 0x000000FFu) << 24) | ((v & 0x0000FF00u) << 8) |
+           ((v & 0x00FF0000u) >> 8)  |  (v >> 24);
+}
+
+static void srgb_rotate_row_fwd(const uint8_t *cpu, uint32_t w, uint8_t *gpu)
+{
+    const uint32_t *s = (const uint32_t *)cpu;
+    uint32_t *d = (uint32_t *)gpu;
+    for (uint32_t x = 0; x < w; x++)
+        d[x] = srgb_bswap(s[x]);            /* [A,B,G,R] -> [R,G,B,A] */
+}
+
+static void srgb_rotate_row_inv(const uint8_t *gpu, uint32_t w, uint8_t *cpu)
+{
+    srgb_rotate_row_fwd(gpu, w, cpu);       /* byte reverse is self-inverse */
+}
+
+vg_lite_error_t vg_lite_srgb_sync_to_gpu(vg_lite_buffer_t *buffer)
+{
+    if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
+    if (buffer->format != OPENVG_sRGBA_8888) return VG_LITE_SUCCESS;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint8_t *shadow = internal->srgb_shadow;
+    if (!shadow) return VG_LITE_INVALID_ARGUMENT;
+
+    if (!internal->is_optimal) {
+        /* LINEAR: rotate rows directly into the mapped image memory, flush */
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_fwd(shadow + (size_t)y * buffer->stride, buffer->width,
+                                internal->srgb_mapped + (size_t)y * internal->gpu_pitch);
+        VkMappedMemoryRange range = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+        range.memory = internal->memory;
+        range.offset = 0;
+        range.size = VK_WHOLE_SIZE;
+        vkFlushMappedMemoryRanges(g_vk_ctx.device, 1, &range);
+    } else {
+        /* OPTIMAL: rotate into a tight staging image, upload, drop stale cache */
+        uint32_t size = buffer->width * buffer->height * 4;
+        uint8_t *tmp = malloc(size);
+        if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_fwd(shadow + (size_t)y * buffer->stride, buffer->width,
+                                tmp + (size_t)y * buffer->width * 4);
+        if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+        vg_lite_error_t err = upload_staging(internal, tmp, size, 0,
+                                             buffer->width, buffer->height);
+        free(tmp);
+        if (err != VG_LITE_SUCCESS) return err;
+    }
+    return VG_LITE_SUCCESS;
+}
+
+/* Rotate the GPU [R,G,B,A] pixels back into the VGLite [A,B,G,R] layout. */
+static vg_lite_error_t srgb_download_vglite(vg_lite_buffer_t *buffer, uint8_t *dst)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (!internal->is_optimal) {
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_inv(internal->srgb_mapped + (size_t)y * internal->gpu_pitch,
+                                buffer->width, dst + (size_t)y * buffer->stride);
+        return VG_LITE_SUCCESS;
+    }
+    uint32_t size = buffer->width * buffer->height * 4;
+    uint8_t *tmp = malloc(size);
+    if (!tmp) return VG_LITE_OUT_OF_MEMORY;
+    vg_lite_error_t err = download_staging(internal, tmp, size, 0,
+                                           buffer->width, buffer->height);
+    if (err == VG_LITE_SUCCESS)
+        for (uint32_t y = 0; y < buffer->height; y++)
+            srgb_rotate_row_inv(tmp + (size_t)y * buffer->width * 4, buffer->width,
+                                dst + (size_t)y * buffer->stride);
+    free(tmp);
+    return err;
+}
+
+/* Download pixel data from OPTIMAL-tiled image via staging buffer.
+ * dst_data receives image_size bytes in LINEAR layout with row_px texels
+ * per row (0 = tightly packed / width). */
+static vg_lite_error_t download_staging(buffer_internal_t *internal, void *dst_data,
+                                        uint32_t image_size, uint32_t row_px,
+                                        uint32_t w, uint32_t h)
+{
+    /* 1. Create staging buffer */
+    VkBufferCreateInfo buf_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    buf_ci.size = image_size;
+    buf_ci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    buf_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer staging_buf;
+    VK_CHECK(vkCreateBuffer(g_vk_ctx.device, &buf_ci, NULL, &staging_buf));
+
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(g_vk_ctx.device, staging_buf, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    int32_t mt = find_memory_type(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) { vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL); return VG_LITE_OUT_OF_MEMORY; }
+    alloc.memoryTypeIndex = (uint32_t)mt;
+    VkDeviceMemory staging_mem;
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &alloc, NULL, &staging_mem));
+    VK_CHECK(vkBindBufferMemory(g_vk_ctx.device, staging_buf, staging_mem, 0));
+
+    /* 2. Flush render pass first to ensure GPU writes are visible */
+    vg_lite_vulkan_flush_render_pass();
+    vg_lite_vulkan_submit_command(1);
+
+    /* 3. Record copy on init_cmd_buf */
+    VkCommandBuffer icb = g_vk_ctx.init_cmd_buf;
+    VK_CHECK(vkResetCommandBuffer(icb, 0));
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(icb, &bi));
+
+    /* Barrier: image GENERAL -> TRANSFER_SRC */
+    VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    src_bar.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    src_bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    src_bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    src_bar.image = internal->image;
+    src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    src_bar.subresourceRange.levelCount = 1;
+    src_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &src_bar);
+
+    /* Copy image to buffer */
+    VkBufferImageCopy region = {0};
+    region.bufferOffset = 0;
+    region.bufferRowLength = row_px;
+    region.bufferImageHeight = h;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent.width = w;
+    region.imageExtent.height = h;
+    region.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(icb, internal->image,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging_buf, 1, &region);
+
+    /* Barrier: image TRANSFER_SRC -> GENERAL */
+    VkImageMemoryBarrier gen_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    gen_bar.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    gen_bar.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    gen_bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    gen_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    gen_bar.image = internal->image;
+    gen_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    gen_bar.subresourceRange.levelCount = 1;
+    gen_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &gen_bar);
+
+    VK_CHECK(vkEndCommandBuffer(icb));
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &icb;
+    VK_CHECK(vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence));
+    VK_CHECK(vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence));
+    VK_CHECK(vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX));
+
+    /* 4. Read back data */
+    void *mapped;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, staging_mem, 0, image_size, 0, &mapped));
+    memcpy(dst_data, mapped, image_size);
+    vkUnmapMemory(g_vk_ctx.device, staging_mem);
+
+    /* 5. Cleanup staging */
+    vkDestroyBuffer(g_vk_ctx.device, staging_buf, NULL);
+    vkFreeMemory(g_vk_ctx.device, staging_mem, NULL);
+    return VG_LITE_SUCCESS;
+}
+
+static vg_lite_error_t download_from_image(vg_lite_buffer_t *buffer, void *dst_data)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint32_t image_size = buffer->stride * buffer->height;
+    uint32_t row_px = buffer->stride / ((vg_lite_format_bpp(buffer->format) + 7) / 8);
+    return download_staging(internal, dst_data, image_size, row_px,
+                            buffer->width, buffer->height);
+}
+
+/* Public API: upload CPU data to buffer (handles both LINEAR and OPTIMAL) */
+vg_lite_error_t vg_lite_buffer_write(vg_lite_buffer_t *buffer, const void *src_data)
+{
+    if (!buffer || !buffer->handle || !src_data) return VG_LITE_INVALID_ARGUMENT;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (buffer->format == VG_LITE_A4) {
+        /* Write packed bytes into the shadow, then expand to the GPU image */
+        memcpy(internal->a4_shadow, src_data, buffer->stride * buffer->height);
+        return vg_lite_a4_sync_to_gpu(buffer);
+    }
+    if (buffer->format == OPENVG_sRGBA_8888) {
+        /* Write [A,B,G,R] words into the shadow, then rotate to the GPU */
+        memcpy(internal->srgb_shadow, src_data, buffer->stride * buffer->height);
+        return vg_lite_srgb_sync_to_gpu(buffer);
+    }
+    if (internal->is_optimal) {
+        /* Invalidate cached CPU data before upload */
+        if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+        return upload_to_image(buffer, src_data);
+    } else {
+        memcpy(buffer->memory, src_data, buffer->stride * buffer->height);
+        vg_lite_buffer_flush(buffer);
+        return VG_LITE_SUCCESS;
+    }
+}
+
+/* Public API: download buffer data to CPU (handles both LINEAR and OPTIMAL) */
+vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data)
+{
+    if (!buffer || !buffer->handle || !dst_data) return VG_LITE_INVALID_ARGUMENT;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (buffer->format == VG_LITE_A4) {
+        /* Pack the expanded GPU pixels back into the packed layout */
+        vg_lite_finish();
+        return a4_download_packed(buffer, dst_data);
+    }
+    if (buffer->format == OPENVG_sRGBA_8888) {
+        /* Rotate the GPU [R,G,B,A] pixels back into [A,B,G,R] */
+        vg_lite_finish();
+        return srgb_download_vglite(buffer, dst_data);
+    }
+    if (internal->is_optimal) {
+        return download_from_image(buffer, dst_data);
+    } else {
+        memcpy(dst_data, buffer->memory, buffer->stride * buffer->height);
+        return VG_LITE_SUCCESS;
+    }
+}
+
+/* Public API: acquire read-only CPU pointer (LINEAR: zero-copy, OPTIMAL: cached download) */
+const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
+{
+    if (!buffer) return NULL;
+    if (!buffer->handle) return buffer->memory;  /* unallocated: use raw memory if set */
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+
+    /* If there's a pending clear on this buffer, flush it before reading */
+    if (internal->has_pending_clear) {
+        flush_pending_clear_global();
+        vg_lite_finish();
+    }
+
+    if (!internal->is_optimal) {
+        if (buffer->format == VG_LITE_A4 && internal->a4_gpu_dirty) {
+            /* GPU rendered into the expanded mapped image since last pack —
+             * refresh the packed shadow once, then hand out the CPU pointer */
+            vg_lite_finish();
+            for (uint32_t y = 0; y < buffer->height; y++)
+                a4_pack_row(internal->a4_mapped + (size_t)y * internal->gpu_pitch,
+                            buffer->width,
+                            internal->a4_shadow + (size_t)y * buffer->stride);
+            internal->a4_gpu_dirty = 0;
+        }
+        if (buffer->format == OPENVG_sRGBA_8888 && internal->srgb_gpu_dirty) {
+            /* GPU rendered into the rotated mapped image since last rotate —
+             * refresh the [A,B,G,R] shadow once */
+            vg_lite_finish();
+            for (uint32_t y = 0; y < buffer->height; y++)
+                srgb_rotate_row_inv(internal->srgb_mapped + (size_t)y * internal->gpu_pitch,
+                                    buffer->width,
+                                    internal->srgb_shadow + (size_t)y * buffer->stride);
+            internal->srgb_gpu_dirty = 0;
+        }
+        return buffer->memory;
+    }
+    /* OPTIMAL: download once, cache */
+    if (!internal->cpu_cache) {
+        if (buffer->format == VG_LITE_A4) {
+            internal->cpu_cache = malloc(buffer->stride * buffer->height);
+            if (!internal->cpu_cache) return NULL;
+            if (a4_download_packed(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
+                free(internal->cpu_cache);
+                internal->cpu_cache = NULL;
+                return NULL;
+            }
+            return internal->cpu_cache;
+        }
+        if (buffer->format == OPENVG_sRGBA_8888) {
+            internal->cpu_cache = malloc(buffer->stride * buffer->height);
+            if (!internal->cpu_cache) return NULL;
+            if (srgb_download_vglite(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
+                free(internal->cpu_cache);
+                internal->cpu_cache = NULL;
+                return NULL;
+            }
+            return internal->cpu_cache;
+        }
+        internal->cpu_cache = malloc(buffer->stride * buffer->height);
+        if (!internal->cpu_cache) return NULL;
+        if (download_from_image(buffer, internal->cpu_cache) != VG_LITE_SUCCESS) {
+            free(internal->cpu_cache);
+            internal->cpu_cache = NULL;
+            return NULL;
+        }
+    }
+    return internal->cpu_cache;
+}
+
+/* Public API: release read-only CPU pointer.
+ * For OPTIMAL buffers, the cache persists until the next write or free,
+ * so repeated read_ptr calls in a loop don't trigger repeated downloads. */
+void vg_lite_buffer_read_ptr_release(vg_lite_buffer_t *buffer)
+{
+    if (!buffer || !buffer->handle) return;
+    /* Cache persists; invalidated on next write or vg_lite_free */
+}
+
+/* Convert VGLite color (0xAABBGGRR) to VkClearValue based on target format.
+ * Used by both vg_lite_clear (immediate path) and delayed clear (loadOp=CLEAR path). */
+void vg_lite_color_to_vk_clear(vg_lite_buffer_format_t format, vg_lite_color_t color, VkClearValue *out)
+{
     uint8_t a = (color >> 24) & 0xFF;
     uint8_t b = (color >> 16) & 0xFF;
     uint8_t g = (color >> 8)  & 0xFF;
     uint8_t r = (color)       & 0xFF;
-    
-    if (target->format == VG_LITE_L8) {
+
+    float *f = out->color.float32;
+    f[1] = f[2] = 0.0f;
+    f[3] = 1.0f;
+
+    if (format == VG_LITE_L8) {
         float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-        clear_att.clearValue.color.float32[0] = lum / 255.0f;
-        clear_att.clearValue.color.float32[1] = 0.0f;
-        clear_att.clearValue.color.float32[2] = 0.0f;
-        clear_att.clearValue.color.float32[3] = 1.0f;
-    } else if (target->format == VG_LITE_A8) {
-        clear_att.clearValue.color.float32[0] = (float)a / 255.0f;
-        clear_att.clearValue.color.float32[1] = 0.0f;
-        clear_att.clearValue.color.float32[2] = 0.0f;
-        clear_att.clearValue.color.float32[3] = 1.0f;
-    } else if (target->format == VG_LITE_RGB565) {
-        /* VK_FORMAT_B5G6R5_UNORM_PACK16: standard Vulkan mapping float32[0]=R, [1]=G, [2]=B.
-         * No-MSAA path follows Vulkan spec correctly.
-         * (MSAA path needs R/B swap due to Intel Iris Xe driver bug �?see blit/draw code.) */
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
-    } else if (target->format == VG_LITE_RGBA4444) {
-        /* VK_FORMAT_R4G4B4A4_UNORM_PACK16: standard Vulkan mapping float32[0]=R, [1]=G, [2]=B, [3]=A.
-         * No-MSAA path follows Vulkan spec correctly.
-         * (MSAA path needs full channel remap due to Intel Iris Xe driver bug.) */
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
-    } else if (target->format == VG_LITE_BGRA4444) {
-        /* VK_FORMAT_B4G4R4A4_UNORM_PACK16: standard Vulkan mapping float32[0]=B, [1]=G, [2]=R, [3]=A.
-         * No-MSAA path follows Vulkan spec correctly.
-         * (MSAA path needs full channel remap due to Intel Iris Xe driver bug.) */
-        clear_att.clearValue.color.float32[0] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
+        f[0] = lum / 255.0f;
+    } else if (format == VG_LITE_A8 || format == VG_LITE_A4) {
+        f[0] = (float)a / 255.0f;
+    } else if (format == VG_LITE_BGRA4444) {
+        /* VK_FORMAT_B4G4R4A4: [0]=B, [1]=G, [2]=R, [3]=A */
+        f[0] = (float)b / 255.0f;
+        f[1] = (float)g / 255.0f;
+        f[2] = (float)r / 255.0f;
+        f[3] = (float)a / 255.0f;
     } else {
-        /* VkClearValue channels are format-independent per Vulkan spec:
-         * [0]=R value, [1]=G value, [2]=B value, [3]=A value
-         * The driver handles format-specific memory layout internally. */
-        clear_att.clearValue.color.float32[0] = (float)r / 255.0f;
-        clear_att.clearValue.color.float32[1] = (float)g / 255.0f;
-        clear_att.clearValue.color.float32[2] = (float)b / 255.0f;
-        clear_att.clearValue.color.float32[3] = (float)a / 255.0f;
+        /* All other formats (RGB565, RGBA4444, BGRA8888, etc.): [0]=R, [1]=G, [2]=B, [3]=A */
+        f[0] = (float)r / 255.0f;
+        f[1] = (float)g / 255.0f;
+        f[2] = (float)b / 255.0f;
+        f[3] = (float)a / 255.0f;
     }
+}
+
+/* Flush a pending fullscreen clear by performing an actual GPU clear via no-MSAA RP.
+ * Called when we need the clear to be actually executed but no blit/draw will consume it. */
+void flush_pending_clear_on_target(vg_lite_buffer_t *target)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    if (!internal->has_pending_clear) return;
+
+    VkClearAttachment l_clear_att = {0};
+    l_clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    l_clear_att.colorAttachment = 0;
+    vg_lite_color_to_vk_clear(target->format, internal->pending_clear_color, &l_clear_att.clearValue);
 
     vg_lite_vulkan_begin_command();
-    /* Reuse the no-MSAA RP if it's already active on the same target.
-     * Only flush when switching targets or when a different RP type is active. */
+    {
+        buffer_internal_t *ci = (buffer_internal_t *)target->handle;
+        if (!(g_vk_ctx.current_fb_image == ci->image && g_vk_ctx.current_fb_is_no_msaa))
+            vg_lite_vulkan_flush_render_pass();
+    }
+    vg_lite_vulkan_set_render_target_no_msaa(target);
+
+    VkClearRect l_clear_rect = {0};
+    l_clear_rect.rect.extent.width = target->width;
+    l_clear_rect.rect.extent.height = target->height;
+    l_clear_rect.baseArrayLayer = 0;
+    l_clear_rect.layerCount = 1;
+    vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &l_clear_att, 1, &l_clear_rect);
+
+    internal->has_pending_clear = 0;
+    g_pending_clear_buffer = NULL;
+}
+
+/* Flush any pending clear globally. Called at finish/read_ptr. */
+static void flush_pending_clear_global(void)
+{
+    if (g_pending_clear_buffer) {
+        flush_pending_clear_on_target(g_pending_clear_buffer);
+    }
+}
+
+vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rect, vg_lite_color_t color)
+{
+    if (!target) return VG_LITE_INVALID_ARGUMENT;
+    if (!g_initialized) return VG_LITE_NO_CONTEXT;
+
+    buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+    if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
+
+    int is_fullscreen = (!rect ||
+        (rect->x <= 0 && rect->y <= 0 &&
+         rect->x + rect->width >= (int32_t)target->width &&
+         rect->y + rect->height >= (int32_t)target->height));
+
+    if (is_fullscreen) {
+        internal->has_pending_clear = 1;
+        internal->pending_clear_color = color;
+        internal->msaa_needs_seed = 1;
+        internal->msaa_dirty = 0;
+        g_pending_clear_buffer = target;
+        return VG_LITE_SUCCESS;
+    }
+
+    /* Partial clear path — flush any pending fullscreen clear first */
+    if (internal->has_pending_clear) {
+        flush_pending_clear_on_target(target);
+    }
+
+    VkClearAttachment clear_att = {0};
+    clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    clear_att.colorAttachment = 0;
+    vg_lite_color_to_vk_clear(target->format, color, &clear_att.clearValue);
+
+    vg_lite_vulkan_begin_command();
     {
         buffer_internal_t *ci = (buffer_internal_t *)target->handle;
         if (!(g_vk_ctx.current_fb_image == ci->image && g_vk_ctx.current_fb_is_no_msaa))
@@ -476,26 +1103,21 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
     vg_lite_vulkan_set_render_target_no_msaa(target);
 
     VkClearRect clear_rect;
-    if (rect) {
+    {
         int32_t x = rect->x < 0 ? 0 : rect->x;
         int32_t y = rect->y < 0 ? 0 : rect->y;
-        int32_t r_bound = (rect->x + rect->width) > target->width ? target->width : (rect->x + rect->width);
-        int32_t b_bound = (rect->y + rect->height) > target->height ? target->height : (rect->y + rect->height);
+        int32_t r_bound = (rect->x + rect->width) > (int32_t)target->width ? (int32_t)target->width : (rect->x + rect->width);
+        int32_t b_bound = (rect->y + rect->height) > (int32_t)target->height ? (int32_t)target->height : (rect->y + rect->height);
         if (x >= r_bound || y >= b_bound) return VG_LITE_SUCCESS;
         clear_rect.rect.offset.x = x;
         clear_rect.rect.offset.y = y;
         clear_rect.rect.extent.width = r_bound - x;
         clear_rect.rect.extent.height = b_bound - y;
-    } else {
-        clear_rect.rect.offset.x = 0;
-        clear_rect.rect.offset.y = 0;
-        clear_rect.rect.extent.width = target->width;
-        clear_rect.rect.extent.height = target->height;
     }
     clear_rect.baseArrayLayer = 0;
     clear_rect.layerCount = 1;
     vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
-    internal->msaa_needs_seed = 1;  /* no-MSAA RP wrote to target; flag for draw path */
+    internal->msaa_needs_seed = 1;
     internal->msaa_dirty = 0;
     return VG_LITE_SUCCESS;
 }
@@ -598,7 +1220,7 @@ static vg_lite_error_t create_temp_copy_image(VkFormat vkfmt,
         tmpv_ci.components.g = VK_COMPONENT_SWIZZLE_R;
         tmpv_ci.components.b = VK_COMPONENT_SWIZZLE_R;
         tmpv_ci.components.a = VK_COMPONENT_SWIZZLE_ONE;
-    } else if (target->format == VG_LITE_A8) {
+    } else if (target->format == VG_LITE_A8 || target->format == VG_LITE_A4) {
         tmpv_ci.components.r = VK_COMPONENT_SWIZZLE_ZERO;
         tmpv_ci.components.g = VK_COMPONENT_SWIZZLE_ZERO;
         tmpv_ci.components.b = VK_COMPONENT_SWIZZLE_ZERO;
@@ -662,15 +1284,31 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (!target || !source) return VG_LITE_INVALID_ARGUMENT;
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
 
+    /* A4 sources keep packed 4bpp on the CPU side — expand to the GPU R8
+     * image before sampling. sRGBA sources keep [A,B,G,R] words on the CPU
+     * side — rotate to the GPU [R,G,B,A] _SRGB image before sampling. */
+    if (source->format == VG_LITE_A4) {
+        vg_lite_error_t a4_err = vg_lite_a4_sync_to_gpu(source);
+        if (a4_err != VG_LITE_SUCCESS) return a4_err;
+    }
+    if (source->format == OPENVG_sRGBA_8888) {
+        vg_lite_error_t s_err = vg_lite_srgb_sync_to_gpu(source);
+        if (s_err != VG_LITE_SUCCESS) return s_err;
+    }
+
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
     buffer_internal_t *src_int = (buffer_internal_t *)source->handle;
+    /* Invalidate cached CPU data — GPU will render to this target */
+    if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
+    if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
     int blend_group = vg_lite_blend_to_group(blend);
     /* Shader blend (mode 0) disabled — all formats use native blend path.
     if (blend_group != BG_SHADER && target->format != VG_LITE_BGRA8888 && target->format != VG_LITE_BGR565
         && target->format != VG_LITE_RGBA8888 && target->format != VG_LITE_RGB565
-        && target->format != VG_LITE_A8 && target->format != VG_LITE_L8)
+        && target->format != VG_LITE_A8 && target->format != VG_LITE_A4 && target->format != VG_LITE_L8)
         blend_group = BG_SHADER;
     */
     int native_blend = 1; /* always native blend (was: blend_group != BG_SHADER) */
@@ -757,6 +1395,44 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
             0, NULL, 0, NULL, 1, &src_bar);
     }
 
+    /* Consume pending clear.
+     * MSAA path: llvmpipe has a bug with vkCmdClearAttachments on 4x MSAA
+     *   attachments (R/B swap on B5G6R5). Must flush to target via no-MSAA RP,
+     *   then use normal seed_msaa path.
+     * no-MSAA path: merge clear into blit's RP — single RP open/close instead
+     *   of HEAD's two (one for clear, one for blit). */
+    {
+        buffer_internal_t *tgt_int = (buffer_internal_t *)target->handle;
+        if (tgt_int->has_pending_clear) {
+#if VGLITE_BLIT_MSAA
+            /* MSAA: flush to target, fall through to normal seed_msaa path */
+            flush_pending_clear_on_target(target);
+            tgt_int->has_pending_clear = 0;
+            g_pending_clear_buffer = NULL;
+#else
+            /* no-MSAA: merge clear into blit's RP */
+            VkClearValue cv;
+            vg_lite_color_to_vk_clear(target->format, tgt_int->pending_clear_color, &cv);
+            tgt_int->has_pending_clear = 0;
+            g_pending_clear_buffer = NULL;
+            vg_lite_vulkan_set_render_target_no_msaa(target);
+            {
+                VkClearAttachment ca = {0};
+                ca.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                ca.colorAttachment = 0;
+                ca.clearValue = cv;
+                VkClearRect cr = {0};
+                cr.rect.extent.width = target->width;
+                cr.rect.extent.height = target->height;
+                cr.baseArrayLayer = 0;
+                cr.layerCount = 1;
+                vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &ca, 1, &cr);
+            }
+            goto blit_draw_setup;
+#endif
+        }
+    }
+
 #if VGLITE_BLIT_MSAA
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     vg_lite_vulkan_set_render_target(target);
@@ -766,6 +1442,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 #else
     vg_lite_vulkan_set_render_target_no_msaa(target);
 #endif
+
+blit_draw_setup:
 
     float shader_mat[3][3];
     compute_blit_shader_matrix(matrix, source->width, source->height, target->width, target->height, shader_mat);
@@ -778,8 +1456,13 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     if (vkAllocateDescriptorSets(g_vk_ctx.device, &ds_alloc, &desc_set) != VK_SUCCESS)
         return VG_LITE_OUT_OF_MEMORY;
 
-    VkImageView src_view = (target->format == VG_LITE_A8) ? src_int->a_to_r_view :
-        (src_int->swizzle_view ? src_int->swizzle_view : src_int->view);
+    /* Source view: per-format swizzle (A8 -> (0,0,0,a); 565/RGBX -> alpha=ONE;
+     * 4444/ARGB8888 -> channel order). A8/L8 targets rely on the shader
+     * FLAG_OUTPUT_A8/L8 block (writes src.a / luminance into R), so sources
+     * without a real alpha channel correctly sample a=1 via their swizzle view.
+     * (a_to_r_view is unsuitable here: it reads the A component, which is 0
+     * for RGB565/RGBX sources.) */
+    VkImageView src_view = (src_int->swizzle_view ? src_int->swizzle_view : src_int->view);
     VkDescriptorImageInfo si = {sampler, src_view, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo di;
     di = si; /* native blend: dst = src (same sampler+view). Shader blend used tmp_view. */
@@ -797,8 +1480,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     pc.im_mode = (int)source->image_mode;
     pc.flags = 0;
     if (target->format == VG_LITE_L8)  pc.flags |= 1;
-    if (target->format == VG_LITE_A8)  pc.flags |= 2;
-    if (source->format == VG_LITE_A8)  pc.flags |= 8;
+    if (target->format == VG_LITE_A8 || target->format == VG_LITE_A4) pc.flags |= 2;
+    if (source->format == VG_LITE_A8 || source->format == VG_LITE_A4) pc.flags |= 8;
     if (source->format == VG_LITE_INDEX_8) pc.flags |= 16;
     
     /* Default fullscreen triangle corners; OBB path overrides below */
@@ -869,6 +1552,8 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
 vg_lite_error_t vg_lite_finish(void)
 {
+    /* Flush any deferred fullscreen clear that wasn't consumed by blit/draw */
+    flush_pending_clear_global();
 #if VGLITE_BLIT_PERF
     /* Always record CPU start before submit �?cheap, used if GPU timestamps fail */
     if (g_vk_ctx.blit_perf_count > 0)
@@ -1151,7 +1836,11 @@ vg_lite_uint32_t vg_lite_get_blit_obb_mode(void) {
     return g_vk_ctx.use_obb_blit;
 }
 
+#if VGLITE_BLIT_PERF
 vg_lite_uint32_t vg_lite_write_timestamp(vg_lite_uint32_t stage) {
+    /* Ensure command buffer is recording before writing timestamp.
+     * With delayed clear, the cmd buffer may not be started yet. */
+    vg_lite_vulkan_begin_command();
     /* Map vg_lite_uint32_t to VkPipelineStageFlagBits */
     vg_lite_vulkan_write_timestamp((VkPipelineStageFlagBits)stage);
     return g_vk_ctx.timestamp_slot_counter - 1;
@@ -1164,3 +1853,4 @@ vg_lite_uint64_t vg_lite_read_timestamp(vg_lite_uint32_t slot) {
 double vg_lite_get_elapsed_ns(vg_lite_uint32_t start_slot, vg_lite_uint32_t end_slot) {
     return vg_lite_vulkan_get_elapsed_ns(start_slot, end_slot);
 }
+#endif

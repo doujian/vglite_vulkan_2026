@@ -128,11 +128,23 @@ uint32_t pack_pixel(vg_lite_buffer_format_t format, uint32_t r, uint32_t g, uint
     case VG_LITE_BGRX8888:
         return b | (g << 8) | (r << 16);
     case VG_LITE_ARGB8888:
-        /* ARGB8888 → VK_FORMAT_R8G8B8A8_UNORM: mem [R,G,B,A] */
-        return r | (g << 8) | (b << 16) | (a << 24);
+        /* VGLite ARGB8888 mem [A,R,G,B]: byte0=A (byte-order naming).
+         * Sampled via swizzle view (vg_lite.c). */
+        return a | (r << 8) | (g << 16) | (b << 24);
     case VG_LITE_ABGR8888:
         /* ABGR8888 → VK_FORMAT_A8B8G8R8_PACK32: mem [A,B,G,R] */
         return a | (b << 8) | (g << 16) | (r << 24);
+    case VG_LITE_RGBA5551:
+    case VG_LITE_BGRA5551:
+        /* Both map to VK_FORMAT_A1R5G5B5 physical layout:
+         * B=4:0, G=9:5, R=14:10, A=15 (VGLite RGBA5551 doc layout is an alias). */
+        return ((b & 0xF8) >> 3) | ((g & 0xF8) << 2) | ((r & 0xF8) << 7) | ((a & 0x80) << 8);
+    case VG_LITE_ARGB1555:
+        /* A=0, R=5:1, G=10:6, B=15:11 */
+        return ((a & 0x80) >> 7) | ((r & 0xF8) >> 2) | ((g & 0xF8) << 1) | ((b & 0xF8) << 8);
+    case VG_LITE_ABGR1555:
+        /* A=0, B=5:1, G=10:6, R=15:11 */
+        return ((a & 0x80) >> 7) | ((b & 0xF8) >> 2) | ((g & 0xF8) << 1) | ((r & 0xF8) << 8);
     default:
         return r | (g << 8) | (b << 16) | (a << 24);
     }
@@ -146,112 +158,134 @@ int SaveBMP(char *image_name, unsigned char* p, int width, int height, vg_lite_b
     return 0;
 }
 
-uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
+/* ------------------------------------------------------------------ */
+/* Table-driven pixel unpacking for read_pixel_ptr.                    */
+/*                                                                     */
+/* Most formats follow one pattern: load a bpp-wide pixel, extract 4   */
+/* channels by (shift, bits), expand each to 8 bits, pack as R|G<<8|   */
+/* B<<16|A<<24. Formats whose *semantics* differ get a mode:           */
+/*   MODE_RGBA         standard 4-channel path                          */
+/*   MODE_A_REPLICATE  single alpha channel replicated to all 4 bytes  */
+/*   MODE_LUMA         luminance replicated to RGB, A forced opaque    */
+/*   MODE_RAW_INDEX    return the raw byte (CLUT lookup is deferred)   */
+/* chan_t.bits == 0 in MODE_RGBA means "no alpha channel" -> 0xFF.     */
+/* ------------------------------------------------------------------ */
+typedef struct { uint8_t shift, bits; } chan_t;
+
+enum {
+    MODE_RGBA = 0,
+    MODE_A_REPLICATE,
+    MODE_LUMA,
+    MODE_RAW_INDEX,
+};
+
+typedef struct {
+    vg_lite_buffer_format_t format;
+    uint8_t                 bytes;   /* pixel width: 1, 2 or 4 */
+    uint8_t                 mode;
+    chan_t                  r, g, b, a;
+} fmt_desc_t;
+
+static const fmt_desc_t FMT_TABLE[] = {
+    /* format              bytes mode            r           g           b           a        */
+    { VG_LITE_RGB565,      2, MODE_RGBA,       { 0, 5},    { 5, 6},    {11, 5},    { 0, 0} },
+    { VG_LITE_BGR565,      2, MODE_RGBA,       {11, 5},    { 5, 6},    { 0, 5},    { 0, 0} },
+    { VG_LITE_RGBA4444,    2, MODE_RGBA,       { 0, 4},    { 4, 4},    { 8, 4},    {12, 4} },
+    { VG_LITE_BGRA4444,    2, MODE_RGBA,       { 8, 4},    { 4, 4},    { 0, 4},    {12, 4} },
+    /* RGBA5551/BGRA5551 share the A1R5G5B5 physical layout */
+    { VG_LITE_RGBA5551,    2, MODE_RGBA,       {10, 5},    { 5, 5},    { 0, 5},    {15, 1} },
+    { VG_LITE_BGRA5551,    2, MODE_RGBA,       {10, 5},    { 5, 5},    { 0, 5},    {15, 1} },
+    { VG_LITE_ARGB1555,    2, MODE_RGBA,       { 1, 5},    { 6, 5},    {11, 5},    { 0, 1} },
+    { VG_LITE_ABGR1555,    2, MODE_RGBA,       {11, 5},    { 6, 5},    { 1, 5},    { 0, 1} },
+    { VG_LITE_BGRA8888,    4, MODE_RGBA,       {16, 8},    { 8, 8},    { 0, 8},    {24, 8} },
+    { VG_LITE_ARGB8888,    4, MODE_RGBA,       { 8, 8},    {16, 8},    {24, 8},    { 0, 8} },
+    { VG_LITE_ABGR8888,    4, MODE_RGBA,       {24, 8},    {16, 8},    { 8, 8},    { 0, 8} },
+    { VG_LITE_BGRX8888,    4, MODE_RGBA,       {16, 8},    { 8, 8},    { 0, 8},    { 0, 0} },
+    { VG_LITE_RGBX8888,    4, MODE_RGBA,       { 0, 8},    { 8, 8},    {16, 8},    { 0, 0} },
+    { VG_LITE_RGBA8888,    4, MODE_RGBA,       { 0, 8},    { 8, 8},    {16, 8},    {24, 8} },
+    /* OpenVG MSB-first naming: R=31:24 G=23:16 B=15:8 A=7:0 (same word as ABGR8888) */
+    { OPENVG_sRGBA_8888,   4, MODE_RGBA,       {24, 8},    {16, 8},    { 8, 8},    { 0, 8} },
+    { VG_LITE_A8,          1, MODE_A_REPLICATE, {0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
+{ VG_LITE_A4,          1, MODE_A_REPLICATE, {0, 0},    { 0, 0},    { 0, 0},    { 0, 0} }, /* packed nibbles, special-cased in read_pixel_ptr */
+    { VG_LITE_INDEX_8,     1, MODE_RAW_INDEX,  { 0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
+    { VG_LITE_L8,          1, MODE_LUMA,       { 0, 0},    { 0, 0},    { 0, 0},    { 0, 0} },
+};
+
+/* Expand an n-bit channel value to 8 bits. Bit replication keeps the
+ * exact same values as the previous per-format hand-written formulas:
+ * 4-bit: v<<4|v, 5-bit: v<<3|v>>2, 6-bit: v<<2|v>>4. */
+static uint8_t expand_channel(uint32_t v, uint8_t bits)
 {
-    unsigned char *ptr = (unsigned char *)buffer->memory;
+    if (bits == 8) return (uint8_t)v;
+    if (bits == 1) return v ? 0xFF : 0x00;
+    return (uint8_t)((v << (8 - bits)) | (v >> (2 * bits - 8)));
+}
+
+static const fmt_desc_t *find_fmt(vg_lite_buffer_format_t format)
+{
+    for (size_t i = 0; i < sizeof(FMT_TABLE) / sizeof(FMT_TABLE[0]); i++)
+        if (FMT_TABLE[i].format == format)
+            return &FMT_TABLE[i];
+    return NULL;
+}
+
+static uint32_t read_pixel_ptr(vg_lite_buffer_t *buffer, const void *base, int x, int y)
+{
+    unsigned char *ptr = (unsigned char *)base;
     if (!ptr || x < 0 || y < 0 || x >= (int)buffer->width || y >= (int)buffer->height)
         return 0;
 
-    switch (buffer->format) {
-    case VG_LITE_RGB565: {
-        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        /* VK_FORMAT_B5G6R5: B in bits 15-11, G in 10-5, R in 4-0 */
-        uint8_t b = (p >> 11) & 0x1F;
-        uint8_t g = (p >> 5) & 0x3F;
-        uint8_t r = p & 0x1F;
-        return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
-    }
-    case VG_LITE_BGR565: {
-        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        /* VK_FORMAT_R5G6B5: R in bits 15-11, G in 10-5, B in 4-0 */
-        uint8_t r = (p >> 11) & 0x1F;
-        uint8_t g = (p >> 5) & 0x3F;
-        uint8_t b = p & 0x1F;
-        return ((r << 3) | (r >> 2)) | (((g << 2) | (g >> 4)) << 8) | (((b << 3) | (b >> 2)) << 16) | (0xFF << 24);
-    }
-    case VG_LITE_RGBA4444: {
-        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        /* VGLite RGBA4444: R in bits 3:0, G in 7:4, B in 11:8, A in 15:12 */
-        uint8_t r = p & 0xF;
-        uint8_t g = (p >> 4) & 0xF;
-        uint8_t b = (p >> 8) & 0xF;
-        uint8_t a = (p >> 12) & 0xF;
-        return ((r << 4) | r) | (((g << 4) | g) << 8) |
-               (((b << 4) | b) << 16) | (((a << 4) | a) << 24);
-    }
-    case VG_LITE_BGRA4444: {
-        uint16_t p = *(uint16_t*)(ptr + y * buffer->stride + x * 2);
-        /* VGLite BGRA4444: B in bits 3:0, G in 7:4, R in 11:8, A in 15:12 */
-        uint8_t b = p & 0xF;
-        uint8_t g = (p >> 4) & 0xF;
-        uint8_t r = (p >> 8) & 0xF;
-        uint8_t a = (p >> 12) & 0xF;
-        return ((r << 4) | r) | (((g << 4) | g) << 8) |
-               (((b << 4) | b) << 16) | (((a << 4) | a) << 24);
-    }
-    case VG_LITE_BGRA8888: {
-        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t b = p & 0xFF;
-        uint8_t g = (p >> 8) & 0xFF;
-        uint8_t r = (p >> 16) & 0xFF;
-        uint8_t a = (p >> 24) & 0xFF;
-        return r | (g << 8) | (b << 16) | (a << 24);
-    }
-    case VG_LITE_ARGB8888: {
-        /* ARGB8888 → VK_FORMAT_R8G8B8A8_UNORM: mem [R,G,B,A] */
-        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t r = p & 0xFF;
-        uint8_t g = (p >> 8) & 0xFF;
-        uint8_t b = (p >> 16) & 0xFF;
-        uint8_t a = (p >> 24) & 0xFF;
-        return r | (g << 8) | (b << 16) | (a << 24);
-    }
-    case VG_LITE_ABGR8888: {
-        /* Official: 31:24=R, 23:16=G, 15:8=B, 7:0=A → mem [A,B,G,R] */
-        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t a = p & 0xFF;
-        uint8_t b = (p >> 8) & 0xFF;
-        uint8_t g = (p >> 16) & 0xFF;
-        uint8_t r = (p >> 24) & 0xFF;
-        return r | (g << 8) | (b << 16) | (a << 24);
-    }
-    case VG_LITE_BGRX8888: {
-        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t b = p & 0xFF;
-        uint8_t g = (p >> 8) & 0xFF;
-        uint8_t r = (p >> 16) & 0xFF;
-        return r | (g << 8) | (b << 16) | (0xFF << 24);
-    }
-    case VG_LITE_RGBX8888: {
-        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t r = p & 0xFF;
-        uint8_t g = (p >> 8) & 0xFF;
-        uint8_t b = (p >> 16) & 0xFF;
-        return r | (g << 8) | (b << 16) | (0xFF << 24);
-    }
-    case VG_LITE_A8: {
-        uint8_t a = *(ptr + y * buffer->stride + x);
+    const fmt_desc_t *fmt = find_fmt(buffer->format);
+    if (!fmt)
+        return *(uint32_t*)(ptr + y * buffer->stride + x * 4); /* legacy fallback */
+
+    size_t off = (size_t)y * buffer->stride + (size_t)x * fmt->bytes;
+
+    switch (fmt->mode) {
+    case MODE_RAW_INDEX:
+        return ptr[off]; /* index only, CLUT lookup happens later */
+    case MODE_A_REPLICATE: {
+        /* A4: packed 2 pixels/byte, high nibble = even x; expand by bit
+         * replication (n<<4)|n to match the GPU R8 expansion. */
+        if (buffer->format == VG_LITE_A4) {
+            uint32_t byte = ptr[(size_t)y * buffer->stride + (x >> 1)];
+            uint32_t n = (x & 1) ? (byte & 0x0F) : (byte >> 4);
+            uint32_t a = (n << 4) | n;
+            return a | (a << 8) | (a << 16) | (a << 24);
+        }
+        uint32_t a = ptr[off];
         return a | (a << 8) | (a << 16) | (a << 24);
     }
-    case VG_LITE_INDEX_8: {
-        uint8_t idx = *(ptr + y * buffer->stride + x);
-        return idx;  /* Return index value only, CLUT lookup happens later */
+    case MODE_LUMA: {
+        uint32_t l = ptr[off];
+        return l | (l << 8) | (l << 16) | (0xFFu << 24);
     }
-    case VG_LITE_L8: {
-        uint8_t l = *(ptr + y * buffer->stride + x);
-        return l | (l << 8) | (l << 16) | (0xFF << 24);
+    default: /* MODE_RGBA */
+        break;
     }
-    case VG_LITE_RGBA8888: {
-        uint32_t p = *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-        uint8_t r = p & 0xFF;
-        uint8_t g = (p >> 8) & 0xFF;
-        uint8_t b = (p >> 16) & 0xFF;
-        uint8_t a = (p >> 24) & 0xFF;
-        return r | (g << 8) | (b << 16) | (a << 24);
+
+    uint32_t p;
+    if (fmt->bytes == 1)      p = ptr[off];
+    else if (fmt->bytes == 2) p = *(uint16_t*)(ptr + off);
+    else                      p = *(uint32_t*)(ptr + off);
+
+    const chan_t *ch[4] = { &fmt->r, &fmt->g, &fmt->b, &fmt->a };
+    uint32_t out[4];
+    for (int i = 0; i < 4; i++) {
+        /* bits == 0: channel absent (X formats) -> opaque alpha */
+        out[i] = (ch[i]->bits == 0) ? 0xFF
+              : expand_channel((p >> ch[i]->shift) & ((1u << ch[i]->bits) - 1), ch[i]->bits);
     }
-    default:
-        return *(uint32_t*)(ptr + y * buffer->stride + x * 4);
-    }
+    return out[0] | (out[1] << 8) | (out[2] << 16) | (out[3] << 24);
+}
+
+uint32_t vg_lite_read_pixel(vg_lite_buffer_t *buffer, int x, int y)
+{
+    const void *ptr = vg_lite_buffer_read_ptr(buffer);
+    if (!ptr) return 0;
+    uint32_t result = read_pixel_ptr(buffer, ptr, x, y);
+    vg_lite_buffer_read_ptr_release(buffer);
+    return result;
 }
 
 int vg_lite_check_pixel(vg_lite_buffer_t *buffer, int x, int y, uint32_t expected, int tolerance)
@@ -292,6 +326,36 @@ static int transform_point(vg_lite_float_t inv[3][3], float dx, float dy, float 
     return 1;
 }
 
+/* sRGB EOTF: sRGB-encoded byte -> linear-domain byte (rounded).
+ * Matches Vulkan _SRGB texel decode: c <= 0.04045 ? c/12.92 : ((c+0.055)/1.055)^2.4
+ * Alpha is never converted. */
+static uint8_t srgb_decode_8[256];
+static int srgb_decode_ready = 0;
+static void srgb_decode_init(void)
+{
+    if (srgb_decode_ready) return;
+    srgb_decode_ready = 1;
+    for (int i = 0; i < 256; i++) {
+        float c = (float)i / 255.0f;
+        float l = (c <= 0.04045f) ? c / 12.92f
+                                  : powf((c + 0.055f) / 1.055f, 2.4f);
+        int v = (int)(l * 255.0f + 0.5f);
+        srgb_decode_8[i] = (uint8_t)(v > 255 ? 255 : v);
+    }
+}
+
+/* Vulkan _SRGB sampling: per spec the sRGB->linear decode happens in the
+ * texel output pipeline BEFORE filtering, so each fetched texel's RGB is
+ * decoded prior to the (bi)linear weights being applied. Alpha untouched. */
+static void srgb_decode_texel(vg_lite_buffer_t *src, int *r, int *g, int *b)
+{
+    if (src->format != OPENVG_sRGBA_8888) return;
+    srgb_decode_init();
+    *r = srgb_decode_8[*r];
+    *g = srgb_decode_8[*g];
+    *b = srgb_decode_8[*b];
+}
+
 /* Vulkan spec §15.1 LINEAR sampling:
  *   texel center at (i+0.5)/size, i = floor(u - 0.5), alpha = frac(u - 0.5)
  *   result = tex[i]*(1-a) + tex[i+1]*a, clamp-to-edge: i,i+1 ∈ [0,size-1] */
@@ -316,6 +380,11 @@ static void vulkan_linear_sample(vg_lite_buffer_t *src, float sx, float sy,
     unpack_rgba(vg_lite_read_pixel(src, x0, y1), &r01, &g01, &b01, &a01);
     unpack_rgba(vg_lite_read_pixel(src, x1, y1), &r11, &g11, &b11, &a11);
 
+    srgb_decode_texel(src, &r00, &g00, &b00);
+    srgb_decode_texel(src, &r10, &g10, &b10);
+    srgb_decode_texel(src, &r01, &g01, &b01);
+    srgb_decode_texel(src, &r11, &g11, &b11);
+
     float w00 = (1-fx)*(1-fy), w10 = fx*(1-fy), w01 = (1-fx)*fy, w11 = fx*fy;
     *sr = (int)(r00*w00 + r10*w10 + r01*w01 + r11*w11 + 0.5f);
     *sg = (int)(g00*w00 + g10*w10 + g01*w01 + g11*w11 + 0.5f);
@@ -333,6 +402,7 @@ static void vulkan_nearest_sample(vg_lite_buffer_t *src, float sx, float sy,
     if (ix < 0) ix = 0; else if (ix >= w) ix = w - 1;
     if (iy < 0) iy = 0; else if (iy >= h) iy = h - 1;
     unpack_rgba(vg_lite_read_pixel(src, ix, iy), sr, sg, sb, sa);
+    srgb_decode_texel(src, sr, sg, sb);
 }
 
 static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
@@ -398,12 +468,18 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
         int cg = (color >> 8) & 0xFF;
         int cb = (color >> 16) & 0xFF;
         int ca = (color >> 24) & 0xFF;
-        sr = (sr * cr + 127) / 255;
-        sb = (sb * cb + 127) / 255;
-        sa = (sa * ca + 127) / 255;
-        sg = (sg * cg + 127) / 255;
         if (flag_a8) {
+            /* A8 source acts as alpha mask: rgb = color.rgb * src.a,
+             * alpha = color.a * src.a (matches blit_native.frag A8 branch). */
+            sr = (sa * cr + 127) / 255;
             sg = (sa * cg + 127) / 255;
+            sb = (sa * cb + 127) / 255;
+            sa = (sa * ca + 127) / 255;
+        } else {
+            sr = (sr * cr + 127) / 255;
+            sb = (sb * cb + 127) / 255;
+            sa = (sa * ca + 127) / 255;
+            sg = (sg * cg + 127) / 255;
         }
     }
 
@@ -472,11 +548,20 @@ static uint32_t compute_expected_blit_pixel(vg_lite_buffer_t *src,
         ob  = (db * (255 - sa) + 127) / 255;
         oa  = (da * (255 - sa) + 127) / 255;
         break;
-    case 11: /* NORMAL_LVGL (premultiplied): S*Sa + D*(1-Sa) */
-        or_ = (sr * sa + dr * (255 - sa)) / 255;
-        og  = (sg * sa + dg * (255 - sa)) / 255;
-        ob  = (sb * sa + db * (255 - sa)) / 255;
-        oa  = 0xFF;
+    case 11: /* NORMAL_LVGL (non-premultiplied): RGB = S*Sa + D*(1-Sa),
+              * A = Da + (Sa-Da)*Sa = Sa*Sa + Da*(1-Sa) (same lerp) */
+        /* +127: GPU fixed-function blend rounds to nearest, plain
+         * truncation is off by one against the hardware. */
+        or_ = (sr * sa + dr * (255 - sa) + 127) / 255;
+        og  = (sg * sa + dg * (255 - sa) + 127) / 255;
+        ob  = (sb * sa + db * (255 - sa) + 127) / 255;
+        oa  = (sa * sa + da * (255 - sa) + 127) / 255;
+        break;
+    case 12: /* ADDITIVE_LVGL: (S+D)*Sa + D*(1-Sa) = S*Sa + D */
+        or_ = (sr * sa + 127) / 255 + dr;
+        og  = (sg * sa + 127) / 255 + dg;
+        ob  = (sb * sa + 127) / 255 + db;
+        oa  = sa + (da * (255 - sa) + 127) / 255;
         break;
     default:
         or_ = sr; og = sg; ob = sb; oa = sa;
@@ -587,6 +672,7 @@ void vg_lite_expected_blit(vg_lite_expected_buffer_t *eb,
                 image_mode, flags, color, clut);
         }
     }
+    vg_lite_buffer_read_ptr_release(src);
 }
 
 int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
@@ -600,6 +686,9 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
     int is_l8 = (actual->format == VG_LITE_L8 || actual->format == VG_LITE_A8);
     int is_565 = (actual->format == VG_LITE_RGB565 || actual->format == VG_LITE_BGR565);
     int is_4444 = (actual->format == VG_LITE_RGBA4444 || actual->format == VG_LITE_BGRA4444);
+    int is_5551 = (actual->format == VG_LITE_RGBA5551 || actual->format == VG_LITE_BGRA5551 ||
+                   actual->format == VG_LITE_ARGB1555 || actual->format == VG_LITE_ABGR1555);
+    int is_x8888 = (actual->format == VG_LITE_RGBX8888 || actual->format == VG_LITE_BGRX8888);
 
     for (int y = 0; y < eb->height; y++) {
         for (int x = 0; x < eb->width; x++) {
@@ -626,6 +715,17 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
                 eb_ = (eb_ >> 4) << 4; ea = (ea >> 4) << 4;
                 ar = (ar >> 4) << 4; ag = (ag >> 4) << 4;
                 ab = (ab >> 4) << 4; aa = (aa >> 4) << 4;
+            } else if (is_5551) {
+                /* 5-bit RGB + 1-bit alpha storage: quantize both sides to
+                 * storage precision. A1 rounding: a >= 128 (a/255 >= 0.5). */
+                int r5 = er >> 3, g5 = eg >> 3, b5 = eb_ >> 3;
+                er = (r5 << 3) | (r5 >> 2); eg = (g5 << 3) | (g5 >> 2); eb_ = (b5 << 3) | (b5 >> 2);
+                ea = (ea >= 128) ? 0xFF : 0x00;
+                aa = (aa >= 128) ? 0xFF : 0x00;
+            } else if (is_x8888) {
+                /* X channel has no defined alpha semantics: read_pixel forces
+                 * A=0xFF on the actual side, so force expected alpha to 0xFF. */
+                ea = 0xFF; aa = 0xFF;
             }
 
             if (abs(ar - er) > tolerance || abs(ag - eg) > tolerance ||
@@ -637,6 +737,8 @@ int vg_lite_expected_verify(vg_lite_expected_buffer_t *eb,
             }
         }
     }
+
+    vg_lite_buffer_read_ptr_release(actual);
 
     if (fail > max_print) printf("  ... %d more mismatches\n", fail - max_print);
     int pass_rate = (total > 0) ? ((total - fail) * 100) / total : 100;
@@ -650,6 +752,7 @@ void vg_lite_expected_copy(vg_lite_expected_buffer_t *eb, vg_lite_buffer_t *buf)
     for (int y = 0; y < eb->height; y++)
         for (int x = 0; x < eb->width; x++)
             eb->pixels[y * eb->width + x] = vg_lite_read_pixel(buf, x, y);
+    vg_lite_buffer_read_ptr_release(buf);
 }
 
 int vg_lite_verify_raw(vg_lite_buffer_t *actual, const char *golden_path, int tolerance)
@@ -1005,6 +1108,7 @@ void vg_lite_expected_draw_grad(vg_lite_expected_buffer_t *eb,
                 sr, sg, sb, sa, dst_px, blend);
         }
     }
+    vg_lite_buffer_read_ptr_release(grad_image);
 }
 
 void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
@@ -1152,6 +1256,7 @@ void vg_lite_expected_draw_radial_grad(vg_lite_expected_buffer_t *eb,
                 sr, sg, sb, sa, dst_px, blend);
         }
     }
+    vg_lite_buffer_read_ptr_release(grad_image);
 }
 
 void *gen_image(int type, vg_lite_buffer_format_t format, uint32_t width, uint32_t height)
@@ -1181,18 +1286,27 @@ int gen_buffer(int type, vg_lite_buffer_t *buf, vg_lite_buffer_format_t format, 
     data = gen_image(type, format, width, height);
     if (!data) { vg_lite_free(buf); return -1; }
 
-    /* Copy generated pixel data into the GPU buffer's memory.
-     * The stride may include padding, so copy row-by-row. */
+    /* Copy generated pixel data into the GPU buffer.
+     * Use vg_lite_buffer_write which handles both LINEAR and OPTIMAL.
+     * The stride may include padding, so build a stride-aware buffer. */
     {
-        uint8_t *src = (uint8_t *)data;
-        uint8_t *dst = (uint8_t *)buf->memory;
+        uint32_t bpp = vg_lite_format_bpp(format);
         uint32_t row_bytes = width * bpp / 8;
-        for (uint32_t y = 0; y < height; y++) {
-            memcpy(dst + y * buf->stride, src + y * row_bytes, row_bytes);
+        if (row_bytes == buf->stride) {
+            /* Tight pack, no stride padding */
+            vg_lite_buffer_write(buf, data);
+        } else {
+            /* Stride has padding, need to expand */
+            uint8_t *expanded = (uint8_t *)malloc(buf->stride * height);
+            if (!expanded) { free(data); vg_lite_free(buf); return -1; }
+            for (uint32_t y = 0; y < height; y++) {
+                memcpy(expanded + y * buf->stride, (uint8_t *)data + y * row_bytes, row_bytes);
+            }
+            vg_lite_buffer_write(buf, expanded);
+            free(expanded);
         }
     }
 
     free(data);
-    vg_lite_buffer_flush(buf);
     return 0;
 }

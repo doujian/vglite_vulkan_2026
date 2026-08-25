@@ -8,6 +8,23 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 if(MSVC)
     add_compile_options(/W3)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    # VGLITE_TARGET_OPTIMAL: 0=LINEAR targets (default), 1=OPTIMAL targets
+    option(VGLITE_TARGET_OPTIMAL "Use VK_IMAGE_TILING_OPTIMAL for target buffers" OFF)
+    if(VGLITE_TARGET_OPTIMAL)
+        add_compile_definitions(VGLITE_TARGET_OPTIMAL=1)
+    endif()
+
+    # VGLITE_BLIT_MSAA: 1=4x MSAA (default), 0=no MSAA
+    option(VGLITE_BLIT_MSAA "Enable 4x MSAA for blit render pass" ON)
+    if(NOT VGLITE_BLIT_MSAA)
+        add_compile_definitions(VGLITE_BLIT_MSAA=0)
+    endif()
+
+    # VGLITE_BLIT_OBB: 1=OBB quad (default), 0=fullscreen triangle
+    option(VGLITE_BLIT_OBB "Enable OBB-driven vertex shader for blit" ON)
+    if(NOT VGLITE_BLIT_OBB)
+        add_compile_definitions(VGLITE_BLIT_OBB=0)
+    endif()
 else()
     add_compile_options(-Wall -Wextra -Wno-unused-parameter -fPIC)
 endif()
