@@ -150,30 +150,55 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     if (!buffer) return VG_LITE_INVALID_ARGUMENT;
     if (!g_initialized) return VG_LITE_NO_CONTEXT;
     buffer->stride = vg_lite_format_stride(buffer->format, buffer->width);
-    buffer->tiled = VG_LITE_LINEAR;
+    if (buffer->tiled != VG_LITE_TILED)
+        buffer->tiled = VG_LITE_LINEAR;
+    else if (vg_lite_is_yuv_format(buffer->format) ||
+             buffer->format == VG_LITE_A4 ||
+             buffer->format == VG_LITE_INDEX_1 ||
+             buffer->format == VG_LITE_INDEX_2 ||
+             buffer->format == VG_LITE_INDEX_4)
+        return VG_LITE_NOT_SUPPORT; /* tiled allocation: single-plane >=8bpp only */
+    int tiled_alloc = (buffer->tiled == VG_LITE_TILED);
     VkFormat vkfmt = vg_lite_format_to_vk(buffer->format);
 
+    /* Some packed 16bpp formats (e.g. B5G6R5) lack STORAGE support on OPTIMAL
+     * tiling on many devices. Create the image as R16_UINT (same 16-bit
+     * format-compatibility class; MUTABLE_FORMAT allows sampling views in the
+     * original format) so compute-shader upload still works. */
+    VkFormat image_fmt = vkfmt;
+    if (tiled_alloc && vg_lite_format_bpp(buffer->format) == 16)
+        image_fmt = VK_FORMAT_R16_UINT;
+
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                              VK_IMAGE_USAGE_SAMPLED_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                              VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (tiled_alloc)
+        usage |= VK_IMAGE_USAGE_STORAGE_BIT; /* compute-shader upload via imageStore */
+
     VkImageFormatProperties img_fmt_props;
-    if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, vkfmt,
-            VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_LINEAR,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            0, &img_fmt_props) != VK_SUCCESS) {
+    if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, image_fmt,
+            VK_IMAGE_TYPE_2D,
+            tiled_alloc ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR,
+            usage,
+            tiled_alloc ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
+            &img_fmt_props) != VK_SUCCESS) {
+        printf("[alloc] image format props rejected: fmt=%d tiled=%d\n", (int)vkfmt, tiled_alloc);
         return VG_LITE_NOT_SUPPORT;
     }
 
     VkImageCreateInfo img_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     img_ci.imageType = VK_IMAGE_TYPE_2D;
-    img_ci.format = vkfmt;
+    img_ci.format = image_fmt;
     img_ci.extent.width = buffer->width;
     img_ci.extent.height = buffer->height;
     img_ci.extent.depth = 1;
     img_ci.mipLevels = 1;
     img_ci.arrayLayers = 1;
     img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
-    img_ci.tiling = VK_IMAGE_TILING_LINEAR;
-    img_ci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    img_ci.tiling = tiled_alloc ? VK_IMAGE_TILING_OPTIMAL : VK_IMAGE_TILING_LINEAR;
+    img_ci.usage = usage;
+    img_ci.flags = tiled_alloc ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
     img_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -186,8 +211,17 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     vkGetImageMemoryRequirements(g_vk_ctx.device, internal->image, &mem_req);
     VkMemoryAllocateInfo alloc_ci = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     alloc_ci.allocationSize = mem_req.size;
-    int32_t mem_type = find_memory_type(mem_req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    int32_t mem_type;
+    if (tiled_alloc) {
+        /* Tiled buffers are GPU-resident: prefer device-local, no host mapping. */
+        mem_type = find_memory_type(mem_req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (mem_type < 0)
+            mem_type = find_memory_type(mem_req.memoryTypeBits, 0);
+    } else {
+        mem_type = find_memory_type(mem_req.memoryTypeBits,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    }
     if (mem_type < 0) {
         vkDestroyImage(g_vk_ctx.device, internal->image, NULL);
         free(internal); return VG_LITE_OUT_OF_MEMORY;
@@ -272,14 +306,18 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     internal->height = buffer->height;
     internal->msaa_dirty = 0;
 
-    /* Get actual image layout in memory (offset and row pitch) */
-    VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
-    VkSubresourceLayout layout;
-    vkGetImageSubresourceLayout(g_vk_ctx.device, internal->image, &sub, &layout);
-    buffer->stride = layout.rowPitch;
-
+    /* Get actual image layout in memory (offset and row pitch; linear only) */
     void *mapped = NULL;
-    VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+    VkDeviceSize sub_offset = 0;
+    if (!tiled_alloc) {
+        VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+        VkSubresourceLayout layout;
+        vkGetImageSubresourceLayout(g_vk_ctx.device, internal->image, &sub, &layout);
+        buffer->stride = layout.rowPitch;
+        sub_offset = layout.offset;
+
+        VK_CHECK(vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0, &mapped));
+    }
 
     /* Layout transition on a separate command buffer (does not interrupt main cmd_buf render pass) */
     {
@@ -311,7 +349,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     }
 
     buffer->handle = internal;
-    buffer->memory = (uint8_t *)mapped + layout.offset;
+    buffer->memory = mapped ? (uint8_t *)mapped + sub_offset : NULL;
     buffer->address = 0;
     buffer->image_mode = VG_LITE_NORMAL_IMAGE_MODE;  /* Initialize to default */
 
@@ -1095,7 +1133,7 @@ vg_lite_error_t vg_lite_set_CLUT(vg_lite_uint32_t c, vg_lite_uint32_t *cl)
     return VG_LITE_SUCCESS;
 }
 vg_lite_error_t vg_lite_gaussian_filter(vg_lite_float_t w0, vg_lite_float_t w1, vg_lite_float_t w2) { (void)w0;(void)w1;(void)w2; return VG_LITE_NOT_SUPPORT; }
-vg_lite_error_t vg_lite_upload_buffer(vg_lite_buffer_t *b, vg_lite_uint8_t *d[3], vg_lite_uint32_t s[3]) { (void)b;(void)d;(void)s; return VG_LITE_NOT_SUPPORT; }
+/* vg_lite_upload_buffer implemented in vg_lite_upload.c (compute shader path). */
 vg_lite_error_t vg_lite_map(vg_lite_buffer_t *b, vg_lite_map_flag_t f, int32_t fd) { (void)b;(void)f;(void)fd; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_unmap(vg_lite_buffer_t *b) { (void)b; return VG_LITE_NOT_SUPPORT; }
 vg_lite_error_t vg_lite_flush_mapped_buffer(vg_lite_buffer_t *b) { (void)b; return VG_LITE_NOT_SUPPORT; }

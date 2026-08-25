@@ -30,6 +30,8 @@ shaders/pattern.vert     - Pattern fill vertex shader
 shaders/pattern.frag     - Pattern fill fragment shader
 shaders/radial.vert      - Radial gradient vertex shader (dedicated pipeline)
 shaders/radial.frag      - Radial gradient fragment shader (GPU g = gLin + sqrt(gRad) + [0,1] spread + 1D LUT)
+shaders/upload.comp      - Compute shader for vg_lite_upload_buffer (packed rows -> image memory strided scatter)
+shaders/upload_tiled.comp - Unified tiled upload compute shader (src SSBO byte reads -> formatless uimage2D imageStore, requires shaderStorageImageWriteWithoutFormat)
 util/util.c              - Test utility: expected buffer, gen_image, pack/read pixel, CPU gradient sim
 util/vg_lite_util.c      - PNG save/load, buffer allocation helper
 util/Common.h            - Shared test macros (CHECK_ERROR, IS_ERROR)
@@ -82,7 +84,7 @@ Requirements:
 
 ### Shader System
 
-Shaders are compiled from `shaders/*.vert` and `shaders/*.frag` to SPIR-V `.spv` files at build time (output: `build/spv/`). At runtime, `shader_loader.c` loads `.spv` files via `load_shader_module()` with multi-path search:
+Shaders are compiled from `shaders/*.vert`, `shaders/*.frag` and `shaders/*.comp` to SPIR-V `.spv` files at build time (output: `build/spv/`). At runtime, `shader_loader.c` loads `.spv` files via `load_shader_module()` with multi-path search:
 
 1. `SPV_SEARCH_PATH` environment variable
 2. `./spv/` (current working directory)
@@ -109,6 +111,8 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_blend_premultiply | Premultiply SRC_OVER blend | PASS |
 | test_patternFill | Pattern fill with image transform | PASS |
 | test_imgIndex | INDEX_8 CLUT blit | PASS |
+| test_uploadBuffer | vg_lite_upload_buffer via compute shader (BGRA8888/RGB565/L8, odd user stride) | PASS |
+| test_uploadTiled | vg_lite_upload_buffer into TILED (OPTIMAL) buffers: single formatless-imageStore compute path, verified identical to linear upload (BGRA8888/RGBA8888/RGB565/L8) | PASS |
 | test_sft_clear | 3 cases: rectangle clear, multi-clear | PASS |
 | test_tiger | Tiger vector rendering with golden comparison | PASS |
 | test_linearGrad | Linear gradient with CPU-vs-GPU verification | PASS (153600/153600 = 100%) |
@@ -133,7 +137,11 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_clock | CTS clock face (320x480, golden .raw compare) | PASS (100%) |
 | test_ui | CTS ui icons + translucent highlight (golden .raw compare) | PASS (100%) |
 
-**Summary: 36 PASS / 1 FAIL**
+**Summary: 38 PASS / 1 FAIL**
+
+Note: on some machines test_gfx3 and test_imgIndex also fail locally (pre-existing, unrelated to current HEAD).
+
+Tiled buffers: `vg_lite_allocate` with `buffer->tiled = VG_LITE_TILED` (single-plane >=8bpp formats) creates a `VK_IMAGE_TILING_OPTIMAL`, device-local, unmapped image (MUTABLE_FORMAT + STORAGE usage; packed 16bpp images are created as R16_UINT views-compat so STORAGE is available, sampling views keep the original format). `vg_lite_upload_buffer` fills such buffers via the single `shaders/upload_tiled.comp`: user rows are packed into a staging SSBO, the compute shader reads bytes/halfwords/words per `bytes_per_pixel` and writes them through a formatless `uimage2D` (R32/R16/R8_UINT storage view, requires `shaderStorageImageWriteWithoutFormat`) — the hardware resolves tile addressing. 32bpp, 16bpp (RGB565 family) and 8bpp formats are supported.
 
 ## Expected Buffer Tracker
 

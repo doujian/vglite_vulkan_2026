@@ -858,3 +858,17 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 - `util/util.h` (signature: +radial_grad parameter)
 - `util/util.c` (CPU reference: 9-coefficient g formula + [0,1] spread)
 - `tests/radialGrad/radialGrad.c` (caller: shader_mode + radial_grad arg)
+
+## Fix #<next>: linear upload dropped last rows when rowPitch > row_bytes
+
+**Symptom**: After restoring src/vg_lite_upload.c, 	est_uploadTiled failed on the L8 case: the LINEAR-uploaded buffer's bottom rows read back as zero (4590/6144 bytes differed vs the tiled upload). Also, first tiled upload crashed (access violation in Intel igvk64.dll inside kAllocateDescriptorSets).
+
+**Root Cause**:
+1. Crash: get_upload_tiled_pipeline() callers passed an uninitialized local VkPipeline pipeline;. Garbage non-NULL value hit the "already cached" early-return branch, leaving desc_layout NULL; kAllocateDescriptorSets then received a NULL set layout and the driver segfaulted.
+2. Data loss: the destination alias buffer was created with size = staging_size (packed rows), but the compute shader scatters to offset + y*rowPitch; when owPitch > row_bytes (L8 96-wide: rowPitch 128 vs 96), writes past the buffer bound were dropped by the driver, losing the bottom rows.
+
+**Solution** (all in src/vg_lite_upload.c):
+1. Pipeline getters now set outputs on the cached early-return path; call sites initialize locals from g_vk_ctx.upload*_pipeline* before calling.
+2. The alias buffer is created with size = image memory requirement size, with an explicit pre-check that offset + rowPitch*(height-1) + row_bytes fits within the image memory, falling back to the CPU path otherwise.
+
+Verified: 	est_uploadTiled 4/4 (BGRA8888/RGBA8888/RGB565/L8), 	est_uploadBuffer PASS, full suite 38 PASS with only the pre-existing failures (test_gfx3, test_imgIndex, test_sft_blit crash).

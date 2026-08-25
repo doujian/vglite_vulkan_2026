@@ -52,6 +52,22 @@ VkFormat vg_lite_format_to_vk(vg_lite_buffer_format_t format)
     }
 }
 
+int vg_lite_is_yuv_format(vg_lite_buffer_format_t format)
+{
+    switch (format) {
+    case VG_LITE_NV12: case VG_LITE_NV16: case VG_LITE_NV24:
+    case VG_LITE_ANV12: case VG_LITE_AYUY2:
+    case VG_LITE_YV12: case VG_LITE_YV16: case VG_LITE_YV24:
+    case VG_LITE_YUYV: case VG_LITE_YUY2:
+    case VG_LITE_NV12_TILED: case VG_LITE_ANV12_TILED:
+    case VG_LITE_AYUY2_TILED: case VG_LITE_YUY2_TILED:
+    case VG_LITE_NV24_TILED:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 void vg_lite_color_argb_to_vk(vg_lite_color_t color, VkFormat vkfmt, VkClearColorValue *out)
 {
     uint8_t r = (color)       & 0xFF;

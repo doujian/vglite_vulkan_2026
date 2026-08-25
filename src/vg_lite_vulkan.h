@@ -134,6 +134,18 @@ typedef struct {
     pipeline_cache_entry_t radial_pipeline_cache[MAX_PIPELINE_CACHE];
     int                 radial_pipeline_cache_count;
 
+    /* Compute pipeline for vg_lite_upload_buffer (strided row copy) */
+    VkPipelineLayout    upload_pipeline_layout;
+    VkDescriptorSetLayout upload_descriptor_layout;
+    VkPipeline          upload_pipeline;
+
+    /* Compute pipeline for vg_lite_upload_buffer tiled path
+     * (unified formatless-integer imageStore shader: 32/16/8bpp) */
+    VkPipelineLayout    upload_tiled_pipeline_layout;
+    VkDescriptorSetLayout upload_tiled_descriptor_layout;
+    VkPipeline          upload_tiled_pipeline;
+    int                 storage_image_wo_format; /* shaderStorageImageWriteWithoutFormat */
+
     VkDebugUtilsMessengerEXT debug_messenger;
     
     VkBuffer clut_buffer;

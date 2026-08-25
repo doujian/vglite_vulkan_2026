@@ -169,9 +169,19 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     vk12_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vk12_features.scalarBlockLayout = VK_TRUE;
 
+    /* Enable formatless storage-image writes for the unified tiled upload
+     * shader (uimage2D without a format qualifier). */
+    static VkPhysicalDeviceFeatures2 enable_feat2 = {0};
+    enable_feat2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    if (pd_features2.features.shaderStorageImageWriteWithoutFormat)
+        enable_feat2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
+    else
+        fprintf(stderr, "[vglite] WARNING: shaderStorageImageWriteWithoutFormat NOT supported — tiled upload disabled\n");
+    dev_ci.pNext = &enable_feat2;
+
     if (vk12_features_query.scalarBlockLayout) {
         /* Vulkan 1.2 core: enable via pNext chain */
-        dev_ci.pNext = &vk12_features;
+        enable_feat2.pNext = &vk12_features;
         fprintf(stderr, "[vglite] scalarBlockLayout: supported (Vulkan 1.2 core)\n");
     } else {
         /* Fallback: try VK_EXT_scalar_block_layout device extension */
@@ -205,6 +215,8 @@ vg_lite_error_t vg_lite_vulkan_init(void)
 
     res = vkCreateDevice(g_vk_ctx.physical_device, &dev_ci, NULL, &g_vk_ctx.device);
     if (res != VK_SUCCESS) { fprintf(stderr, "vkCreateDevice failed: %d\n", res); return VG_LITE_NO_CONTEXT; }
+    g_vk_ctx.storage_image_wo_format =
+        pd_features2.features.shaderStorageImageWriteWithoutFormat ? 1 : 0;
     /* Overwrite device-level pointers with direct driver dispatch (performance) */
     volkLoadDevice(g_vk_ctx.device);
     vkGetDeviceQueue(g_vk_ctx.device, g_vk_ctx.queue_family_index, 0, &g_vk_ctx.queue);
@@ -240,14 +252,16 @@ vg_lite_error_t vg_lite_vulkan_init(void)
     fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
     VK_CHECK(vkCreateFence(g_vk_ctx.device, &fence_ci, NULL, &g_vk_ctx.fence));
 
-    VkDescriptorPoolSize ds_pool_sizes[] = { 
+    VkDescriptorPoolSize ds_pool_sizes[] = {
         { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 }
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64 },
+        { VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 16 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 16 }
     };
     VkDescriptorPoolCreateInfo ds_pool_ci = {0};
     ds_pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     ds_pool_ci.maxSets = 64;
-    ds_pool_ci.poolSizeCount = 2;
+    ds_pool_ci.poolSizeCount = 4;
     ds_pool_ci.pPoolSizes = ds_pool_sizes;
     ds_pool_ci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     VK_CHECK(vkCreateDescriptorPool(g_vk_ctx.device, &ds_pool_ci, NULL, &g_vk_ctx.descriptor_pool));
@@ -1341,6 +1355,16 @@ void vg_lite_vulkan_destroy_pipelines(void)
         g_vk_ctx.blit_ssbo_memory = VK_NULL_HANDLE;
         g_vk_ctx.blit_ssbo_mapped = NULL;
     }
+
+    /* Upload compute pipeline cleanup */
+    if (g_vk_ctx.upload_pipeline) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.upload_pipeline, NULL); g_vk_ctx.upload_pipeline = VK_NULL_HANDLE; }
+    if (g_vk_ctx.upload_pipeline_layout) { vkDestroyPipelineLayout(g_vk_ctx.device, g_vk_ctx.upload_pipeline_layout, NULL); g_vk_ctx.upload_pipeline_layout = VK_NULL_HANDLE; }
+    if (g_vk_ctx.upload_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.upload_descriptor_layout, NULL); g_vk_ctx.upload_descriptor_layout = VK_NULL_HANDLE; }
+
+    /* Upload tiled compute pipeline cleanup */
+    if (g_vk_ctx.upload_tiled_pipeline) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.upload_tiled_pipeline, NULL); g_vk_ctx.upload_tiled_pipeline = VK_NULL_HANDLE; }
+    if (g_vk_ctx.upload_tiled_pipeline_layout) { vkDestroyPipelineLayout(g_vk_ctx.device, g_vk_ctx.upload_tiled_pipeline_layout, NULL); g_vk_ctx.upload_tiled_pipeline_layout = VK_NULL_HANDLE; }
+    if (g_vk_ctx.upload_tiled_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.upload_tiled_descriptor_layout, NULL); g_vk_ctx.upload_tiled_descriptor_layout = VK_NULL_HANDLE; }
 
     /* OBB blit pipeline cleanup */
     for (int i = 0; i < g_vk_ctx.blit_obb_pipeline_cache_count; i++) {

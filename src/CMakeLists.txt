@@ -8,6 +8,7 @@ add_library(vg_lite
     tessellator.c
     vg_lite_draw.c
     vg_lite_gradient.c
+    vg_lite_upload.c
     shader_loader.c
     ../third_party/volk/volk.c
 )

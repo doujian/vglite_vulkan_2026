@@ -1,0 +1,48 @@
+#version 450
+/* Compute shader for vg_lite_upload_buffer (LINEAR target path).
+ *
+ * Strided row copy from a tightly-packed staging buffer into the target
+ * image's memory, accessed through a buffer alias (STORAGE_BUFFER bound to
+ * the image's device memory). The per-row destination offset/stride come
+ * from vkGetImageSubresourceLayout and are passed via push constants, so
+ * the shader is independent of the image's linear layout.
+ *
+ * Bindings:
+ *   0 - readonly storage buffer: source rows packed tight, each row padded
+ *       to a multiple of 4 bytes (row_words = ceil(row_bytes / 4))
+ *   1 - storage buffer: destination = image memory alias
+ *
+ * Push constants (16 bytes):
+ *   row_words        - source row length in uints
+ *   dst_stride_bytes - destination row stride in bytes (multiple of 4)
+ *   dst_offset_words - destination subresource offset in uints
+ *   height           - number of rows
+ */
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer SrcBuf {
+    uint src[];
+};
+
+layout(std430, binding = 1) buffer DstBuf {
+    uint dst[];
+};
+
+layout(push_constant) uniform PushParams {
+    uint row_words;
+    uint dst_stride_bytes;
+    uint dst_offset_words;
+    uint height;
+} p;
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x; /* linear u32 index within a row */
+    uint y = gl_GlobalInvocationID.y; /* row */
+
+    if (y >= p.height || i >= p.row_words)
+        return;
+
+    dst[p.dst_offset_words + y * (p.dst_stride_bytes / 4u) + i] =
+        src[y * p.row_words + i];
+}

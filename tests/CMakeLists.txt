@@ -152,3 +152,9 @@ add_dependencies(test_multi_draw spirv_compilation)
 add_executable(test_stroke stroke/stroke.c)
 add_dependencies(test_stroke spirv_compilation)
 
+add_executable(test_uploadBuffer uploadBuffer/uploadBuffer.c)
+add_dependencies(test_uploadBuffer spirv_compilation)
+
+add_executable(test_uploadTiled uploadTiled/uploadTiled.c)
+add_dependencies(test_uploadTiled spirv_compilation)
+

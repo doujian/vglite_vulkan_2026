@@ -43,6 +43,7 @@ endif()
 if(GLSLANG_VALIDATOR AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
     file(GLOB VERT_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.vert")
     file(GLOB FRAG_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.frag")
+    file(GLOB COMP_SHADERS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp")
 
     set(SPV_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/spv")
     file(MAKE_DIRECTORY "${SPV_OUTPUT_DIR}")
@@ -75,6 +76,20 @@ if(GLSLANG_VALIDATOR AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
             COMMAND ${GLSLANG_VALIDATOR} -V ${FRAG} -o ${SPV_OUT}
             DEPENDS ${FRAG}
             COMMENT "Frag SPIR-V: ${NAME}"
+            VERBATIM
+        )
+        list(APPEND SPV_OUTPUTS ${SPV_OUT})
+    endforeach()
+
+    foreach(COMP ${COMP_SHADERS})
+        get_filename_component(NAME ${COMP} NAME_WE)
+        set(SPV_OUT "${SPV_OUTPUT_ABS}/${NAME}_comp.spv")
+        add_custom_command(
+            OUTPUT ${SPV_OUT}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${SPV_OUTPUT_ABS}"
+            COMMAND ${GLSLANG_VALIDATOR} -V ${COMP} -o ${SPV_OUT}
+            DEPENDS ${COMP}
+            COMMENT "Comp SPIR-V: ${NAME}"
             VERBATIM
         )
         list(APPEND SPV_OUTPUTS ${SPV_OUT})
