@@ -194,13 +194,31 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
         VkImageFormatProperties img_fmt_props;
         VkImageUsageFlags storage_usage = usage | VK_IMAGE_USAGE_STORAGE_BIT;
         VkImageCreateFlags storage_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-        if (getenv("VGLITE_DISABLE_STORAGE_UPLOAD") == NULL &&
+        int env_disable = getenv("VGLITE_DISABLE_STORAGE_UPLOAD") != NULL;
+        int env_force_alt = getenv("VGLITE_FORCE_ALT_STORAGE_FMT") != NULL;
+        if (!env_disable && !env_force_alt &&
             vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, image_fmt,
                 VK_IMAGE_TYPE_2D, tiling, storage_usage, storage_flags,
                 &img_fmt_props) == VK_SUCCESS) {
             has_storage = 1;
             usage = storage_usage;
-        } else {
+        } else if (!env_disable && vg_lite_format_bpp(buffer->format) == 32) {
+            /* Some chips reject B8G8R8A8 + OPTIMAL + STORAGE. R8G8B8A8 is in
+             * the same 32-bit format-compatibility class (identical bit
+             * patterns) and STORAGE-capable almost everywhere: create the
+             * image as R8G8B8A8 and keep sampling views in the original
+             * format via MUTABLE_FORMAT — same trick as 16bpp/R16_UINT.
+             * VGLITE_FORCE_ALT_STORAGE_FMT skips the primary probe to test
+             * this branch on devices where it is not required. */
+            if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device,
+                    VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_TYPE_2D, tiling,
+                    storage_usage, storage_flags, &img_fmt_props) == VK_SUCCESS) {
+                image_fmt = VK_FORMAT_R8G8B8A8_UNORM;
+                has_storage = 1;
+                usage = storage_usage;
+            }
+        }
+        if (!has_storage) {
             /* No compute upload on this device/format: drop STORAGE/MUTABLE and
              * the 16bpp R16_UINT trick (views no longer need format mutability). */
             image_fmt = vkfmt;

@@ -1263,3 +1263,15 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Verification**: test_uploadTiled 4/4 on both paths (default compute path and VGLITE_DISABLE_STORAGE_UPLOAD=1 copy path, tiled == linear byte-exact); test_uploadBuffer 3/3; full suite 41 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash ¡ª identical to baseline.
 
 **Files**: src/vg_lite.c, src/vg_lite_upload.c, src/vg_lite_vulkan.h
+
+## #33 BGRA8888 tiled buffers cannot use the compute-upload path on chips that reject B8G8R8A8 + OPTIMAL + STORAGE
+
+**Symptom**: On some GPUs, allocating a tiled BGRA8888 buffer makes `vkGetPhysicalDeviceImageFormatProperties` reject the (B8G8R8A8_UNORM, OPTIMAL, usage|STORAGE, MUTABLE_FORMAT) probe, so the buffer silently drops to the staging + CopyBufferToImage upload path (`[alloc] image format props rejected` era behavior) even though the chip could do compute uploads in another format.
+
+**Root Cause**: The tier-1 storage probe only tried the format's own VkFormat. Many drivers do not support STORAGE on B8G8R8A8_UNORM while supporting it on R8G8B8A8_UNORM (both in the same 32-bit format-compatibility class with identical bit patterns).
+
+**Solution**: src/vg_lite.c vg_lite_allocate: when the primary STORAGE probe fails and the format is 32bpp, re-probe with VK_FORMAT_R8G8B8A8_UNORM; on success the image is created as R8G8B8A8 with MUTABLE_FORMAT while all sampling views keep the original vkfmt (same trick as the existing 16bpp/R16_UINT override). Env var VGLITE_FORCE_ALT_STORAGE_FMT=1 skips the primary probe to exercise this branch on devices that do not require it.
+
+**Verification**: test_uploadTiled 4/4 in default mode AND with VGLITE_FORCE_ALT_STORAGE_FMT=1 (bgra8888 tiled upload byte-exact vs linear on an R8G8B8A8-created image); full suite 41 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash - identical to baseline.
+
+**Files**: src/vg_lite.c
