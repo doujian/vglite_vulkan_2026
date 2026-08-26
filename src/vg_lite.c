@@ -182,18 +182,41 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
                               VK_IMAGE_USAGE_SAMPLED_BIT |
                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                               VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (tiled_alloc)
-        usage |= VK_IMAGE_USAGE_STORAGE_BIT; /* compute-shader upload via imageStore */
 
-    VkImageFormatProperties img_fmt_props;
-    if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, image_fmt,
-            VK_IMAGE_TYPE_2D, tiling,
-            usage,
-            tiled_alloc ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0,
-            &img_fmt_props) != VK_SUCCESS) {
-        printf("[alloc] image format props rejected: fmt=%d tiled=%d\n", (int)vkfmt, tiled_alloc);
-        return VG_LITE_NOT_SUPPORT;
+    /* Decide the buffer shape ONCE here (never per-upload):
+     *  1) OPTIMAL + STORAGE + MUTABLE_FORMAT  -> compute-shader upload
+     *  2) OPTIMAL + base usage                -> upload via staging + CopyBufferToImage
+     *  3) LINEAR fallback                     -> direct memory-alias upload
+     * Devices without OPTIMAL+STORAGE support land on (2) and still get tiled
+     * rendering; only the upload mechanism changes. */
+    int has_storage = 0;
+    if (tiled_alloc) {
+        VkImageFormatProperties img_fmt_props;
+        VkImageUsageFlags storage_usage = usage | VK_IMAGE_USAGE_STORAGE_BIT;
+        VkImageCreateFlags storage_flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        if (getenv("VGLITE_DISABLE_STORAGE_UPLOAD") == NULL &&
+            vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, image_fmt,
+                VK_IMAGE_TYPE_2D, tiling, storage_usage, storage_flags,
+                &img_fmt_props) == VK_SUCCESS) {
+            has_storage = 1;
+            usage = storage_usage;
+        } else {
+            /* No compute upload on this device/format: drop STORAGE/MUTABLE and
+             * the 16bpp R16_UINT trick (views no longer need format mutability). */
+            image_fmt = vkfmt;
+            if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, image_fmt,
+                    VK_IMAGE_TYPE_2D, tiling, usage, 0,
+                    &img_fmt_props) != VK_SUCCESS) {
+                /* Base OPTIMAL combo rejected too: degrade to LINEAR. */
+                printf("[alloc] OPTIMAL tiling unsupported for fmt=%d, falling back to LINEAR\n",
+                       (int)vkfmt);
+                tiling = VK_IMAGE_TILING_LINEAR;
+                tiled_alloc = 0;
+                buffer->tiled = VG_LITE_LINEAR;
+            }
+        }
     }
+    int storage_flags_out = has_storage ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
 
     VkImageCreateInfo img_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     img_ci.imageType = VK_IMAGE_TYPE_2D;
@@ -206,7 +229,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
     img_ci.tiling = tiling;
     img_ci.usage = usage;
-    img_ci.flags = tiled_alloc ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
+    img_ci.flags = storage_flags_out;
     img_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
@@ -322,6 +345,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     internal->sampler = VK_NULL_HANDLE;
     internal->mapped_base = NULL;
     internal->is_optimal = (tiling == VK_IMAGE_TILING_OPTIMAL) ? 1 : 0;
+    internal->has_storage = has_storage;
     internal->width = buffer->width;
     internal->height = buffer->height;
     internal->msaa_dirty = 0;

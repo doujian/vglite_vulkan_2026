@@ -1,5 +1,11 @@
 # vg_lite_upload_buffer 计算着色器（Compute Shader）实现设计文档
 
+> **更新（v2）**：LINEAR 路径已重构 — 不再使用"图像内存别名 SSBO + upload.comp 散写"方案，
+> 改为与降级路径复用同一套 staging + `vkCmdCopyBufferToImage`（copy 引擎处理 rowPitch，
+> 无需 u32 对齐约束，代码路径减一）。`shaders/upload.comp` 及其管线已删除；compute shader
+> 仅保留 TILED 路径的 `upload_tiled.comp`。shadow 格式（A4 / OPENVG_sRGBA_8888）LINEAR
+> buffer 直接 memcpy 写入 `buffer->memory`（shadow 布局）。下文 LINEAR 章节保留为历史设计。
+
 > 对应代码：
 > - `src/vg_lite_upload.c` — CPU 侧实现（管线、staging、描述符、屏障、命令记录）
 > - `shaders/upload.comp` — LINEAR 路径 compute shader

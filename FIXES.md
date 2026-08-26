@@ -1251,3 +1251,15 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Verification**: Config 1: test_draw_image Draw_Image_003 180/180 (decisive cases: A8/ARGB8888 gradient-alpha sources onto RGBA8888 dst), test_blend_premultiply 120000/120000. Full suite on all 8 configuration build dirs: 39/39 counted, sole failure test_sft_blit=-1 (pre-existing crash, unchanged baseline).
 
 **Files**: src/vg_lite_vulkan.c, util/util.c
+
+## #32: vg_lite_allocate failed NOT_SUPPORT on devices without OPTIMAL+STORAGE+MUTABLE_FORMAT support
+
+**Symptom**: On chips whose driver rejects kGetPhysicalDeviceImageFormatProperties(fmt, OPTIMAL, usage|STORAGE, MUTABLE_FORMAT), any g_lite_allocate with uffer->tiled = VG_LITE_TILED returned VG_LITE_NOT_SUPPORT ("[alloc] image format props rejected"), making tiled buffers and test_uploadTiled unusable.
+
+**Root Cause**: The allocation path treated the compute-upload image creation combo (STORAGE usage + MUTABLE_FORMAT flag, plus the 16bpp R16_UINT trick) as a hard requirement instead of a best-effort capability, with no fallback.
+
+**Solution**: The buffer shape is now decided ONCE at allocate time via a probe chain (src/vg_lite.c): (1) OPTIMAL+STORAGE+MUTABLE_FORMAT -> compute-shader upload (internal->has_storage=1); (2) if rejected, OPTIMAL with base usage (no STORAGE/MUTABLE, image created in the real format) -> upload via the new upload_buffer_copy() staging + kCmdCopyBufferToImage path in src/vg_lite_upload.c; (3) if even the base OPTIMAL combo is rejected, degrade to a LINEAR allocation. g_lite_upload_buffer routes on internal->is_optimal/has_storage (the buffer's fixed shape), never re-probing per upload. Shadow-transform formats (A4, OPENVG_sRGBA_8888) on OPTIMAL buffers return NOT_SUPPORT as before. Env var VGLITE_DISABLE_STORAGE_UPLOAD=1 forces the degraded path for testing.
+
+**Verification**: test_uploadTiled 4/4 on both paths (default compute path and VGLITE_DISABLE_STORAGE_UPLOAD=1 copy path, tiled == linear byte-exact); test_uploadBuffer 3/3; full suite 41 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash ¡ª identical to baseline.
+
+**Files**: src/vg_lite.c, src/vg_lite_upload.c, src/vg_lite_vulkan.h

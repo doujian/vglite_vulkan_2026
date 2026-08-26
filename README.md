@@ -30,7 +30,6 @@ shaders/pattern.vert     - Pattern fill vertex shader
 shaders/pattern.frag     - Pattern fill fragment shader
 shaders/radial.vert      - Radial gradient vertex shader (dedicated pipeline)
 shaders/radial.frag      - Radial gradient fragment shader (GPU g = gLin + sqrt(gRad) + [0,1] spread + 1D LUT)
-shaders/upload.comp      - Compute shader for vg_lite_upload_buffer (packed rows -> image memory strided scatter)
 shaders/upload_tiled.comp - Unified tiled upload compute shader (src SSBO byte reads -> formatless uimage2D imageStore, requires shaderStorageImageWriteWithoutFormat)
 util/util.c              - Test utility: expected buffer, gen_image, pack/read pixel, CPU gradient sim
 util/vg_lite_util.c      - PNG save/load, buffer allocation helper
@@ -141,7 +140,7 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_blend_premultiply | Premultiply SRC_OVER blend | PASS |
 | test_patternFill | Pattern fill with image transform | PASS |
 | test_imgIndex | INDEX_8 CLUT blit | PASS |
-| test_uploadBuffer | vg_lite_upload_buffer via compute shader (BGRA8888/RGB565/L8, odd user stride) | PASS |
+| test_uploadBuffer | vg_lite_upload_buffer (BGRA8888/RGB565/L8, odd user stride; LINEAR buffers go through the staging + CopyBufferToImage path) | PASS |
 | test_uploadTiled | vg_lite_upload_buffer into TILED (OPTIMAL) buffers: single formatless-imageStore compute path, verified identical to linear upload (BGRA8888/RGBA8888/RGB565/L8) | PASS |
 | test_sft_clear | 3 cases: rectangle clear, multi-clear | PASS |
 | test_tiger | Tiger vector rendering with golden comparison | PASS |
@@ -174,7 +173,7 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 
 Note: on some machines test_gfx3 and test_imgIndex also fail locally (pre-existing, unrelated to current HEAD).
 
-Tiled buffers: `vg_lite_allocate` with `buffer->tiled = VG_LITE_TILED` (single-plane >=8bpp formats) creates a `VK_IMAGE_TILING_OPTIMAL`, device-local, unmapped image (MUTABLE_FORMAT + STORAGE usage; packed 16bpp images are created as R16_UINT views-compat so STORAGE is available, sampling views keep the original format). `vg_lite_upload_buffer` fills such buffers via the single `shaders/upload_tiled.comp`: user rows are packed into a staging SSBO, the compute shader reads bytes/halfwords/words per `bytes_per_pixel` and writes them through a formatless `uimage2D` (R32/R16/R8_UINT storage view, requires `shaderStorageImageWriteWithoutFormat`) — the hardware resolves tile addressing. 32bpp, 16bpp (RGB565 family) and 8bpp formats are supported.
+Tiled buffers: `vg_lite_allocate` with `buffer->tiled = VG_LITE_TILED` (single-plane >=8bpp formats) creates a `VK_IMAGE_TILING_OPTIMAL`, device-local, unmapped image. The creation combo is decided once at allocate time by a capability probe chain, so upload never re-probes: (1) if the device supports OPTIMAL+STORAGE+MUTABLE_FORMAT, the image carries STORAGE usage (packed 16bpp images are created as R16_UINT views-compat so STORAGE is available, sampling views keep the original format) and `vg_lite_upload_buffer` fills it via the single `shaders/upload_tiled.comp`: user rows are packed into a staging SSBO, the compute shader reads bytes/halfwords/words per `bytes_per_pixel` and writes them through a formatless `uimage2D` (R32/R16/R8_UINT storage view, requires `shaderStorageImageWriteWithoutFormat`) — the hardware resolves tile addressing; 32bpp, 16bpp (RGB565 family) and 8bpp formats are supported. (2) On devices without OPTIMAL+STORAGE support the image is created in the real format with base usage and upload goes through a staging + `vkCmdCopyBufferToImage` path. (3) If even base OPTIMAL is rejected, allocation degrades to LINEAR. Set `VGLITE_DISABLE_STORAGE_UPLOAD=1` to force path (2) for testing.
 
 ## Expected Buffer Tracker
 

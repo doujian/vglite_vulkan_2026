@@ -49,6 +49,8 @@ typedef struct {
     VkDeviceMemory resolve_memory;
     int msaa_needs_seed;  /* Set when no-MSAA RP wrote to target; draw must seed MSAA before use */
     int is_optimal;       /* 1 = OPTIMAL tiling + DEVICE_LOCAL, CPU access via staging */
+    int has_storage;      /* 1 = image created with STORAGE usage (compute-shader upload);
+                           * 0 + is_optimal = upload via staging + CopyBufferToImage */
     void *cpu_cache;      /* cached CPU copy for OPTIMAL buffers (read-pixel support) */
     uint32_t width;
     uint32_t height;
@@ -167,11 +169,6 @@ typedef struct {
     VkDeviceMemory      radial_cover_ibo_mem;
     pipeline_cache_entry_t radial_pipeline_cache[MAX_PIPELINE_CACHE];
     int                 radial_pipeline_cache_count;
-
-    /* Compute pipeline for vg_lite_upload_buffer (strided row copy) */
-    VkPipelineLayout    upload_pipeline_layout;
-    VkDescriptorSetLayout upload_descriptor_layout;
-    VkPipeline          upload_pipeline;
 
     /* Compute pipeline for vg_lite_upload_buffer tiled path
      * (unified formatless-integer imageStore shader: 32/16/8bpp) */

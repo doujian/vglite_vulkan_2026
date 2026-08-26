@@ -1514,11 +1514,6 @@ void vg_lite_vulkan_destroy_pipelines(void)
         g_vk_ctx.blit_ssbo_mapped = NULL;
     }
 
-    /* Upload compute pipeline cleanup */
-    if (g_vk_ctx.upload_pipeline) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.upload_pipeline, NULL); g_vk_ctx.upload_pipeline = VK_NULL_HANDLE; }
-    if (g_vk_ctx.upload_pipeline_layout) { vkDestroyPipelineLayout(g_vk_ctx.device, g_vk_ctx.upload_pipeline_layout, NULL); g_vk_ctx.upload_pipeline_layout = VK_NULL_HANDLE; }
-    if (g_vk_ctx.upload_descriptor_layout) { vkDestroyDescriptorSetLayout(g_vk_ctx.device, g_vk_ctx.upload_descriptor_layout, NULL); g_vk_ctx.upload_descriptor_layout = VK_NULL_HANDLE; }
-
     /* Upload tiled compute pipeline cleanup */
     if (g_vk_ctx.upload_tiled_pipeline) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.upload_tiled_pipeline, NULL); g_vk_ctx.upload_tiled_pipeline = VK_NULL_HANDLE; }
     if (g_vk_ctx.upload_tiled_pipeline_layout) { vkDestroyPipelineLayout(g_vk_ctx.device, g_vk_ctx.upload_tiled_pipeline_layout, NULL); g_vk_ctx.upload_tiled_pipeline_layout = VK_NULL_HANDLE; }
