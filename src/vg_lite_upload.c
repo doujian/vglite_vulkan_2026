@@ -3,26 +3,24 @@
  * Uploads user pixel data (data[3]/stride[3], plane 0 only) into an
  * allocated vg_lite_buffer. Two paths:
  *
- * LINEAR buffers (VG_LITE_LINEAR):
- *   GPU compute path (shaders/upload.comp): user rows are packed into a
- *   HOST_VISIBLE staging SSBO, and the destination image's device memory
- *   is aliased as a STORAGE_BUFFER (vkBindBufferMemory on the image's
- *   VkDeviceMemory). A 64-thread/row compute shader scatters u32s using
- *   the subresource offset/rowPitch passed as push constants. Falls back
- *   to a per-row CPU memcpy when the layout is not 4-byte aligned or the
- *   pipeline/staging allocation fails.
- *
- * TILED buffers (VG_LITE_TILED, OPTIMAL tiling):
+ * TILED buffers (VG_LITE_TILED, OPTIMAL + STORAGE usage):
  *   GPU compute path (shaders/upload_tiled.comp): single unified shader
  *   writing RAW pixel bit patterns through a FORMATLESS uimage2D storage
  *   view (R32/R16/R8_UINT selected by bytes-per-pixel; requires
  *   shaderStorageImageWriteWithoutFormat). Packed 16bpp images are created
  *   as R16_UINT by vg_lite_allocate (see vg_lite.c), so the storage view
  *   format always matches the image's own format. The hardware resolves
- *   tile addressing.
+ *   tile addressing. Any runtime NOT_SUPPORT degrades to the generic path.
  *
- * Unsupported: multi-plane YUV formats (data[1]/data[2]) on both paths;
- * sub-byte and other bpp on the tiled path.
+ * Everything else (LINEAR images, OPTIMAL without STORAGE, shadow
+ *   formats): upload_buffer_staging() dispatches by buffer shape —
+ *   mapped LINEAR non-shadow images get a direct per-row memcpy into
+ *   buffer->memory; all other cases repack the user rows into the
+ *   buffer->stride layout and delegate to vg_lite_buffer_write() (A4 /
+ *   OPENVG_sRGBA_8888 shadow sync, cpu_cache invalidation, and staging +
+ *   vkCmdCopyBufferToImage for OPTIMAL images via upload_staging).
+ *
+ * Unsupported: multi-plane YUV formats (data[1]/data[2]) on all paths.
  */
 
 #include "vg_lite.h"
@@ -108,13 +106,11 @@ typedef struct {
     VkBuffer buffer;
     VkDeviceMemory memory;
     void *mapped;
-    VkDeviceSize size;
 } staging_t;
 
 static int staging_create(VkDeviceSize size, staging_t *st)
 {
     memset(st, 0, sizeof(*st));
-    st->size = size;
     VkBufferCreateInfo b_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     b_ci.size = size;
     b_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -169,20 +165,50 @@ static VkDescriptorSet alloc_desc_set(VkDescriptorSetLayout layout)
 }
 
 /* ------------------------------------------------------------------ */
-/* CPU write into buffer->memory (LINEAR images / shadow buffers)      */
+/* Generic non-compute path: repack user rows and delegate to          */
+/* vg_lite_buffer_write (shadow sync / cpu_cache invalidate /          */
+/* upload_staging CopyBufferToImage), or direct memcpy for mapped      */
+/* LINEAR images.                                                      */
 /* ------------------------------------------------------------------ */
 
-static vg_lite_error_t upload_buffer_cpu(vg_lite_buffer_t *buffer,
-                                         const uint8_t *data,
-                                         uint32_t data_stride,
-                                         uint32_t row_bytes)
+static vg_lite_error_t upload_buffer_staging(vg_lite_buffer_t *buffer,
+                                             const uint8_t *data,
+                                             uint32_t data_stride,
+                                             uint32_t row_bytes)
 {
-    if (!buffer->memory)
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint32_t h = (uint32_t)buffer->height;
+
+    /* Mapped LINEAR image (non-shadow): rows land directly in
+     * buffer->memory; no staging buffer, no command submission. */
+    if (!internal->is_optimal &&
+        buffer->format != VG_LITE_A4 &&
+        buffer->format != OPENVG_sRGBA_8888) {
+        if (!buffer->memory)
+            return VG_LITE_OUT_OF_MEMORY;
+        for (uint32_t y = 0; y < h; y++)
+            memcpy((uint8_t *)buffer->memory + (size_t)y * buffer->stride,
+                   data + (size_t)y * data_stride, row_bytes);
+        vg_lite_buffer_flush(buffer);
+        return VG_LITE_SUCCESS;
+    }
+
+    /* Everything else (OPTIMAL images, shadow-transform formats): repack
+     * the user rows into the buffer->stride layout that
+     * vg_lite_buffer_write expects, then let it do the heavy lifting
+     * (A4/sRGBA shadow sync, cpu_cache invalidation, staging +
+     * CopyBufferToImage for OPTIMAL, direct write for LINEAR shadows). */
+    size_t total = (size_t)buffer->stride * h;
+    uint8_t *packed = (uint8_t *)malloc(total);
+    if (!packed)
         return VG_LITE_OUT_OF_MEMORY;
-    for (int32_t y = 0; y < buffer->height; y++)
-        memcpy((uint8_t *)buffer->memory + (size_t)y * buffer->stride,
+    memset(packed, 0, total);
+    for (uint32_t y = 0; y < h; y++)
+        memcpy(packed + (size_t)y * buffer->stride,
                data + (size_t)y * data_stride, row_bytes);
-    return VG_LITE_SUCCESS;
+    vg_lite_error_t err = vg_lite_buffer_write(buffer, packed);
+    free(packed);
+    return err;
 }
 
 /* ------------------------------------------------------------------ */
@@ -226,7 +252,8 @@ static vg_lite_error_t upload_buffer_tiled(vg_lite_buffer_t *buffer,
     staging_t staging;
     if (!staging_create(staging_size, &staging))
         return VG_LITE_OUT_OF_MEMORY;
-    memset(staging.mapped, 0, (size_t)staging_size);
+    /* Row tail padding (row_bytes..row_padded) is never read by the
+     * shader (pixels only address x < width), no need to zero it. */
     for (int32_t y = 0; y < buffer->height; y++)
         memcpy((uint8_t *)staging.mapped + (size_t)y * row_padded,
                data + (size_t)y * data_stride, row_bytes);
@@ -344,99 +371,6 @@ tiled_fail:
 }
 
 /* ------------------------------------------------------------------ */
-/* OPTIMAL-without-STORAGE path: staging TRANSFER_SRC ->              */
-/* vkCmdCopyBufferToImage (driver handles tiling). Generic fallback   */
-/* for devices that reject OPTIMAL+STORAGE+MUTABLE_FORMAT.            */
-/* ------------------------------------------------------------------ */
-
-static vg_lite_error_t upload_buffer_copy(vg_lite_buffer_t *buffer,
-                                          const uint8_t *data,
-                                          uint32_t data_stride,
-                                          uint32_t row_bytes)
-{
-    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
-    uint32_t h = (uint32_t)buffer->height;
-
-    /* Staging holds tightly packed rows; bufferRowLength = 0 in the copy
-     * region tells Vulkan exactly that. */
-    VkDeviceSize staging_size = (VkDeviceSize)row_bytes * h;
-    staging_t staging;
-    memset(&staging, 0, sizeof(staging));
-    VkBufferCreateInfo b_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-    b_ci.size = staging_size;
-    b_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    b_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (vkCreateBuffer(g_vk_ctx.device, &b_ci, NULL, &staging.buffer) != VK_SUCCESS)
-        return VG_LITE_OUT_OF_MEMORY;
-    VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(g_vk_ctx.device, staging.buffer, &req);
-    VkMemoryAllocateInfo a_ci = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    a_ci.allocationSize = req.size;
-    int32_t mem_type = find_memory_type(req.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (mem_type < 0) {
-        vkDestroyBuffer(g_vk_ctx.device, staging.buffer, NULL);
-        return VG_LITE_OUT_OF_MEMORY;
-    }
-    a_ci.memoryTypeIndex = (uint32_t)mem_type;
-    if (vkAllocateMemory(g_vk_ctx.device, &a_ci, NULL, &staging.memory) != VK_SUCCESS ||
-        vkMapMemory(g_vk_ctx.device, staging.memory, 0, VK_WHOLE_SIZE, 0, &staging.mapped) != VK_SUCCESS) {
-        if (staging.memory) vkFreeMemory(g_vk_ctx.device, staging.memory, NULL);
-        vkDestroyBuffer(g_vk_ctx.device, staging.buffer, NULL);
-        return VG_LITE_OUT_OF_MEMORY;
-    }
-    vkBindBufferMemory(g_vk_ctx.device, staging.buffer, staging.memory, 0);
-    for (uint32_t y = 0; y < h; y++)
-        memcpy((uint8_t *)staging.mapped + (size_t)y * row_bytes,
-               data + (size_t)y * data_stride, row_bytes);
-
-    vg_lite_vulkan_flush_render_pass();
-    if (vg_lite_vulkan_submit_command(1) != VG_LITE_SUCCESS) {
-        staging_destroy(&staging);
-        return VG_LITE_OUT_OF_MEMORY;
-    }
-    vg_lite_vulkan_begin_command();
-
-    VkImageMemoryBarrier dst_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    dst_bar.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    dst_bar.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    dst_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    dst_bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    dst_bar.image = internal->image;
-    dst_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    dst_bar.subresourceRange.levelCount = 1;
-    dst_bar.subresourceRange.layerCount = 1;
-    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0, 0, NULL, 0, NULL, 1, &dst_bar);
-
-    VkBufferImageCopy region = {0};
-    region.bufferOffset = 0;
-    region.bufferRowLength = 0;   /* tightly packed rows */
-    region.bufferImageHeight = 0;
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.layerCount = 1;
-    region.imageExtent.width = (uint32_t)buffer->width;
-    region.imageExtent.height = h;
-    region.imageExtent.depth = 1;
-    vkCmdCopyBufferToImage(g_vk_ctx.cmd_buf, staging.buffer, internal->image,
-        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-    VkImageMemoryBarrier gen_bar = dst_bar;
-    gen_bar.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    gen_bar.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
-    gen_bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    gen_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-        0, 0, NULL, 0, NULL, 1, &gen_bar);
-
-    vg_lite_vulkan_submit_command(1);
-    staging_destroy(&staging);
-    return VG_LITE_SUCCESS;
-}
-
-/* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -464,34 +398,20 @@ vg_lite_error_t vg_lite_upload_buffer(vg_lite_buffer_t *buffer,
         return VG_LITE_INVALID_ARGUMENT;
 
     /* Route by the buffer's ACTUAL shape (decided once at allocate time):
-     *  - is_optimal + has_storage -> compute-shader imageStore
-     *  - is_optimal, no storage   -> staging + CopyBufferToImage
-     *  - linear                   -> staging + CopyBufferToImage (or CPU memcpy)
-     * If the compute path is unavailable at upload time (feature/format probe
-     * or pipeline failure inside upload_buffer_tiled), degrade to the copy
-     * path instead of failing. Shadow-transform formats (A4,
-     * OPENVG_sRGBA_8888) have their own GPU layout and dedicated paths. */
-    if (internal->is_optimal) {
-        if (buffer->format == VG_LITE_A4 || buffer->format == OPENVG_sRGBA_8888)
-            return VG_LITE_NOT_SUPPORT;
-        if (internal->has_storage) {
-            vg_lite_error_t err = VG_LITE_NOT_SUPPORT;
-            if (bpp_bits == 32) err = upload_buffer_tiled(buffer, pdata, data_stride, 4);
-            else if (bpp_bits == 16) err = upload_buffer_tiled(buffer, pdata, data_stride, 2);
-            else if (bpp_bits == 8)  err = upload_buffer_tiled(buffer, pdata, data_stride, 1);
-            if (err == VG_LITE_SUCCESS || err == VG_LITE_OUT_OF_MEMORY)
-                return err;
-            /* compute upload unsupported here -> degrade to copy engine */
-        }
-        return upload_buffer_copy(buffer, pdata, data_stride, row_bytes);
+     *  - is_optimal + has_storage -> compute-shader imageStore, degrading
+     *    to the generic path on any runtime NOT_SUPPORT
+     *  - everything else -> upload_buffer_staging (direct memcpy for
+     *    mapped LINEAR images; repack + vg_lite_buffer_write otherwise,
+     *    which covers shadow formats, cpu_cache invalidation and
+     *    staging + CopyBufferToImage for OPTIMAL images). */
+    if (internal->is_optimal && internal->has_storage) {
+        vg_lite_error_t err = VG_LITE_NOT_SUPPORT;
+        if (bpp_bits == 32) err = upload_buffer_tiled(buffer, pdata, data_stride, 4);
+        else if (bpp_bits == 16) err = upload_buffer_tiled(buffer, pdata, data_stride, 2);
+        else if (bpp_bits == 8)  err = upload_buffer_tiled(buffer, pdata, data_stride, 1);
+        if (err == VG_LITE_SUCCESS || err == VG_LITE_OUT_OF_MEMORY)
+            return err;
+        /* compute upload unsupported here -> degrade to the copy engine */
     }
-    /* Shadow formats keep their VGLite CPU layout in buffer->memory
-     * (shadow buffer, stride-pitched); write there directly. */
-    if (buffer->format == VG_LITE_A4 || buffer->format == OPENVG_sRGBA_8888)
-        return upload_buffer_cpu(buffer, pdata, data_stride, row_bytes);
-
-    /* LINEAR (non-shadow): same staging + CopyBufferToImage path — the copy
-     * engine handles rowPitch, no memory-alias compute needed. */
-    (void)bpp_bits;
-    return upload_buffer_copy(buffer, pdata, data_stride, row_bytes);
+    return upload_buffer_staging(buffer, pdata, data_stride, row_bytes);
 }
