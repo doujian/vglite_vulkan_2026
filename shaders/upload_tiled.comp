@@ -1,39 +1,36 @@
 #version 450
 /* Unified tiled upload compute shader.
  *
- * Copies packed pixel data from a read-only SSBO into a TILED (OPTIMAL)
- * destination image through a FORMATLESS uimage2D storage view
- * (requires shaderStorageImageWriteWithoutFormat).
+ * Copies packed pixel data into a TILED (OPTIMAL) destination image:
+ *   - Source: texel buffer (usamplerBuffer) whose VkBufferView format is
+ *     R32_UINT / R16_UINT / R8_UINT by bytes-per-pixel. texelFetch uses
+ *     the dedicated sampling fetch path and returns each pixel's raw
+ *     bytes zero-extended in .x -- no ALU byte twiddling in the shader.
+ *   - Destination: FORMATLESS uimage2D storage view (requires
+ *     shaderStorageImageWriteWithoutFormat), raw bit pattern written
+ *     via imageStore; format interpretation is left to the sampling
+ *     views, which use the original vg_lite format (image created as
+ *     R16_UINT for packed 16bpp so STORAGE support is available).
  *
- * The storage view format is chosen by bytes-per-pixel:
- *   4 -> R32_UINT, 2 -> R16_UINT, 1 -> R8_UINT
- * The shader writes the RAW bit pattern of each pixel (uvec4(v,0,0,0));
- * format interpretation is left to the sampling views, which use the
- * original vg_lite format (image created as R16_UINT for packed 16bpp
- * so STORAGE support is available).
+ * Source texels are laid out tightly: texel index = y * width + x,
+ * one texel per pixel (bpp bytes each), no row padding.
  *
  * Bindings:
- *   0 - readonly storage buffer: packed source rows, each row padded to a
- *       multiple of 4 bytes (row_padded = (width*bpp + 3) & ~3)
+ *   0 - uniform texel buffer (usamplerBuffer), *_UINT format by bpp
  *   1 - writeonly uimage2D (no format qualifier), GENERAL layout
  *
- * Push constants (16 bytes):
+ * Push constants (8 bytes):
  *   width, height       - image dimensions in pixels
- *   bytes_per_pixel     - 1, 2 or 4
  */
 layout(local_size_x = 8, local_size_y = 8) in;
 
-layout(std430, binding = 0) readonly buffer SrcBuf {
-    uint src[];
-};
+layout(binding = 0) uniform usamplerBuffer srcTexels;
 
 layout(binding = 1) writeonly uniform uimage2D dstImage;
 
 layout(push_constant) uniform PushParams {
     uint width;
     uint height;
-    uint bytes_per_pixel;
-    uint pad;
 } p;
 
 void main()
@@ -43,23 +40,7 @@ void main()
     if (x >= p.width || y >= p.height)
         return;
 
-    uint row_padded = (p.width * p.bytes_per_pixel + 3u) & ~3u;
-    uint byte_off = y * row_padded + x * p.bytes_per_pixel;
-    uint v;
-
-    if (p.bytes_per_pixel == 4u) {
-        /* one uint per pixel */
-        v = src[byte_off >> 2u];
-    } else if (p.bytes_per_pixel == 2u) {
-        /* halfword per pixel: pick by parity within the word */
-        uint word = src[byte_off >> 2u];
-        v = ((byte_off >> 1u) & 1u) != 0u ? (word >> 16) : (word & 0xffffu);
-    } else {
-        /* byte per pixel: pick byte within the word */
-        uint word = src[byte_off >> 2u];
-        uint shift = (byte_off & 3u) * 8u;
-        v = (word >> shift) & 0xffu;
-    }
-
-    imageStore(dstImage, ivec2(int(x), int(y)), uvec4(v, 0u, 0u, 0u));
+    /* Raw pixel bytes fetched by the texel fetch unit, zero-extended. */
+    uvec4 v = texelFetch(srcTexels, int(y * p.width + x));
+    imageStore(dstImage, ivec2(int(x), int(y)), v);
 }

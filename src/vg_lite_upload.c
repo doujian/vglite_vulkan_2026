@@ -4,13 +4,15 @@
  * allocated vg_lite_buffer. Two paths:
  *
  * TILED buffers (VG_LITE_TILED, OPTIMAL + STORAGE usage):
- *   GPU compute path (shaders/upload_tiled.comp): single unified shader
- *   writing RAW pixel bit patterns through a FORMATLESS uimage2D storage
- *   view (R32/R16/R8_UINT selected by bytes-per-pixel; requires
- *   shaderStorageImageWriteWithoutFormat). Packed 16bpp images are created
- *   as R16_UINT by vg_lite_allocate (see vg_lite.c), so the storage view
- *   format always matches the image's own format. The hardware resolves
- *   tile addressing. Any runtime NOT_SUPPORT degrades to the generic path.
+ *   GPU compute path (shaders/upload_tiled.comp): texelFetch reads each
+ *   pixel's raw bytes from a *_UINT texel-buffer view (R32/R16/R8_UINT by
+ *   bytes-per-pixel; the fetch unit does the byte extraction) and
+ *   imageStore writes them through a FORMATLESS uimage2D storage view
+ *   (requires shaderStorageImageWriteWithoutFormat). Packed 16bpp images
+ *   are created as R16_UINT by vg_lite_allocate (see vg_lite.c), so the
+ *   storage view format always matches the image's own format. The
+ *   hardware resolves tile addressing. Any runtime NOT_SUPPORT degrades
+ *   to the generic path.
  *
  * Everything else (LINEAR images, OPTIMAL without STORAGE, shadow
  *   formats): upload_buffer_staging() dispatches by buffer shape —
@@ -46,7 +48,7 @@ static VkResult get_upload_tiled_pipeline(VkPipeline *pipeline,
 
     VkDescriptorSetLayoutBinding bindings[2] = {{0}, {0}};
     bindings[0].binding = 0;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     bindings[1].binding = 1;
@@ -65,7 +67,7 @@ static VkResult get_upload_tiled_pipeline(VkPipeline *pipeline,
     VkPushConstantRange push = {0};
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.offset = 0;
-    push.size = 16; /* width, height, bytes_per_pixel, pad */
+    push.size = 8; /* width, height */
 
     VkPipelineLayoutCreateInfo pl_ci = {
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -108,12 +110,12 @@ typedef struct {
     void *mapped;
 } staging_t;
 
-static int staging_create(VkDeviceSize size, staging_t *st)
+static int staging_create(VkDeviceSize size, VkBufferUsageFlags usage, staging_t *st)
 {
     memset(st, 0, sizeof(*st));
     VkBufferCreateInfo b_ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     b_ci.size = size;
-    b_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    b_ci.usage = usage;
     b_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (vkCreateBuffer(g_vk_ctx.device, &b_ci, NULL, &st->buffer) != VK_SUCCESS)
         return 0;
@@ -245,18 +247,38 @@ static vg_lite_error_t upload_buffer_tiled(vg_lite_buffer_t *buffer,
     VkDescriptorSetLayout desc_layout = g_vk_ctx.upload_tiled_descriptor_layout;
     if (get_upload_tiled_pipeline(&pipeline, &pipe_layout, &desc_layout) != VK_SUCCESS)
         return VG_LITE_NOT_SUPPORT;
+
+    /* texelFetch reads one texel per pixel through a *_UINT buffer view:
+     * the fetch unit extracts the pixel bytes, no shader ALU needed. */
     uint32_t row_bytes = (uint32_t)buffer->width * bytes_pp;
-    uint32_t row_padded = (row_bytes + 3) & ~3u;
-    VkDeviceSize staging_size = (VkDeviceSize)row_padded * buffer->height;
+    VkDeviceSize staging_size = (VkDeviceSize)row_bytes * buffer->height;
+
+    VkPhysicalDeviceProperties pdp;
+    vkGetPhysicalDeviceProperties(g_vk_ctx.physical_device, &pdp);
+    if (staging_size / bytes_pp > pdp.limits.maxTexelBufferElements)
+        return VG_LITE_NOT_SUPPORT;
 
     staging_t staging;
-    if (!staging_create(staging_size, &staging))
+    if (!staging_create(staging_size, VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT,
+                        &staging))
         return VG_LITE_OUT_OF_MEMORY;
-    /* Row tail padding (row_bytes..row_padded) is never read by the
-     * shader (pixels only address x < width), no need to zero it. */
+    /* Rows are tightly packed: texel index = y*width + x, one texel per
+     * pixel, no row padding needed. */
     for (int32_t y = 0; y < buffer->height; y++)
-        memcpy((uint8_t *)staging.mapped + (size_t)y * row_padded,
+        memcpy((uint8_t *)staging.mapped + (size_t)y * row_bytes,
                data + (size_t)y * data_stride, row_bytes);
+
+    /* Texel-buffer view on the staging data (format picks the texel size). */
+    VkBufferViewCreateInfo bv_ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO};
+    bv_ci.buffer = staging.buffer;
+    bv_ci.format = view_fmt;
+    bv_ci.offset = 0;
+    bv_ci.range = staging_size;
+    VkBufferView src_view = VK_NULL_HANDLE;
+    if (vkCreateBufferView(g_vk_ctx.device, &bv_ci, NULL, &src_view) != VK_SUCCESS) {
+        staging_destroy(&staging);
+        return VG_LITE_OUT_OF_MEMORY;
+    }
 
     /* Transient storage view on the destination image (GENERAL layout). */
     VkImageViewCreateInfo v_ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -279,10 +301,6 @@ static vg_lite_error_t upload_buffer_tiled(vg_lite_buffer_t *buffer,
         return VG_LITE_OUT_OF_MEMORY;
     }
 
-    VkDescriptorBufferInfo bi = {0};
-    bi.buffer = staging.buffer;
-    bi.offset = 0;
-    bi.range = VK_WHOLE_SIZE;
     VkDescriptorImageInfo ii = {0};
     ii.sampler = VK_NULL_HANDLE;
     ii.imageView = dst_view;
@@ -292,8 +310,8 @@ static vg_lite_error_t upload_buffer_tiled(vg_lite_buffer_t *buffer,
     writes[0].dstSet = ds;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[0].pBufferInfo = &bi;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
+    writes[0].pTexelBufferView = &src_view;
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[1].dstSet = ds;
     writes[1].dstBinding = 1;
@@ -332,17 +350,15 @@ static vg_lite_error_t upload_buffer_tiled(vg_lite_buffer_t *buffer,
             VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             0, 0, NULL, 1, &buf_pre, 1, &img_pre);
 
-        struct { uint32_t width, height, bpp, pad; } push;
+        struct { uint32_t width, height; } push;
         push.width = (uint32_t)buffer->width;
         push.height = (uint32_t)buffer->height;
-        push.bpp = bytes_pp;
-        push.pad = 0;
 
         vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 pipe_layout, 0, 1, &ds, 0, NULL);
         vkCmdPushConstants(g_vk_ctx.cmd_buf, pipe_layout,
-                           VK_SHADER_STAGE_COMPUTE_BIT, 0, 16, &push);
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, &push);
         vkCmdDispatch(g_vk_ctx.cmd_buf,
                       ((uint32_t)buffer->width + 7) / 8,
                       ((uint32_t)buffer->height + 7) / 8, 1);
@@ -358,6 +374,7 @@ static vg_lite_error_t upload_buffer_tiled(vg_lite_buffer_t *buffer,
 
     vg_lite_vulkan_submit_command(1);
     vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &ds);
+    vkDestroyBufferView(g_vk_ctx.device, src_view, NULL);
     vkDestroyImageView(g_vk_ctx.device, dst_view, NULL);
     staging_destroy(&staging);
     return VG_LITE_SUCCESS;
@@ -365,6 +382,7 @@ static vg_lite_error_t upload_buffer_tiled(vg_lite_buffer_t *buffer,
 tiled_fail:
     if (ds != VK_NULL_HANDLE)
         vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &ds);
+    vkDestroyBufferView(g_vk_ctx.device, src_view, NULL);
     vkDestroyImageView(g_vk_ctx.device, dst_view, NULL);
     staging_destroy(&staging);
     return VG_LITE_OUT_OF_MEMORY;
