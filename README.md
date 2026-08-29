@@ -71,6 +71,15 @@ Fullscreen `vg_lite_clear` (rect==NULL or covers entire target) is deferred — 
 - **Flush points**: `vg_lite_finish` and `vg_lite_buffer_read_ptr` automatically flush any unconsumed pending clear.
 - **Partial clear** (rect != fullscreen): unchanged — executes immediately via `vkCmdClearAttachments`.
 
+### Runtime MSAA Sample Count (2x / 4x)
+
+The MSAA sample count is runtime-configurable between 2x and 4x (default 4x):
+
+- `vg_lite_set_msaa_samples(2|4)` — public API. Switching tears down all cached MSAA render passes, per-buffer MSAA attachments (tracked via a buffer registry) and pipelines; they are rebuilt lazily on the next draw. Requests are clamped to what the device supports (`framebufferColor/Depth/StencilSampleCounts`).
+- Env var `VGLITE_MSAA_SAMPLES=2|4` — selects the sample count at `vg_lite_init` time.
+- Render passes, MSAA attachments and pipeline multisample state all read the global `g_msaa_samples`; shaders have no sample-count assumptions.
+
+
 ## Build
 
 Requirements:
@@ -169,8 +178,9 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_clock | CTS clock face (320x480, golden .raw compare) | PASS (100%) |
 | test_ui | CTS ui icons + translucent highlight (golden .raw compare) | PASS (100%) |
 | test_uploadBatch | vg_lite_upload_buffers batch API: mixed 6-buffer batch (linear/tiled × formats), single staging + single submit, byte-exact download compare | PASS |
+| test_msaaSwitch | Runtime MSAA 2x/4x switching (vg_lite_set_msaa_samples): pipeline/attachment invalidation, draw across switches | PASS |
 
-**Summary: 39 PASS / 1 FAIL**
+**Summary: 43 PASS / 1 FAIL**
 
 Note: on some machines test_gfx3 and test_imgIndex also fail locally (pre-existing, unrelated to current HEAD).
 

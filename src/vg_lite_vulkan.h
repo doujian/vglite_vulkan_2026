@@ -225,6 +225,20 @@ void vg_lite_vulkan_apply_scissor(uint32_t fb_width, uint32_t fb_height);
 
 extern vk_context_t g_vk_ctx;
 
+/* Runtime-configurable MSAA sample count for all MSAA render passes,
+ * attachments and graphics pipelines (2x or 4x; 1x = MSAA disabled via
+ * the no-msaa code paths). Defaults to 4x. Switch at runtime through
+ * vg_lite_vulkan_set_msaa_samples() — it flushes pending work and
+ * invalidates every cached render pass, MSAA attachment and pipeline so
+ * they are lazily rebuilt with the new sample count. */
+extern VkSampleCountFlagBits g_msaa_samples;
+void vg_lite_vulkan_set_msaa_samples(int samples);
+
+/* Live-buffer registry so a sample-count switch can invalidate the
+ * per-buffer cached MSAA attachments/render passes of all buffers. */
+void vg_lite_vulkan_register_buffer(buffer_internal_t *internal);
+void vg_lite_vulkan_unregister_buffer(buffer_internal_t *internal);
+
 int32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags props);
 
 vg_lite_error_t vg_lite_vulkan_init(void);

@@ -170,3 +170,6 @@ add_dependencies(test_uploadBatch spirv_compilation)
 add_executable(test_optimal_roundtrip optimal_roundtrip/optimal_roundtrip.c)
 add_dependencies(test_optimal_roundtrip spirv_compilation)
 
+add_executable(test_msaaSwitch msaaSwitch/msaaSwitch.c)
+add_dependencies(test_msaaSwitch spirv_compilation)
+

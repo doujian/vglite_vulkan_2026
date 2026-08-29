@@ -109,7 +109,20 @@ vg_lite_error_t vg_lite_init(vg_lite_uint32_t tess_width, vg_lite_uint32_t tess_
     vg_lite_error_t err = vg_lite_vulkan_init();
     if (err != VG_LITE_SUCCESS) return err;
     g_initialized = 1;
+    /* Optional initial MSAA sample count override: VGLITE_MSAA_SAMPLES=2|4.
+     * Can also be changed later at runtime via vg_lite_set_msaa_samples(). */
+    const char *env = getenv("VGLITE_MSAA_SAMPLES");
+    if (env && (strcmp(env, "2") == 0 || strcmp(env, "4") == 0))
+        vg_lite_vulkan_set_msaa_samples(atoi(env));
     return VG_LITE_SUCCESS;
+}
+
+vg_lite_error_t vg_lite_set_msaa_samples(int samples)
+{
+    if (!g_initialized) return VG_LITE_NO_CONTEXT;
+    if (samples != 2 && samples != 4) return VG_LITE_INVALID_ARGUMENT;
+    vg_lite_vulkan_set_msaa_samples(samples);
+    return ((int)g_msaa_samples == samples) ? VG_LITE_SUCCESS : VG_LITE_NOT_SUPPORT;
 }
 
 vg_lite_error_t vg_lite_close(void)
@@ -458,6 +471,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 
     buffer->address = 0;
     buffer->image_mode = VG_LITE_NORMAL_IMAGE_MODE;
+    vg_lite_vulkan_register_buffer(internal);  /* for MSAA sample-count switches */
     return VG_LITE_SUCCESS;
 }
 
@@ -472,6 +486,7 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
     if (g_vk_ctx.current_fb_internal == internal)
         g_vk_ctx.current_fb_internal = NULL;
     vg_lite_vulkan_submit_command(1);
+    vg_lite_vulkan_unregister_buffer(internal);
     if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
     if (internal->msaa_color_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_color_image, NULL);
     if (internal->msaa_color_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_color_memory, NULL);

@@ -101,7 +101,7 @@ static VkPipeline get_draw_cover_pipeline(VkFormat format, int blend_group)
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vs.viewportCount = 1;
@@ -189,7 +189,7 @@ static void init_draw_pipeline(VkFormat format)
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
     
     VkPipelineColorBlendAttachmentState cba = {0};
     cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;

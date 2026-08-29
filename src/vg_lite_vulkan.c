@@ -7,6 +7,121 @@
 
 vk_context_t g_vk_ctx = {0};
 
+/* Runtime-configurable MSAA sample count (2x/4x). Every MSAA render pass,
+ * attachment creation and graphics pipeline reads this instead of a
+ * hardcoded VK_SAMPLE_COUNT_4_BIT. Changed only through
+ * vg_lite_vulkan_set_msaa_samples(), which invalidates all dependent
+ * cached objects first. */
+VkSampleCountFlagBits g_msaa_samples = VK_SAMPLE_COUNT_4_BIT;
+
+/* Live-buffer registry (weak references; buffers unregister in vg_lite_free) */
+#define MAX_MSAA_REGISTRY 512
+static buffer_internal_t *s_buffer_registry[MAX_MSAA_REGISTRY];
+static int s_buffer_registry_count;
+
+void vg_lite_vulkan_register_buffer(buffer_internal_t *internal)
+{
+    if (!internal) return;
+    if (s_buffer_registry_count >= MAX_MSAA_REGISTRY) return;
+    s_buffer_registry[s_buffer_registry_count++] = internal;
+}
+
+void vg_lite_vulkan_unregister_buffer(buffer_internal_t *internal)
+{
+    for (int i = 0; i < s_buffer_registry_count; i++) {
+        if (s_buffer_registry[i] == internal) {
+            s_buffer_registry[i] = s_buffer_registry[s_buffer_registry_count - 1];
+            s_buffer_registry_count--;
+            return;
+        }
+    }
+}
+
+static void destroy_buffer_msaa_objects(buffer_internal_t *internal)
+{
+    if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
+    if (internal->msaa_color_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_color_image, NULL);
+    if (internal->msaa_color_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_color_memory, NULL);
+    internal->msaa_color_view = VK_NULL_HANDLE;
+    internal->msaa_color_image = VK_NULL_HANDLE;
+    internal->msaa_color_memory = VK_NULL_HANDLE;
+    if (internal->msaa_depth_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_depth_view, NULL);
+    if (internal->msaa_depth_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_depth_image, NULL);
+    if (internal->msaa_depth_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_depth_memory, NULL);
+    internal->msaa_depth_view = VK_NULL_HANDLE;
+    internal->msaa_depth_image = VK_NULL_HANDLE;
+    internal->msaa_depth_memory = VK_NULL_HANDLE;
+    if (internal->resolve_view) vkDestroyImageView(g_vk_ctx.device, internal->resolve_view, NULL);
+    if (internal->resolve_image) vkDestroyImage(g_vk_ctx.device, internal->resolve_image, NULL);
+    if (internal->resolve_memory) vkFreeMemory(g_vk_ctx.device, internal->resolve_memory, NULL);
+    internal->resolve_view = VK_NULL_HANDLE;
+    internal->resolve_image = VK_NULL_HANDLE;
+    internal->resolve_memory = VK_NULL_HANDLE;
+    if (internal->render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
+    internal->render_pass = VK_NULL_HANDLE;
+    if (internal->clear_render_pass) vkDestroyRenderPass(g_vk_ctx.device, internal->clear_render_pass, NULL);
+    internal->clear_render_pass = VK_NULL_HANDLE;
+}
+
+void vg_lite_vulkan_set_msaa_samples(int samples)
+{
+    if (!g_vk_ctx.device) {
+        /* pre-init: just record the value; init will use it */
+        g_msaa_samples = (samples == 2) ? VK_SAMPLE_COUNT_2_BIT : VK_SAMPLE_COUNT_4_BIT;
+        return;
+    }
+    if (samples != 2 && samples != 4) {
+        fprintf(stderr, "[msaa] unsupported sample count %d (only 2 or 4)\n", samples);
+        return;
+    }
+    VkSampleCountFlagBits sc = (samples == 2) ? VK_SAMPLE_COUNT_2_BIT : VK_SAMPLE_COUNT_4_BIT;
+    if (sc == g_msaa_samples) return;
+
+    /* Clamp by device limits (color AND depth/stencil attachments) */
+    VkPhysicalDeviceProperties props;
+    vkGetPhysicalDeviceProperties(g_vk_ctx.physical_device, &props);
+    VkSampleCountFlags supported = props.limits.framebufferColorSampleCounts
+                                 & props.limits.framebufferDepthSampleCounts
+                                 & props.limits.framebufferStencilSampleCounts;
+    if (!(supported & sc)) {
+        fprintf(stderr, "[msaa] device does not support %dx MSAA, keeping %dx\n",
+                samples, (int)g_msaa_samples);
+        return;
+    }
+
+    /* 1. Flush any in-flight rendering (ends RP, resolves dirty MSAA) and
+     *    wait for the GPU so pending framebuffers/render passes are
+     *    destroyed and no command references the objects we free below. */
+    vg_lite_vulkan_flush_render_pass();
+    vg_lite_vulkan_submit_command(1);
+
+    /* 2. Drop the current framebuffer binding (its views are about to die) */
+    g_vk_ctx.current_fb = VK_NULL_HANDLE;
+    g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
+    g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
+    g_vk_ctx.current_resolve_image = VK_NULL_HANDLE;
+    g_vk_ctx.current_fb_view = VK_NULL_HANDLE;
+    g_vk_ctx.current_fb_internal = NULL;
+    g_vk_ctx.current_fb_is_no_msaa = 0;
+
+    /* 3. Invalidate every live buffer's cached MSAA attachments + RPs.
+     *    Target contents are already resolved (step 1); the MSAA side will
+     *    be re-seeded from the target on next use (msaa_needs_seed). */
+    for (int i = 0; i < s_buffer_registry_count; i++) {
+        buffer_internal_t *internal = s_buffer_registry[i];
+        destroy_buffer_msaa_objects(internal);
+        internal->msaa_needs_seed = 1;
+        internal->msaa_dirty = 0;
+    }
+
+    /* 4. Destroy all cached pipelines (they embed rasterizationSamples);
+     *    they are rebuilt lazily on next use with the new sample count. */
+    vg_lite_vulkan_destroy_pipelines();
+
+    g_msaa_samples = sc;
+    fprintf(stderr, "[msaa] switched to %dx MSAA\n", samples);
+}
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
     VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type,
@@ -385,7 +500,7 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
     VkAttachmentDescription attachments[3] = {0};
     /* MSAA color attachment */
     attachments[0].format = format;
-    attachments[0].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[0].samples = g_msaa_samples;
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
     attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -405,7 +520,7 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
     attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     /* MSAA depth/stencil attachment */
     attachments[2].format = VK_FORMAT_D24_UNORM_S8_UINT;
-    attachments[2].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[2].samples = g_msaa_samples;
     attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -473,7 +588,7 @@ VkRenderPass vg_lite_vulkan_create_render_pass_clear(VkFormat format)
 {
     VkAttachmentDescription attachments[3] = {0};
     attachments[0].format = format;
-    attachments[0].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[0].samples = g_msaa_samples;
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -489,7 +604,7 @@ VkRenderPass vg_lite_vulkan_create_render_pass_clear(VkFormat format)
     attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     attachments[2].format = VK_FORMAT_D24_UNORM_S8_UINT;
-    attachments[2].samples = VK_SAMPLE_COUNT_4_BIT;
+    attachments[2].samples = g_msaa_samples;
     attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -719,7 +834,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     if (internal->msaa_color_image == VK_NULL_HANDLE) {
         VkFormat vkfmt = vg_lite_format_to_vk(target->format);
         if (create_attachment(&internal->msaa_color_image, &internal->msaa_color_memory, &internal->msaa_color_view,
-                target->width, target->height, vkfmt, VK_SAMPLE_COUNT_4_BIT,
+                target->width, target->height, vkfmt, g_msaa_samples,
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -729,7 +844,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     
     if (internal->msaa_depth_image == VK_NULL_HANDLE) {
         if (create_attachment(&internal->msaa_depth_image, &internal->msaa_depth_memory, &internal->msaa_depth_view,
-                target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, VK_SAMPLE_COUNT_4_BIT,
+                target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, g_msaa_samples,
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -1111,7 +1226,7 @@ static VkPipeline create_blit_pipeline_internal(VkFormat format, int blend_group
     VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = (mode == 1) ? VK_SAMPLE_COUNT_1_BIT : VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = (mode == 1) ? VK_SAMPLE_COUNT_1_BIT : g_msaa_samples;
     if (mode == 0) ms.minSampleShading = 1.0f;
 
     VkPipelineColorBlendAttachmentState cba;
@@ -1302,7 +1417,7 @@ static VkPipeline create_blit_obb_pipeline_internal(VkFormat format, int blend_g
     VkPipelineRasterizationStateCreateInfo rs = {VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
     rs.lineWidth = 1.0f; rs.cullMode = VK_CULL_MODE_NONE; rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = (mode == 1) ? VK_SAMPLE_COUNT_1_BIT : VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = (mode == 1) ? VK_SAMPLE_COUNT_1_BIT : g_msaa_samples;
 
     VkPipelineColorBlendAttachmentState cba;
     vg_lite_vulkan_get_blend_state(blend_group, &cba);
@@ -1633,7 +1748,7 @@ void vg_lite_vulkan_init_pattern_pipeline(VkFormat format)
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
     ms.minSampleShading = 1.0f;
 
     VkPipelineColorBlendAttachmentState stencil_cba = {0};
@@ -1766,7 +1881,7 @@ VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
     ms.minSampleShading = 1.0f;
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1874,7 +1989,7 @@ void vg_lite_vulkan_init_radial_pipeline(VkFormat format)
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
     ms.minSampleShading = 1.0f;
 
     /* Stencil pass: no color write, INVERT on pass. */
@@ -2008,7 +2123,7 @@ VkPipeline vg_lite_vulkan_get_radial_cover_pipeline(VkFormat format, int blend_g
     rs.frontFace = VK_FRONT_FACE_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
     ms.minSampleShading = 1.0f;
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -2111,7 +2226,7 @@ void vg_lite_vulkan_init_grad_pipeline(VkFormat format)
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
 
     VkPipelineColorBlendAttachmentState stencil_cba = {0};
     stencil_cba.colorWriteMask = 0;
@@ -2266,7 +2381,7 @@ VkPipeline vg_lite_vulkan_get_grad_cover_pipeline(VkFormat format, int blend_gro
     rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    ms.rasterizationSamples = VK_SAMPLE_COUNT_4_BIT;
+    ms.rasterizationSamples = g_msaa_samples;
 
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
     vs.viewportCount = 1;

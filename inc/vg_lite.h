@@ -1067,6 +1067,13 @@ typedef unsigned int        vg_lite_color_t;
     /* Destroy a vglite context. */
     vg_lite_error_t vg_lite_close(void);
 
+    /* Set the MSAA sample count for all subsequent rendering (2 or 4).
+     * Flushes pending work and rebuilds render passes / MSAA attachments /
+     * pipelines lazily with the new sample count. Also configurable at init
+     * time via the VGLITE_MSAA_SAMPLES=2|4 environment variable.
+     * Returns VG_LITE_NOT_SUPPORT when the device rejects the request. */
+    vg_lite_error_t vg_lite_set_msaa_samples(int samples);
+
     /* Get the VGLite driver information. */
     vg_lite_error_t vg_lite_get_info(vg_lite_info_t* info);
 
