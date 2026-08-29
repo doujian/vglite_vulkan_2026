@@ -164,6 +164,9 @@ add_dependencies(test_uploadBuffer spirv_compilation)
 add_executable(test_uploadTiled uploadTiled/uploadTiled.c)
 add_dependencies(test_uploadTiled spirv_compilation)
 
+add_executable(test_uploadBatch uploadBatch/uploadBatch.c)
+add_dependencies(test_uploadBatch spirv_compilation)
+
 add_executable(test_optimal_roundtrip optimal_roundtrip/optimal_roundtrip.c)
 add_dependencies(test_optimal_roundtrip spirv_compilation)
 

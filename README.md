@@ -168,8 +168,9 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_vector | CTS vector polygon (256x256, golden .raw compare) | PASS (100%) |
 | test_clock | CTS clock face (320x480, golden .raw compare) | PASS (100%) |
 | test_ui | CTS ui icons + translucent highlight (golden .raw compare) | PASS (100%) |
+| test_uploadBatch | vg_lite_upload_buffers batch API: mixed 6-buffer batch (linear/tiled × formats), single staging + single submit, byte-exact download compare | PASS |
 
-**Summary: 38 PASS / 1 FAIL**
+**Summary: 39 PASS / 1 FAIL**
 
 Note: on some machines test_gfx3 and test_imgIndex also fail locally (pre-existing, unrelated to current HEAD).
 

@@ -1116,6 +1116,14 @@ typedef unsigned int        vg_lite_color_t;
     /* Upload RGB or YUV pixel data to an allocated buffer. */
     vg_lite_error_t vg_lite_upload_buffer(vg_lite_buffer_t *buffer, vg_lite_uint8_t *data[3], vg_lite_uint32_t stride[3]);
 
+    /* Batch upload: same semantics as vg_lite_upload_buffer, but packs all
+     * buffers into ONE staging allocation and ONE command submission
+     * (compute dispatches and copy-engine regions interleaved as decided
+     * at allocate time). datas[i]/strides[i] describe plane 0 of bufs[i].
+     * Returns on the first failing item; earlier items are already valid. */
+    vg_lite_error_t vg_lite_upload_buffers(vg_lite_buffer_t **bufs, vg_lite_uint8_t **datas,
+                                           vg_lite_uint32_t *strides, vg_lite_uint32_t count);
+
     /* Map a buffer into hardware accessible address space. */
     vg_lite_error_t vg_lite_map(vg_lite_buffer_t *buffer, vg_lite_map_flag_t flag, int32_t fd);
 
