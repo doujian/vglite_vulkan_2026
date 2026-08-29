@@ -34,6 +34,11 @@
 #endif
 #define DUMP_SUBDIR DUMP_NAME(DUMP_TILING, DUMP_MSAA, DUMP_OBB)
 
+const char *vg_lite_dump_subdir(void)
+{
+    return DUMP_SUBDIR;
+}
+
 /* Read a little-endian 32-bit integer from file */
 static int read_long(FILE *fp)
 {

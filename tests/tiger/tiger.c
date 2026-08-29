@@ -125,10 +125,15 @@ printf("Matrix: translate + 4x scale (matching reference)\n");
     
     printf("Buffer after finish: width=%d, height=%d, format=%d\n", buffer.width, buffer.height, buffer.format);
     
+    /* vg_lite_save_png routes output into the config-specific dump
+     * subdirectory; read it back from there for the golden compare. */
+    char output_path[256];
+    snprintf(output_path, sizeof(output_path), "%s/%s",
+             vg_lite_dump_subdir(), OUTPUT_PATH);
     vg_lite_save_png(OUTPUT_PATH, &buffer);
-    printf("Output saved to %s\n", OUTPUT_PATH);
-    
-    int result = compare_images(GOLDEN_PATH, OUTPUT_PATH);
+    printf("Output saved to %s\n", output_path);
+
+    int result = compare_images(GOLDEN_PATH, output_path);
     if (result == 0) {
         printf("PASS: Tiger output matches golden within tolerance\n");
     } else if (result == 1) {

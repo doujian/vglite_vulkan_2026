@@ -1275,3 +1275,13 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Verification**: test_uploadTiled 4/4 in default mode AND with VGLITE_FORCE_ALT_STORAGE_FMT=1 (bgra8888 tiled upload byte-exact vs linear on an R8G8B8A8-created image); full suite 41 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash - identical to baseline.
 
 **Files**: src/vg_lite.c
+
+## 34. test_tiger crashed after legacy PNG cleanup
+
+**Symptom**: test_tiger exits -1 with "Failed to load output image: tiger_output.png" after the legacy PNG cleanup in build/tests; previously appeared to pass.
+
+**Root Cause**: vg_lite_save_png routes output into the config-specific dump subdirectory (e.g. dump_lin_msaa_obb/), but test_tiger compared against "tiger_output.png" in the CWD. It only "passed" before because a stale copy of the PNG from pre-routing days sat in build/tests and was deleted during cleanup.
+
+**Solution**: Added public helper vg_lite_dump_subdir() (util/vg_lite_util.c + inc/vg_lite_util.h) returning the DUMP_SUBDIR string; test_tiger now composes the readback path "<dump_subdir>/tiger_output.png" for the golden compare.
+
+**Verification**: test_tiger PASS (3.90% pixels differ, within 5.5% tolerance, exit=0); full suite 43 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash.
