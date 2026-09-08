@@ -160,7 +160,7 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_imgA8 | A8 source image blit | PASS |
 | test_imgA4 | A4 packed alpha mask blit (GPU-expanded to R8) | PASS |
 | test_openvg_srgba | OPENVG_sRGBA_8888 source blit (BLEND_NONE + SRC_OVER vs CPU model) | PASS |
-| test_optimal_roundtrip | landscape.raw upload (OPTIMAL) → download → byte-exact compare + png dump | PASS (480000/480000, 8 configs) |
+| test_optimal_roundtrip | landscape.raw upload (OPTIMAL) → download → byte-exact compare + png dump; download path switchable via `VGLITE_DOWNLOAD_COPY_IMAGE` macro (0=staging buffer, 1=`vkCmdCopyImage`→host-visible LINEAR staging image via `vg_lite_buffer_download_image`) | PASS (480000/480000 both paths, 8 configs) |
 | test_optimal_dump_recover | landscape.raw → OPTIMAL → raw memory dump → de-tile (linear/microtile autodetect) → byte-exact compare | PASS (480000/480000, 8 configs) |
 | test_rotate | Rotate blit (RGB565) | PASS (fixed: discard out-of-bounds UVs) |
 | test_scale | Scale blit with golden comparison | PASS |

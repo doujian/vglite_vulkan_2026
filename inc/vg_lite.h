@@ -1110,6 +1110,12 @@ typedef unsigned int        vg_lite_color_t;
     /* Download pixel data from buffer (LINEAR: memcpy, OPTIMAL: staging transfer). */
     vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data);
 
+    /* Alternative download path: vkCmdCopyImage into a host-visible LINEAR staging
+     * image, then map and repack rows. Same output contract as vg_lite_buffer_download
+     * (dst rows at buffer->stride, VGLite layout). Kept alongside the buffer path for
+     * A/B comparison; switch via test macro in test_optimal_roundtrip. */
+    vg_lite_error_t vg_lite_buffer_download_image(vg_lite_buffer_t *buffer, void *dst_data);
+
     /* Acquire a read-only CPU pointer for pixel access.
      * LINEAR: returns buffer->memory directly (no copy).
      * OPTIMAL: downloads once, caches internally until release.

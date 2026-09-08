@@ -5,11 +5,21 @@
  * raw_stride, format code; then tightly packed pixel rows), uploads it via
  * vg_lite_buffer_write() (OPTIMAL configs go through the staging
  * vkCmdCopyBufferToImage path, LINEAR configs through mapped memory), then
- * reads the image back with vg_lite_buffer_download() and compares every
- * pixel byte against the original file content.
+ * reads the image back and compares every pixel byte against the original
+ * file content.
+ *
+ * Download path is switchable at compile time:
+ *   VGLITE_DOWNLOAD_COPY_IMAGE=0 (default): vg_lite_buffer_download()
+ *       -> vkCmdCopyImageToBuffer staging buffer (explicit pitch control).
+ *   VGLITE_DOWNLOAD_COPY_IMAGE=1: vg_lite_buffer_download_image()
+ *       -> vkCmdCopyImage into a host-visible LINEAR staging image,
+ *          repack rows from the driver-reported rowPitch.
  *
  * Pass criteria: 0 mismatched bytes out of width*height*4.
  */
+#ifndef VGLITE_DOWNLOAD_COPY_IMAGE
+#define VGLITE_DOWNLOAD_COPY_IMAGE 0
+#endif
 #include "vg_lite.h"
 #include "vg_lite_util.h"
 #include <stdio.h>
@@ -122,12 +132,21 @@ int main(void)
         goto fail;
     }
 
-    /* Download back (OPTIMAL: vkCmdCopyImageToBuffer + pack). */
+    /* Download back — switchable path (see file header). */
     memset(dl, 0xCC, buffer.stride * h);
+#if VGLITE_DOWNLOAD_COPY_IMAGE
+    printf("download path: vkCmdCopyImage -> host-visible LINEAR staging image\n");
+    if (vg_lite_buffer_download_image(&buffer, dl) != VG_LITE_SUCCESS) {
+        printf("vg_lite_buffer_download_image failed\n");
+        goto fail;
+    }
+#else
+    printf("download path: vkCmdCopyImageToBuffer staging buffer\n");
     if (vg_lite_buffer_download(&buffer, dl) != VG_LITE_SUCCESS) {
         printf("vg_lite_buffer_download failed\n");
         goto fail;
     }
+#endif
 
     /* Compare pixel area of every row (stride padding is not guaranteed). */
     {

@@ -972,6 +972,144 @@ vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data
     }
 }
 
+/* Public API (alternative path): download via vkCmdCopyImage into a
+ * host-visible LINEAR staging image, then map and repack rows by the
+ * driver-reported rowPitch. Output contract identical to
+ * vg_lite_buffer_download: dst rows at buffer->stride, VGLite layout. */
+vg_lite_error_t vg_lite_buffer_download_image(vg_lite_buffer_t *buffer, void *dst_data)
+{
+    if (!buffer || !buffer->handle || !dst_data) return VG_LITE_INVALID_ARGUMENT;
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+
+    /* Shadow-layout formats keep their pack/rotate download contract */
+    if (buffer->format == VG_LITE_A4 || buffer->format == OPENVG_sRGBA_8888)
+        return vg_lite_buffer_download(buffer, dst_data);
+
+    if (!internal->is_optimal) {
+        /* LINEAR target is already host-mapped in VGLite layout */
+        memcpy(dst_data, buffer->memory, buffer->stride * buffer->height);
+        return VG_LITE_SUCCESS;
+    }
+
+    /* 1. Create host-visible LINEAR staging image (same VkFormat) */
+    VkImageCreateInfo img_ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    img_ci.imageType = VK_IMAGE_TYPE_2D;
+    img_ci.format = vg_lite_format_to_vk(buffer->format);
+    img_ci.extent.width = buffer->width;
+    img_ci.extent.height = buffer->height;
+    img_ci.extent.depth = 1;
+    img_ci.mipLevels = 1;
+    img_ci.arrayLayers = 1;
+    img_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    img_ci.tiling = VK_IMAGE_TILING_LINEAR;
+    img_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    img_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage staging_img;
+    VK_CHECK(vkCreateImage(g_vk_ctx.device, &img_ci, NULL, &staging_img));
+
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(g_vk_ctx.device, staging_img, &req);
+    VkMemoryAllocateInfo alloc = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = req.size;
+    int32_t mt = find_memory_type(req.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (mt < 0) { vkDestroyImage(g_vk_ctx.device, staging_img, NULL); return VG_LITE_OUT_OF_MEMORY; }
+    alloc.memoryTypeIndex = (uint32_t)mt;
+    VkDeviceMemory staging_mem;
+    VK_CHECK(vkAllocateMemory(g_vk_ctx.device, &alloc, NULL, &staging_mem));
+    VK_CHECK(vkBindImageMemory(g_vk_ctx.device, staging_img, staging_mem, 0));
+
+    /* 2. Flush render pass first to ensure GPU writes are visible */
+    vg_lite_vulkan_flush_render_pass();
+    vg_lite_vulkan_submit_command(1);
+
+    /* 3. Record image->image copy on init_cmd_buf */
+    VkCommandBuffer icb = g_vk_ctx.init_cmd_buf;
+    VK_CHECK(vkResetCommandBuffer(icb, 0));
+    VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(icb, &bi));
+
+    /* Barrier: source image GENERAL -> TRANSFER_SRC */
+    VkImageMemoryBarrier src_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    src_bar.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+    src_bar.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    src_bar.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    src_bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    src_bar.image = internal->image;
+    src_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    src_bar.subresourceRange.levelCount = 1;
+    src_bar.subresourceRange.layerCount = 1;
+    /* Barrier: staging image UNDEFINED -> TRANSFER_DST */
+    VkImageMemoryBarrier dst_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    dst_bar.srcAccessMask = 0;
+    dst_bar.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    dst_bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    dst_bar.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    dst_bar.image = staging_img;
+    dst_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    dst_bar.subresourceRange.levelCount = 1;
+    dst_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2,
+        (VkImageMemoryBarrier[]){src_bar, dst_bar});
+
+    /* Copy image -> image (no pitch control: staging layout is driver-chosen) */
+    VkImageCopy region = {0};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.layerCount = 1;
+    region.extent.width = buffer->width;
+    region.extent.height = buffer->height;
+    region.extent.depth = 1;
+    vkCmdCopyImage(icb, internal->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   staging_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    /* Barrier: source image TRANSFER_SRC -> GENERAL */
+    VkImageMemoryBarrier gen_bar = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    gen_bar.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    gen_bar.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    gen_bar.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    gen_bar.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    gen_bar.image = internal->image;
+    gen_bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    gen_bar.subresourceRange.levelCount = 1;
+    gen_bar.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(icb, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        0, 0, NULL, 0, NULL, 1, &gen_bar);
+
+    VK_CHECK(vkEndCommandBuffer(icb));
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &icb;
+    VK_CHECK(vkResetFences(g_vk_ctx.device, 1, &g_vk_ctx.fence));
+    VK_CHECK(vkQueueSubmit(g_vk_ctx.queue, 1, &si, g_vk_ctx.fence));
+    VK_CHECK(vkWaitForFences(g_vk_ctx.device, 1, &g_vk_ctx.fence, VK_TRUE, UINT64_MAX));
+
+    /* 4. Map staging image, repack rows from driver rowPitch to VGLite stride */
+    VkImageSubresource sub = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0};
+    VkSubresourceLayout layout;
+    vkGetImageSubresourceLayout(g_vk_ctx.device, staging_img, &sub, &layout);
+
+    uint8_t *mapped;
+    VK_CHECK(vkMapMemory(g_vk_ctx.device, staging_mem, 0, VK_WHOLE_SIZE, 0, (void **)&mapped));
+    uint8_t *src_rows = mapped + layout.offset;
+    uint32_t bytes_pp = (vg_lite_format_bpp(buffer->format) + 7) / 8;
+    uint32_t row_bytes = buffer->width * bytes_pp;
+    for (uint32_t y = 0; y < buffer->height; y++)
+        memcpy((uint8_t *)dst_data + (size_t)y * buffer->stride,
+               src_rows + (size_t)y * layout.rowPitch, row_bytes);
+    vkUnmapMemory(g_vk_ctx.device, staging_mem);
+
+    /* 5. Cleanup staging */
+    vkDestroyImage(g_vk_ctx.device, staging_img, NULL);
+    vkFreeMemory(g_vk_ctx.device, staging_mem, NULL);
+    return VG_LITE_SUCCESS;
+}
+
 /* Public API: acquire read-only CPU pointer (LINEAR: zero-copy, OPTIMAL: cached download) */
 const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
 {
