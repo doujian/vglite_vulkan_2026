@@ -2,6 +2,7 @@
 #include "vg_lite_config.h"
 #include "vg_lite_vulkan.h"
 #include "vg_lite_format.h"
+#include "vg_lite_util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +66,10 @@ extern void vg_lite_draw_cleanup_pending_buffers(void);
 #endif
 
 static int g_initialized = 0;
+
+/* Debug: when enabled, OPTIMAL images are allocated from HOST_VISIBLE memory
+ * so vg_lite_dump_raw can map them (see vg_lite_dump_enable_host_optimal). */
+static int g_dump_host_optimal = 0;
 
 static VkSampler s_sampler_point = VK_NULL_HANDLE;
 static VkSampler s_sampler_linear = VK_NULL_HANDLE;
@@ -274,7 +279,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     VkMemoryAllocateInfo alloc_ci = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
     alloc_ci.allocationSize = mem_req.size;
     int32_t mem_type;
-    if (tiled_alloc) {
+    if (tiled_alloc && !g_dump_host_optimal) {
         /* OPTIMAL: prefer DEVICE_LOCAL, fall back to HOST_VISIBLE */
         mem_type = find_memory_type(mem_req.memoryTypeBits,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
@@ -1043,6 +1048,98 @@ void vg_lite_buffer_read_ptr_release(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return;
     /* Cache persists; invalidated on next write or vg_lite_free */
+}
+
+/* Short format tag for dump filenames. */
+static const char *dump_fmt_name(vg_lite_buffer_format_t fmt)
+{
+    switch (fmt) {
+    case VG_LITE_RGBA8888:    return "rgba8888";
+    case VG_LITE_BGRA8888:    return "bgra8888";
+    case VG_LITE_RGBX8888:    return "rgbx8888";
+    case VG_LITE_BGRX8888:    return "bgrx8888";
+    case VG_LITE_RGBA5551:    return "rgba5551";
+    case VG_LITE_RGBA4444:    return "rgba4444";
+    case VG_LITE_BGRA4444:    return "bgra4444";
+    case VG_LITE_RGB565:      return "rgb565";
+    case VG_LITE_BGRA5658:    return "bgra5658";
+    case VG_LITE_A8:          return "a8";
+    case VG_LITE_A4:          return "a4";
+    case VG_LITE_ABGR8888:    return "abgr8888";
+    case VG_LITE_XBGR8888:    return "xbgr8888";
+    case VG_LITE_ARGB8888:    return "argb8888";
+    case OPENVG_sRGBA_8888:   return "srgba8888";
+    case VG_LITE_INDEX_8:     return "index8";
+    case VG_LITE_INDEX_4:     return "index4";
+    case VG_LITE_INDEX_2:     return "index2";
+    case VG_LITE_INDEX_1:     return "index1";
+    case VG_LITE_L8:          return "l8";
+    default:                   return "fmt?";
+    }
+}
+
+/* Debug helper: dump raw GPU-side memory to the config dump directory.
+ * See inc/vg_lite_util.h for the contract. */
+
+/* When enabled, OPTIMAL images are allocated from HOST_VISIBLE memory so
+ * vg_lite_dump_raw can map them (debug aid; costs performance). */
+void vg_lite_dump_enable_host_optimal(int enable) { g_dump_host_optimal = enable; }
+
+vg_lite_error_t vg_lite_dump_raw(const char *tag, vg_lite_buffer_t *buffer)
+{
+    if (!tag || !buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
+
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    uint8_t *data = NULL;
+    uint32_t row_pitch = 0, size = 0, offset = 0;
+    int is_opt = internal->is_optimal;
+
+    if (is_opt && internal->image != VK_NULL_HANDLE) {
+        /* Drain pending GPU work before peeking at physical memory. */
+        vg_lite_finish();
+        /* NOTE: vkGetImageSubresourceLayout is illegal on OPTIMAL images
+         * (VUID-vkGetImageSubresourceLayout-image-07790), so dump the whole
+         * allocation; rowPitch/offset are driver-private and reported as 0. */
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(g_vk_ctx.device, internal->image, &req);
+
+        void *mapped = NULL;
+        if (vkMapMemory(g_vk_ctx.device, internal->memory, 0, VK_WHOLE_SIZE, 0,
+                        &mapped) != VK_SUCCESS) {
+            return VG_LITE_NOT_SUPPORT; /* device-local, not host-visible */
+        }
+        data = malloc(req.size ? (size_t)req.size : 1);
+        if (!data) {
+            vkUnmapMemory(g_vk_ctx.device, internal->memory);
+            return VG_LITE_OUT_OF_MEMORY;
+        }
+        memcpy(data, mapped, (size_t)req.size);
+        vkUnmapMemory(g_vk_ctx.device, internal->memory);
+        size = (uint32_t)req.size;
+    } else {
+        /* LINEAR: API-contract bytes (A4/sRGBA: VGLite-layout shadow). */
+        if (!buffer->memory) return VG_LITE_NOT_SUPPORT;
+        size = buffer->stride * buffer->height;
+        data = malloc(size ? size : 1);
+        if (!data) return VG_LITE_OUT_OF_MEMORY;
+        memcpy(data, buffer->memory, size);
+        row_pitch = buffer->stride;
+    }
+
+    char name[256];
+    snprintf(name, sizeof(name), "raw_%s_%s_%ux%u_%s_rp%u_off%u_sz%u.bin",
+             tag, dump_fmt_name(buffer->format),
+             (unsigned)buffer->width, (unsigned)buffer->height,
+             is_opt ? "opt" : "lin", row_pitch, offset, size);
+
+    char outpath[512];
+    snprintf(outpath, sizeof(outpath), "%s/%s", vg_lite_dump_dir(), name);
+    FILE *fp = fopen(outpath, "wb");
+    if (!fp) { free(data); return VG_LITE_NOT_SUPPORT; }
+    fwrite(data, 1, size, fp);
+    fclose(fp);
+    free(data);
+    return VG_LITE_SUCCESS;
 }
 
 /* Convert VGLite color (0xAABBGGRR) to VkClearValue based on target format.

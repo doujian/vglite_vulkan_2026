@@ -287,6 +287,19 @@ int vg_lite_load_png(vg_lite_buffer_t *buffer, const char *name)
 int vg_lite_fb_open(vg_lite_buffer_t *buffer) { (void)buffer; return 0; }
 void vg_lite_fb_close(vg_lite_buffer_t *buffer) { (void)buffer; }
 
+/* Configuration-specific dump directory: create if needed, return name.
+ * Used by src-side raw-memory dump (vg_lite_dump_raw) so it routes to the
+ * same per-config subdirectory as save_png/save_raw. */
+const char *vg_lite_dump_dir(void)
+{
+#if defined(_WIN32)
+    _mkdir(DUMP_SUBDIR);
+#else
+    mkdir(DUMP_SUBDIR, 0755);
+#endif
+    return DUMP_SUBDIR;
+}
+
 void vg_lite_save_raw(const char *name, vg_lite_buffer_t *buffer)
 {
     if (!name || !buffer) return;

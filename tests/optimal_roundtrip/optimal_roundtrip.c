@@ -82,6 +82,7 @@ int main(void)
     buffer.height  = h;
     buffer.format  = fmt;
     buffer.tiled   = VG_LITE_TILED;   /* force OPTIMAL image allocation */
+    vg_lite_dump_enable_host_optimal(1); /* make OPTIMAL memory mappable for raw dump */
 
     if (vg_lite_allocate(&buffer) != VG_LITE_SUCCESS) {
         printf("vg_lite_allocate failed\n");
@@ -149,6 +150,11 @@ int main(void)
 
         /* Dump the downloaded image for visual inspection. */
         vg_lite_save_png("optimal_roundtrip.png", &buffer);
+
+        /* Debug: dump raw GPU-side memory (OPTIMAL physical bytes,
+         * driver-private layout — for inspection only, not compared). */
+        vg_lite_error_t derr = vg_lite_dump_raw("landscape", &buffer);
+        printf("raw dump: %s\n", derr == VG_LITE_SUCCESS ? "written" : "unavailable");
 
         vg_lite_free(&buffer);
         vg_lite_close();
