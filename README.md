@@ -161,6 +161,7 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_imgA4 | A4 packed alpha mask blit (GPU-expanded to R8) | PASS |
 | test_openvg_srgba | OPENVG_sRGBA_8888 source blit (BLEND_NONE + SRC_OVER vs CPU model) | PASS |
 | test_optimal_roundtrip | landscape.raw upload (OPTIMAL) → download → byte-exact compare + png dump | PASS (480000/480000, 8 configs) |
+| test_optimal_dump_recover | landscape.raw → OPTIMAL → raw memory dump → de-tile (linear/microtile autodetect) → byte-exact compare | PASS (480000/480000, 8 configs) |
 | test_rotate | Rotate blit (RGB565) | PASS (fixed: discard out-of-bounds UVs) |
 | test_scale | Scale blit with golden comparison | PASS |
 | test_blit_multi | Multiple blits to single target | PASS |
