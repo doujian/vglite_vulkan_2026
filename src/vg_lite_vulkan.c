@@ -639,6 +639,19 @@ static VkRenderPass create_render_pass_msrtss(VkFormat format,
     msrtss.multisampledRenderToSingleSampledEnable = VK_TRUE;
     msrtss.rasterizationSamples = g_msaa_samples;
 
+    /* VUID-VkSubpassDescription2-pNext-06871: with a 1x depth attachment
+     * under MSRTSS the chain must also carry a depth-stencil-resolve struct.
+     * pDepthStencilResolveAttachment = NULL (no DS resolve attachment), and
+     * modes must not both be NONE under MSRTSS
+     * (VUID-VkSubpassDescriptionDepthStencilResolve-pNext-06873) —
+     * SAMPLE_ZERO = replicate sample 0, i.e. no-op resolve. */
+    VkSubpassDescriptionDepthStencilResolve ds_resolve = {0};
+    ds_resolve.sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE;
+    ds_resolve.depthResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    ds_resolve.stencilResolveMode = VK_RESOLVE_MODE_SAMPLE_ZERO_BIT;
+    ds_resolve.pDepthStencilResolveAttachment = NULL;
+    msrtss.pNext = &ds_resolve;
+
     VkSubpassDescription2 sub = {VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
     sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     sub.colorAttachmentCount = 1;
@@ -866,6 +879,7 @@ static int create_attachment(
     VkImage *out_image, VkDeviceMemory *out_memory, VkImageView *out_view,
     uint32_t width, uint32_t height,
     VkFormat format, VkSampleCountFlagBits samples,
+    VkImageCreateFlags img_flags,
     VkImageUsageFlags usage, VkImageAspectFlags aspect,
     VkAccessFlags dst_access, VkPipelineStageFlags dst_stage,
     VkImageLayout new_layout)
@@ -880,6 +894,8 @@ static int create_attachment(
     img_ci.arrayLayers = 1;
     img_ci.samples = samples;
     img_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    img_ci.flags = img_flags;   /* MSRTSS 1x attachments need
+                                 * VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT */
     img_ci.usage = usage;
     img_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(g_vk_ctx.device, &img_ci, NULL, out_image) != VK_SUCCESS)
@@ -965,9 +981,16 @@ static vg_lite_error_t ensure_resolve_image(buffer_internal_t *internal, vg_lite
     if (internal->resolve_image != VK_NULL_HANDLE)
         return VG_LITE_SUCCESS;
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    /* MSRTSS: the 1x resolve scratch is an MSRTSS framebuffer attachment
+     * (VUID-VkFramebufferCreateInfo-samples-06881 image flag) and the seed
+     * copy writes it as TRANSFER_DST (VUID-vkCmdCopyImage-aspect-06663). */
+    VkImageCreateFlags msrtss_flags = g_vk_ctx.msrtss_enabled
+        ? VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT : 0;
+    VkImageUsageFlags extra_usage = g_vk_ctx.msrtss_enabled
+        ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0;
     if (create_attachment(&internal->resolve_image, &internal->resolve_memory, &internal->resolve_view,
-            target->width, target->height, vkfmt, VK_SAMPLE_COUNT_1_BIT,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            target->width, target->height, vkfmt, VK_SAMPLE_COUNT_1_BIT, msrtss_flags,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | extra_usage,
             VK_IMAGE_ASPECT_COLOR_BIT,
             VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1157,7 +1180,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     if (!g_vk_ctx.msrtss_enabled && internal->msaa_color_image == VK_NULL_HANDLE) {
         VkFormat vkfmt = vg_lite_format_to_vk(target->format);
         if (create_attachment(&internal->msaa_color_image, &internal->msaa_color_memory, &internal->msaa_color_view,
-                target->width, target->height, vkfmt, g_msaa_samples,
+                target->width, target->height, vkfmt, g_msaa_samples, 0,
                 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                 VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1169,8 +1192,12 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
         /* depth is single-sampled under MSRTSS */
         VkSampleCountFlagBits depth_samples = g_vk_ctx.msrtss_enabled
             ? VK_SAMPLE_COUNT_1_BIT : g_msaa_samples;
+        /* 1x MSRTSS framebuffer attachment needs the MSRTSS image flag
+         * (VUID-VkFramebufferCreateInfo-samples-06881). */
+        VkImageCreateFlags depth_flags = g_vk_ctx.msrtss_enabled
+            ? VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT : 0;
         if (create_attachment(&internal->msaa_depth_image, &internal->msaa_depth_memory, &internal->msaa_depth_view,
-                target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, depth_samples,
+                target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, depth_samples, depth_flags,
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
                 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
