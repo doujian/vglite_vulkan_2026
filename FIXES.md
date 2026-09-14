@@ -1260,7 +1260,7 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 
 **Solution**: The buffer shape is now decided ONCE at allocate time via a probe chain (src/vg_lite.c): (1) OPTIMAL+STORAGE+MUTABLE_FORMAT -> compute-shader upload (internal->has_storage=1); (2) if rejected, OPTIMAL with base usage (no STORAGE/MUTABLE, image created in the real format) -> upload via the new upload_buffer_copy() staging + kCmdCopyBufferToImage path in src/vg_lite_upload.c; (3) if even the base OPTIMAL combo is rejected, degrade to a LINEAR allocation. g_lite_upload_buffer routes on internal->is_optimal/has_storage (the buffer's fixed shape), never re-probing per upload. Shadow-transform formats (A4, OPENVG_sRGBA_8888) on OPTIMAL buffers return NOT_SUPPORT as before. Env var VGLITE_DISABLE_STORAGE_UPLOAD=1 forces the degraded path for testing.
 
-**Verification**: test_uploadTiled 4/4 on both paths (default compute path and VGLITE_DISABLE_STORAGE_UPLOAD=1 copy path, tiled == linear byte-exact); test_uploadBuffer 3/3; full suite 41 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash ¡ª identical to baseline.
+**Verification**: test_uploadTiled 4/4 on both paths (default compute path and VGLITE_DISABLE_STORAGE_UPLOAD=1 copy path, tiled == linear byte-exact); test_uploadBuffer 3/3; full suite 41 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash ï¿½ï¿½ identical to baseline.
 
 **Files**: src/vg_lite.c, src/vg_lite_upload.c, src/vg_lite_vulkan.h
 
@@ -1285,3 +1285,24 @@ stencil pipeline / cover pipeline / VBO / IBO / cache):
 **Solution**: Added public helper vg_lite_dump_subdir() (util/vg_lite_util.c + inc/vg_lite_util.h) returning the DUMP_SUBDIR string; test_tiger now composes the readback path "<dump_subdir>/tiger_output.png" for the golden compare.
 
 **Verification**: test_tiger PASS (3.90% pixels differ, within 5.5% tolerance, exit=0); full suite 43 PASS / test_gfx3+test_imgIndex FAIL / test_sft_blit crash.
+
+## 35. MSRTSS (VK_EXT_multisampled_render_to_single_sampled) hardware tile resolve
+
+**Symptom**: MSAA rendering required a per-buffer 4x MSAA color sidecar image plus a fullscreen-triangle "seed" draw on every dirty target switch. Costs: extra memory (a 4x color image per render target) and extra bandwidth (a full-screen seed draw per new render pass, plus an explicit resolve pass on flush) â€” suboptimal on tile-based GPUs.
+
+**Root Cause**: Classic explicit-resolve MSAA design carried over from the original port. Hardware tile resolve (load 1x content replicated to N samples at render-pass begin, resolve back to 1x at store) was never used, so the driver had to maintain the N-sample image itself and keep it in sync with the 1x target via seed draws.
+
+**Solution**: Added a VK_EXT_multisampled_render_to_single_sampled (MSRTSS) path in src/vg_lite_vulkan.c:
+
+1. **Extension enable**: unconditional enumeration + feature enable in `vg_lite_vulkan_init`, with the `VGLITE_MSRTSS` env var as override (1=force on, 0=disable, unset=auto).
+2. **Render pass**: `create_render_pass_msrtss()` via `vkCreateRenderPass2` with `VkMultisampledRenderToSingleSampledInfoEXT` on the subpass; 2 single-sampled attachments (`resolve_image` as color + 1x D24S8 depth). Both render pass factories branch on `msrtss_enabled`.
+3. **Render target**: `set_render_target_ex` skips the 4x color sidecar entirely (memory saved), creates depth at 1x, and builds a 2-view framebuffer.
+4. **Seeding**: `seed_msaa` becomes an RP-external `vkCmdCopyImage` targetâ†’resolve_image (no fullscreen draw), only needed after no-MSAA RP writes, CPU-visible writes, or sample-count switches.
+5. **Call sites**: all 5 seed sites (vg_lite.c blit; vg_lite_draw.c Ã—4) restructured to flush active RPs and seed before beginning the MSRTSS RP.
+6. **Layouts**: `resolve_image` layout lifecycle unified on COLOR_ATTACHMENT_OPTIMAL with round-trip barriers around the deferred copy. Automatic fallback to the legacy path when the extension is absent or VGLITE_MSRTSS=0.
+
+Two review-caught hazards fixed during development: a static pNext re-init cycle in the device feature chain, and the seed copy being recorded inside an active render pass at call sites.
+
+**Verification**: All 8 configs 37/38 PASS (test_sft_blit pre-existing crash); forced-fallback (VGLITE_MSRTSS=0) output identical to the legacy path.
+
+**Files**: src/vg_lite_vulkan.c, src/vg_lite_vulkan.h, src/vg_lite.c, src/vg_lite_draw.c

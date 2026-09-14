@@ -79,6 +79,14 @@ The MSAA sample count is runtime-configurable between 2x and 4x (default 4x):
 - Env var `VGLITE_MSAA_SAMPLES=2|4` — selects the sample count at `vg_lite_init` time.
 - Render passes, MSAA attachments and pipeline multisample state all read the global `g_msaa_samples`; shaders have no sample-count assumptions.
 
+### MSRTSS (Multisampled Render to Single Sampled)
+
+On devices supporting `VK_EXT_multisampled_render_to_single_sampled`, the backend renders directly into the 1x target with N-sample rasterization: the hardware loads the 1x content replicated to all samples at render-pass begin and resolves back to 1x at store. When active, the 4x MSAA color sidecar image per render target is eliminated and the fullscreen seed draw is replaced by a plain `vkCmdCopyImage` (hardware load/resolve replaces the explicit resolve pass).
+
+- Env var `VGLITE_MSRTSS`: `1` = force on (requires device support), `0` = disable, unset = auto-enable when the device supports the extension. Read once at `vg_lite_init` time.
+- GPUs without the extension transparently fall back to the legacy explicit-resolve MSAA path; no API or test changes are needed.
+- Tested status: the fallback path is verified across the full 8-config test matrix on a GPU without the extension; the active path is verified by construction and spec review — it still needs hardware revalidation on a supporting GPU.
+
 
 ## Build
 
