@@ -207,6 +207,13 @@ uint8_t use_obb_blit;                /* 0 = original fullscreen, 1 = OBB pipelin
 pipeline_cache_entry_t blit_obb_pipeline_cache[MAX_PIPELINE_CACHE];
 int blit_obb_pipeline_cache_count;
 
+/* VK_EXT_multisampled_render_to_single_sampled (MSRTSS).
+ * supported=1: device exposes the extension AND it was enabled at device creation.
+ * enabled=1: MSAA render passes use single-sampled attachments + HW resolve.
+ * Runtime override via env VGLITE_MSRTSS=1|0 (default: auto = supported). */
+int msrtss_supported;
+int msrtss_enabled;
+
 #if VGLITE_BLIT_PERF
     /* GPU timestamp query pool */
     VkQueryPool timestamp_query_pool;
@@ -233,6 +240,10 @@ extern vk_context_t g_vk_ctx;
  * they are lazily rebuilt with the new sample count. */
 extern VkSampleCountFlagBits g_msaa_samples;
 void vg_lite_vulkan_set_msaa_samples(int samples);
+
+/* MSRTSS (multisampled render to single sampled) control. */
+int vg_lite_vulkan_msrtss_enabled(void);        /* 1 = active MSRTSS path */
+void vg_lite_vulkan_set_msrtss_enabled(int on); /* flushes+invalidates; -1 = auto */
 
 /* Live-buffer registry so a sample-count switch can invalidate the
  * per-buffer cached MSAA attachments/render passes of all buffers. */
