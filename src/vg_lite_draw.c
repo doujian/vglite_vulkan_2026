@@ -491,6 +491,10 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
 
     int need_flush = (internal->msaa_dirty);
+    /* Captured BEFORE any flush below: they clear current_fb_is_no_msaa /
+     * rebind current_fb_internal (pending-clear flush). */
+    int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
+    buffer_internal_t *prev_internal = g_vk_ctx.current_fb_internal;
     if (need_flush) {
         vg_lite_vulkan_flush_render_pass();
         vg_lite_vulkan_resolve_msaa_to_target(internal);
@@ -505,6 +509,22 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     }
 
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
+    if (g_vk_ctx.msrtss_enabled) {
+        /* MSRTSS: seed is an RP-external vkCmdCopyImage — must run BEFORE
+         * set_render_target begins the MSRTSS RP. End any active RP (the
+         * pending-clear flush leaves a no-MSAA RP bound; a clean RP on
+         * another buffer may also be active), then seed when the previous
+         * RP was no-MSAA (target written outside MSRTSS), a seed is
+         * pending, or the previously-bound target differs. */
+        if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
+            vg_lite_vulkan_flush_render_pass();
+        if (prev_was_no_msaa || internal->msaa_needs_seed ||
+            prev_internal != internal) {
+            VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
+            vg_lite_vulkan_seed_msaa(target, sampler);
+            internal->msaa_needs_seed = 0;
+        }
+    }
     err = vg_lite_vulkan_set_render_target(target);
     if (err != VG_LITE_SUCCESS) {
         destroy_buffer(vbo, vbo_mem);
@@ -514,10 +534,10 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         return err;
     }
 
-    if (g_vk_ctx.current_fb != prev_fb) {
+    if (!g_vk_ctx.msrtss_enabled && g_vk_ctx.current_fb != prev_fb) {
         VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
         vg_lite_vulkan_seed_msaa(target, sampler);
-    } else {
+    } else if (g_vk_ctx.current_fb == prev_fb) {
         VkClearAttachment clr = {0};
         clr.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         VkClearRect rect = {0};
@@ -771,6 +791,9 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         return err;
     }
     int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
+    /* Captured BEFORE the flush above: it clears current_fb_is_no_msaa and
+     * the pending-clear flush below rebinds current_fb_internal. */
+    buffer_internal_t *prev_internal = g_vk_ctx.current_fb_internal;
     vg_lite_vulkan_flush_render_pass();
     
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
@@ -778,22 +801,38 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
     if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
-    if (target_int->msaa_dirty)
+    if (target_int->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
-        if (target_int->has_pending_clear) {
-            /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
-             * Flush to target via no-MSAA RP, then normal seed_msaa. */
-            flush_pending_clear_on_target(target);
-            target_int->has_pending_clear = 0;
-            g_pending_clear_buffer = NULL;
-        }
-        err = vg_lite_vulkan_set_render_target(target);
-        if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
-        if (prev_was_no_msaa || target_int->msaa_needs_seed) {
+    }
+    if (target_int->has_pending_clear) {
+        /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
+         * Flush to target via no-MSAA RP, then normal seed_msaa. */
+        flush_pending_clear_on_target(target);
+        target_int->has_pending_clear = 0;
+        g_pending_clear_buffer = NULL;
+    }
+    if (g_vk_ctx.msrtss_enabled) {
+        /* MSRTSS: end any RP left active by the pending-clear flush — the
+         * seed is an RP-external vkCmdCopyImage and must run BEFORE
+         * set_render_target begins the MSRTSS RP. Seed when the previous
+         * RP was no-MSAA (target written outside MSRTSS), a seed is
+         * pending, or the previously-bound target differs. */
+        if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
+            vg_lite_vulkan_flush_render_pass();
+        if (prev_was_no_msaa || target_int->msaa_needs_seed ||
+            prev_internal != target_int) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
             target_int->msaa_needs_seed = 0;
         }
+    }
+    err = vg_lite_vulkan_set_render_target(target);
+    if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
+    if (!g_vk_ctx.msrtss_enabled && (prev_was_no_msaa || target_int->msaa_needs_seed)) {
+        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
+        vg_lite_vulkan_seed_msaa(target, sampler);
+        target_int->msaa_needs_seed = 0;
+    }
 
     float w = (float)target->width;
     float h = (float)target->height;
@@ -1042,25 +1081,44 @@ static vg_lite_error_t draw_radial_internal(
         return err;
     }
     int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
+    /* Captured BEFORE the flush above: it clears current_fb_is_no_msaa and
+     * the pending-clear flush below rebinds current_fb_internal. */
+    buffer_internal_t *prev_internal = g_vk_ctx.current_fb_internal;
     vg_lite_vulkan_flush_render_pass();
 
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
-    if (target_int->msaa_dirty)
+    if (target_int->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
-        if (target_int->has_pending_clear) {
-            /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
-             * Flush to target via no-MSAA RP, then normal seed_msaa. */
-            flush_pending_clear_on_target(target);
-            target_int->has_pending_clear = 0;
-            g_pending_clear_buffer = NULL;
-        }
-        err = vg_lite_vulkan_set_render_target(target);
-        if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
-        if (prev_was_no_msaa || target_int->msaa_needs_seed) {
+    }
+    if (target_int->has_pending_clear) {
+        /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
+         * Flush to target via no-MSAA RP, then normal seed_msaa. */
+        flush_pending_clear_on_target(target);
+        target_int->has_pending_clear = 0;
+        g_pending_clear_buffer = NULL;
+    }
+    if (g_vk_ctx.msrtss_enabled) {
+        /* MSRTSS: end any RP left active by the pending-clear flush — the
+         * seed is an RP-external vkCmdCopyImage and must run BEFORE
+         * set_render_target begins the MSRTSS RP. Seed when the previous
+         * RP was no-MSAA (target written outside MSRTSS), a seed is
+         * pending, or the previously-bound target differs. */
+        if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
+            vg_lite_vulkan_flush_render_pass();
+        if (prev_was_no_msaa || target_int->msaa_needs_seed ||
+            prev_internal != target_int) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
             target_int->msaa_needs_seed = 0;
         }
+    }
+    err = vg_lite_vulkan_set_render_target(target);
+    if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
+    if (!g_vk_ctx.msrtss_enabled && (prev_was_no_msaa || target_int->msaa_needs_seed)) {
+        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
+        vg_lite_vulkan_seed_msaa(target, sampler);
+        target_int->msaa_needs_seed = 0;
+    }
 
     float w = (float)target->width;
     float h = (float)target->height;
@@ -1261,25 +1319,44 @@ static vg_lite_error_t draw_grad_internal(
         return err;
     }
     int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
+    /* Captured BEFORE the flush above: it clears current_fb_is_no_msaa and
+     * the pending-clear flush below rebinds current_fb_internal. */
+    buffer_internal_t *prev_internal = g_vk_ctx.current_fb_internal;
     vg_lite_vulkan_flush_render_pass();
 
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    if (internal->msaa_dirty)
+    if (internal->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(internal);
-        if (internal->has_pending_clear) {
-            /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
-             * Flush to target via no-MSAA RP, then normal seed_msaa. */
-            flush_pending_clear_on_target(target);
-            internal->has_pending_clear = 0;
-            g_pending_clear_buffer = NULL;
-        }
-        err = vg_lite_vulkan_set_render_target(target);
-        if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
-        if (prev_was_no_msaa || internal->msaa_needs_seed) {
+    }
+    if (internal->has_pending_clear) {
+        /* MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA.
+         * Flush to target via no-MSAA RP, then normal seed_msaa. */
+        flush_pending_clear_on_target(target);
+        internal->has_pending_clear = 0;
+        g_pending_clear_buffer = NULL;
+    }
+    if (g_vk_ctx.msrtss_enabled) {
+        /* MSRTSS: end any RP left active by the pending-clear flush — the
+         * seed is an RP-external vkCmdCopyImage and must run BEFORE
+         * set_render_target begins the MSRTSS RP. Seed when the previous
+         * RP was no-MSAA (target written outside MSRTSS), a seed is
+         * pending, or the previously-bound target differs. */
+        if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
+            vg_lite_vulkan_flush_render_pass();
+        if (prev_was_no_msaa || internal->msaa_needs_seed ||
+            prev_internal != internal) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
             vg_lite_vulkan_seed_msaa(target, sampler);
             internal->msaa_needs_seed = 0;
         }
+    }
+    err = vg_lite_vulkan_set_render_target(target);
+    if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
+    if (!g_vk_ctx.msrtss_enabled && (prev_was_no_msaa || internal->msaa_needs_seed)) {
+        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
+        vg_lite_vulkan_seed_msaa(target, sampler);
+        internal->msaa_needs_seed = 0;
+    }
 
     VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
     vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);

@@ -1687,6 +1687,13 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
             0, NULL, 0, NULL, 1, &src_bar);
     }
 
+#if VGLITE_BLIT_MSAA
+    /* Captured BEFORE the pending-clear flush below: it binds a no-MSAA RP
+     * on this target and overwrites current_fb_is_no_msaa. */
+    int prev_was_no_msaa = g_vk_ctx.current_fb_is_no_msaa;
+    buffer_internal_t *prev_internal = g_vk_ctx.current_fb_internal;
+#endif
+
     /* Consume pending clear.
      * MSAA path: llvmpipe has a bug with vkCmdClearAttachments on 4x MSAA
      *   attachments (R/B swap on B5G6R5). Must flush to target via no-MSAA RP,
@@ -1727,8 +1734,24 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
 
 #if VGLITE_BLIT_MSAA
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
+    if (g_vk_ctx.msrtss_enabled) {
+        /* MSRTSS: seed is an RP-external vkCmdCopyImage — must run BEFORE
+         * set_render_target begins the MSRTSS RP. End any active RP (the
+         * pending-clear flush leaves a no-MSAA RP bound; a clean RP on
+         * another buffer may also be active), then seed when the previous
+         * RP was no-MSAA (target written outside MSRTSS), a seed is
+         * pending, or the previously-bound target differs. */
+        if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
+            vg_lite_vulkan_flush_render_pass();
+        buffer_internal_t *t_int = (buffer_internal_t *)target->handle;
+        if (prev_was_no_msaa || t_int->msaa_needs_seed ||
+            prev_internal != t_int) {
+            vg_lite_vulkan_seed_msaa(target, sampler);
+            t_int->msaa_needs_seed = 0;
+        }
+    }
     vg_lite_vulkan_set_render_target(target);
-    if (g_vk_ctx.current_fb != prev_fb) {
+    if (!g_vk_ctx.msrtss_enabled && g_vk_ctx.current_fb != prev_fb) {
         vg_lite_vulkan_seed_msaa(target, sampler);
     }
 #else
