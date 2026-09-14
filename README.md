@@ -85,7 +85,7 @@ On devices supporting `VK_EXT_multisampled_render_to_single_sampled`, the backen
 
 - Env var `VGLITE_MSRTSS`: `1` = force on (requires device support), `0` = disable, unset = auto-enable when the device supports the extension. Read once at `vg_lite_init` time.
 - GPUs without the extension transparently fall back to the legacy explicit-resolve MSAA path; no API or test changes are needed.
-- Tested status: the fallback path is verified across the full 8-config test matrix on a GPU without the extension; the active path is verified by construction and spec review — it still needs hardware revalidation on a supporting GPU.
+- Tested status: the active path is verified on lavapipe (Mesa Vulkan 1.4 software rasterizer) with Khronos validation layers enabled — full test suite A/B (`VGLITE_MSRTSS=0` vs `1`) shows zero validation errors (only the two pre-existing `02275` usage-VUIDs on test_uploadBatch/test_uploadTiled, present in both modes), identical exit codes, and byte-identical dumps except documented minor resolve-filter rounding on AA edges in tiger/clock/ui (see FIXES.md) and scissors.png, where the MSRTSS output is the correct one (pre-existing legacy scissor+seed bug). The fallback path is verified across the full 8-config test matrix on a GPU without the extension. One confirm run on a real tile-based GPU is still recommended before production. `VGLITE_MSRTSS` semantics are unchanged: `1` = force on, `0` = disable, unset = auto.
 
 
 ## Build
