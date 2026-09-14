@@ -924,6 +924,9 @@ static vg_lite_error_t download_from_image(vg_lite_buffer_t *buffer, void *dst_d
 }
 
 /* Public API: upload CPU data to buffer (handles both LINEAR and OPTIMAL) */
+/* MSAA/MSRTSS read-side guard (defined near vg_lite_buffer_read_ptr) */
+static void resolve_dirty_before_cpu_read(vg_lite_buffer_t *buffer);
+
 vg_lite_error_t vg_lite_buffer_write(vg_lite_buffer_t *buffer, const void *src_data)
 {
     if (!buffer || !buffer->handle || !src_data) return VG_LITE_INVALID_ARGUMENT;
@@ -954,6 +957,8 @@ vg_lite_error_t vg_lite_buffer_download(vg_lite_buffer_t *buffer, void *dst_data
 {
     if (!buffer || !buffer->handle || !dst_data) return VG_LITE_INVALID_ARGUMENT;
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    /* MSAA/MSRTSS: resolve pending scratch content before reading */
+    resolve_dirty_before_cpu_read(buffer);
     if (buffer->format == VG_LITE_A4) {
         /* Pack the expanded GPU pixels back into the packed layout */
         vg_lite_finish();
@@ -984,6 +989,9 @@ vg_lite_error_t vg_lite_buffer_download_image(vg_lite_buffer_t *buffer, void *ds
     /* Shadow-layout formats keep their pack/rotate download contract */
     if (buffer->format == VG_LITE_A4 || buffer->format == OPENVG_sRGBA_8888)
         return vg_lite_buffer_download(buffer, dst_data);
+
+    /* MSAA/MSRTSS: resolve pending scratch content before reading */
+    resolve_dirty_before_cpu_read(buffer);
 
     if (!internal->is_optimal) {
         /* LINEAR target is already host-mapped in VGLite layout */
@@ -1111,6 +1119,20 @@ vg_lite_error_t vg_lite_buffer_download_image(vg_lite_buffer_t *buffer, void *ds
 }
 
 /* Public API: acquire read-only CPU pointer (LINEAR: zero-copy, OPTIMAL: cached download) */
+/* MSAA/MSRTSS read-side guard: a dirty target's latest GPU content lives
+ * in its 1x resolve scratch, not the LINEAR image. Resolve (and submit)
+ * before any CPU-side read of the buffer, or the reader sees content that
+ * is one render operation stale (looks like a lost final blit/draw). */
+static void resolve_dirty_before_cpu_read(vg_lite_buffer_t *buffer)
+{
+    buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
+    if (!internal->msaa_dirty) return;
+    vg_lite_vulkan_flush_render_pass();
+    vg_lite_vulkan_begin_command();
+    vg_lite_vulkan_resolve_msaa_to_target(internal);
+    vg_lite_vulkan_submit_command(1);
+}
+
 const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
 {
     if (!buffer) return NULL;
@@ -1122,6 +1144,8 @@ const void *vg_lite_buffer_read_ptr(vg_lite_buffer_t *buffer)
         flush_pending_clear_global();
         vg_lite_finish();
     }
+
+    resolve_dirty_before_cpu_read(buffer);
 
     if (!internal->is_optimal) {
         if (buffer->format == VG_LITE_A4 && internal->a4_gpu_dirty) {
@@ -1736,19 +1760,27 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     if (g_vk_ctx.msrtss_enabled) {
         /* MSRTSS: seed is an RP-external vkCmdCopyImage — must run BEFORE
-         * set_render_target begins the MSRTSS RP. End any active RP (the
-         * pending-clear flush leaves a no-MSAA RP bound; a clean RP on
-         * another buffer may also be active), then seed when the previous
-         * RP was no-MSAA (target written outside MSRTSS), a seed is
-         * pending, or the previously-bound target differs. */
-        if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
-            vg_lite_vulkan_flush_render_pass();
+         * set_render_target begins the MSRTSS RP. Seed only when needed
+         * (previous RP was no-MSAA, a seed is pending, or the previously-
+         * bound target differs); otherwise keep the RP open so consecutive
+         * blits reuse one RP instance — every MSRTSS RP instance costs a
+         * full 4x load-replicate + resolve-store of the target. */
         buffer_internal_t *t_int = (buffer_internal_t *)target->handle;
         if (prev_was_no_msaa || t_int->msaa_needs_seed ||
             prev_internal != t_int) {
+            if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
+                vg_lite_vulkan_flush_render_pass();
+            /* The flush left the previous target msaa_dirty: its latest
+             * content lives in the 1x resolve scratch, not the LINEAR
+             * image. Resolve now — this blit may sample it (A->B copy)
+             * and a CPU readback must not see stale content. */
+            if (prev_internal && prev_internal->msaa_dirty)
+                vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
             vg_lite_vulkan_seed_msaa(target, sampler);
             t_int->msaa_needs_seed = 0;
         }
+        /* A clean target switch without seed is handled inside
+         * set_render_target_ex (ends the old RP + resolves it there). */
     }
     vg_lite_vulkan_set_render_target(target);
     if (!g_vk_ctx.msrtss_enabled && g_vk_ctx.current_fb != prev_fb) {

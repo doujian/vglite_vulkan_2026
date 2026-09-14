@@ -518,6 +518,11 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
          * pending, or the previously-bound target differs. */
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
+        /* The flush may have left the previous target msaa_dirty (its
+         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * resolve before seeding so later reads/sampling are not stale. */
+        if (prev_internal && prev_internal->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
         if (prev_was_no_msaa || internal->msaa_needs_seed ||
             prev_internal != internal) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
@@ -819,6 +824,11 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
          * pending, or the previously-bound target differs. */
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
+        /* The flush may have left the previous target msaa_dirty (its
+         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * resolve before seeding so later reads/sampling are not stale. */
+        if (prev_internal && prev_internal->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
         if (prev_was_no_msaa || target_int->msaa_needs_seed ||
             prev_internal != target_int) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
@@ -1105,6 +1115,11 @@ static vg_lite_error_t draw_radial_internal(
          * pending, or the previously-bound target differs. */
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
+        /* The flush may have left the previous target msaa_dirty (its
+         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * resolve before seeding so later reads/sampling are not stale. */
+        if (prev_internal && prev_internal->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
         if (prev_was_no_msaa || target_int->msaa_needs_seed ||
             prev_internal != target_int) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
@@ -1343,6 +1358,11 @@ static vg_lite_error_t draw_grad_internal(
          * pending, or the previously-bound target differs. */
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
+        /* The flush may have left the previous target msaa_dirty (its
+         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * resolve before seeding so later reads/sampling are not stale. */
+        if (prev_internal && prev_internal->msaa_dirty)
+            vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
         if (prev_was_no_msaa || internal->msaa_needs_seed ||
             prev_internal != internal) {
             VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
