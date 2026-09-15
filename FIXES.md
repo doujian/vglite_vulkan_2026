@@ -1366,3 +1366,24 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Verification**: (1) All 8 configs rebuilt; on the local GPU (MSRTSS not available -> inert fallback) 46/46 exes exit 0 per config except the allowed pre-existing test_sft_blit crash (config 1 only; elsewhere it passes). (2) Active-path A/B on lavapipe (Mesa 26.2.0 release-msvc portable, build_tiled = OPTIMAL+MSAA+OBB, the primary direct-path config): `VGLITE_MSRTSS=1` ("[msrtss] ... enabled" confirmed) -- 46/46 exit 0 including test_sft_blit; `VGLITE_MSRTSS=0` -- 46/46 exit 0. PNG dump A/B: 1017/1021 byte-identical; the only 4 diffs (clock/scissors/tiger_output/ui) are exactly the pre-existing documented MSRTSS A/B set (resolve-filter AA-edge rounding; scissors differs because the legacy baseline itself is wrong). Validation-layer VUID counts identical between MSRTSS=1 and =0 runs (748 x pre-existing VUID-VkImageViewCreateInfo-usage-02275, the known B5G6R5+STORAGE issue; no 06881, no new VUIDs from the direct path). (3) build_opt_msaa_noobb (OPTIMAL+MSAA, no OBB) lavapipe MSRTSS=1 smoke: 46/46 exit 0.
 
 **Files**: src/vg_lite_vulkan.h, src/vg_lite.c, src/vg_lite_vulkan.c
+
+## Fix: multi-buffer pending clears silently dropped by the single-slot g_pending_clear_buffer (2026-09-15)
+
+**Symptom**: The sequence `vg_lite_clear(A, fullscreen); vg_lite_clear(B, fullscreen); vg_lite_finish();` materialized only B's clear. Any CPU readback or PNG dump of A afterwards returned stale pixels (all-zero on a freshly allocated buffer). The same happened with `vg_lite_buffer_read_ptr(A)` instead of finish: read_ptr's guard flushed the global slot (B), not A. Found by code inspection during the MSRTSS direct-attachment render-pass analysis of test_tiled.
+
+**Root Cause**: Deferred clears were tracked by a single global pointer `g_pending_clear_buffer` (vg_lite.c). Every `vg_lite_clear` overwrote it, so at most one buffer could carry a pending clear; a second clear on another buffer orphaned the first one's `internal->has_pending_clear` flag with nothing to ever materialize it. `flush_pending_clear_global()` (called from `vg_lite_finish`/`vg_lite_flush`/read_ptr) flushed only the pointer's target. The partial-clear path masked the bug in common sequences (a partial clear on the same buffer force-flushes its own pending fullscreen clear first), which is why it survived the earlier clear work.
+
+**Solution** (src/vg_lite.c):
+1. New multi-buffer tracking list `g_pending_clear_list` (dynamic array) maintained by `pending_clear_track()` (called from both deferral branches of `vg_lite_clear`) and `pending_clear_untrack()` (called from `flush_pending_clear_on_target` on BOTH the early-return path ！ entries can be stale because draw/blit consumption sites only null the legacy single-slot pointer ！ and the normal completion path).
+2. `flush_pending_clear_global()` now drains the whole list: `while (count > 0) flush_pending_clear_on_target(list[0])` ！ terminates because every flush path untracks.
+3. `vg_lite_free()` untracks the buffer, preventing dangling pointers when a buffer is destroyed while a clear is still pending.
+4. `g_pending_clear_buffer` is kept (legacy convenience for the draw/blit consumption sites) but is no longer authoritative.
+
+**Test** (new `tests/clear_multi/clear_multi.c`, TDD - written first and confirmed FAILING on the pre-fix code: case 1 A=0/4096 pixels, case 3 A=4096 stale px; post-fix 3/3 PASS):
+- clear_multi_001: fullscreen clear A then B -> finish -> both materialize (pre-fix: A lost).
+- clear_multi_002: fullscreen + partial clear on A, fullscreen on B -> finish -> all materialize (guards the MSRTSS deferred-partial-clear fields too).
+- clear_multi_003: fullscreen clears on A and B -> `vg_lite_buffer_read_ptr(A)` with NO finish -> A must materialize (pre-fix: A stale).
+
+**Verification**: (1) 8 configs rebuilt, 47 test exes per config: only the allowed pre-existing test_sft_blit crash fails; test_clear_multi passes everywhere. (2) lavapipe (build_tiled) `VGLITE_MSRTSS=1` ("[msrtss] enabled") and `=0`: test_clear_multi 3/3 PASS both modes; full 47-exe run under MSRTSS=1 all exit 0. (3) PNG dump A/B vs the pre-fix MSRTSS=1 baseline: 1021/1021 byte-identical, 0 diffs ！ the fix is behavior-neutral for all previously-working single-pending-clear paths.
+
+**Files**: src/vg_lite.c, tests/clear_multi/clear_multi.c (new), tests/CMakeLists.txt
