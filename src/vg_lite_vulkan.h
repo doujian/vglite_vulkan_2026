@@ -49,15 +49,26 @@ typedef struct {
     VkDeviceMemory resolve_memory;
     int msaa_needs_seed;  /* Set when no-MSAA RP wrote to target; draw must seed MSAA before use */
     int is_optimal;       /* 1 = OPTIMAL tiling + DEVICE_LOCAL, CPU access via staging */
+    int msrtss_direct;    /* 1 = OPTIMAL image created with the MSRTSS flag; when MSRTSS
+                           * is enabled the target itself is the RP color attachment
+                           * (no resolve scratch, no seed/resolve copies). Probe-gated. */
+    int rp_mode;          /* mode stamp of cached render_pass: 0=legacy 1=msrtss scratch 2=msrtss direct */
+    int clear_rp_mode;    /* mode stamp of cached clear_render_pass (same encoding) */
     int has_storage;      /* 1 = image created with STORAGE usage (compute-shader upload);
                            * 0 + is_optimal = upload via staging + CopyBufferToImage */
     void *cpu_cache;      /* cached CPU copy for OPTIMAL buffers (read-pixel support) */
     uint32_t width;
     uint32_t height;
     int msaa_dirty;
-    /* Delayed clear state: fullscreen clear deferred to next RP loadOp=CLEAR */
+    /* Delayed clear state: fullscreen clear deferred to next RP loadOp=CLEAR.
+     * Under MSRTSS a partial clear is deferred too — applied as
+     * vkCmdClearAttachments inside the next RP (1x attachment, so the
+     * llvmpipe 4x B5G6R5 clear bug cannot trigger). */
     int has_pending_clear;
     uint32_t pending_clear_color;
+    int pending_clear_is_fullscreen;   /* 1 = consumable as loadOp=CLEAR */
+    int32_t pending_clear_x, pending_clear_y;      /* clamped rect (partial) */
+    int32_t pending_clear_w, pending_clear_h;
     VkRenderPass clear_render_pass;  /* lazily-created MSAA RP with loadOp=CLEAR */
     /* VG_LITE_A4 only: CPU side stays packed 4bpp (buffer->memory points at
      * a4_shadow), GPU side is an R8 image with expanded 1 byte/pixel.

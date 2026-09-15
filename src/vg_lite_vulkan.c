@@ -592,16 +592,22 @@ vg_lite_error_t vg_lite_vulkan_submit_command(int wait)
     return VG_LITE_SUCCESS;
 }
 
-/* MSRTSS render pass: 2 single-sampled attachments (color = the resolve
- * scratch, depth D24S8), rasterizationSamples = g_msaa_samples via the
- * subpass pNext chain. Hardware loads/replicates the 1x content and
- * resolves on store — replaces the 4x color sidecar + resolve attachment. */
+/* MSRTSS render pass: 2 single-sampled attachments (color + D24S8 depth),
+ * rasterizationSamples = g_msaa_samples via the subpass pNext chain.
+ * Hardware loads/replicates the 1x content and resolves on store — replaces
+ * the 4x color sidecar + resolve attachment.
+ * direct=0: color attachment is the 1x resolve scratch (COLOR_ATTACHMENT_
+ * OPTIMAL lifecycle, copied to/from the target around the RP).
+ * direct=1: color attachment IS the target image, which lives in GENERAL
+ * layout its whole life (uploads, copies, sampling, no-MSAA RPs all use
+ * GENERAL) — so initialLayout/finalLayout GENERAL absorb every RP-external
+ * write via loadOp=LOAD and leave the target directly sampleable/readable. */
 static VkRenderPass create_render_pass_msrtss(VkFormat format,
-                                              VkAttachmentLoadOp color_load)
+                                              VkAttachmentLoadOp color_load,
+                                              int direct)
 {
     VkAttachmentDescription2 att[2] = {0};
-    /* [0] color: 1x OPTIMAL scratch; store = the HW resolve; still copied
-     * to the LINEAR target afterwards (direct-to-LINEAR smears). */
+    /* [0] color: 1x attachment; store = the HW resolve. */
     att[0].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
     att[0].format = format;
     att[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -610,12 +616,18 @@ static VkRenderPass create_render_pass_msrtss(VkFormat format,
     att[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     att[0].initialLayout = (color_load == VK_ATTACHMENT_LOAD_OP_LOAD)
-        ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED;
-    /* Layout lifecycle of the 1x color scratch: creation barrier → COLOR,
-     * RP load/store → COLOR (finalLayout = COLOR so every subsequent LOAD
-     * RP instance matches its initialLayout); resolve_msaa_to_target
-     * transitions it out to TRANSFER_SRC for the copy and back to COLOR. */
-    att[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        ? (direct ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+        : VK_IMAGE_LAYOUT_UNDEFINED;
+    /* Layout lifecycle of the 1x color attachment:
+     *  - scratch: creation barrier → COLOR, RP load/store → COLOR (finalLayout
+     *    COLOR so every subsequent LOAD RP instance matches its initialLayout);
+     *    resolve_msaa_to_target transitions it out to TRANSFER_SRC for the copy
+     *    and back to COLOR.
+     *  - direct: the target stays GENERAL before/after the RP (all RP-external
+     *    accesses — upload, copy, sampling, no-MSAA RP — run in GENERAL), so
+     *    the RP enters and leaves GENERAL. */
+    att[0].finalLayout = direct
+        ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     /* [1] depth/stencil: also single-sampled under MSRTSS. */
     att[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
     att[1].format = VK_FORMAT_D24_UNORM_S8_UINT;
@@ -710,7 +722,7 @@ static VkRenderPass create_render_pass_msrtss(VkFormat format,
 VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
 {
     if (g_vk_ctx.msrtss_enabled)
-        return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_LOAD);
+        return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_LOAD, 0);
     VkAttachmentDescription attachments[3] = {0};
     /* MSAA color attachment */
     attachments[0].format = format;
@@ -801,7 +813,7 @@ VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
 VkRenderPass vg_lite_vulkan_create_render_pass_clear(VkFormat format)
 {
     if (g_vk_ctx.msrtss_enabled)
-        return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_CLEAR);
+        return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_CLEAR, 0);
     VkAttachmentDescription attachments[3] = {0};
     attachments[0].format = format;
     attachments[0].samples = g_msaa_samples;
@@ -1005,7 +1017,13 @@ vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sam
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
     if (g_vk_ctx.msrtss_enabled) {
-        /* MSRTSS: no seed draw — the RP loads the 1x resolve_image directly
+        /* Direct mode: the target itself is the color attachment and the RP
+         * loads it with initialLayout GENERAL + loadOp=LOAD — every RP-
+         * external write (seed copy target, no-MSAA RP, upload, CPU map) is
+         * already visible in it, so no seed of any kind is needed. */
+        if (internal->msrtss_direct)
+            return VG_LITE_SUCCESS;
+        /* MSRTSS scratch: no seed draw — the RP loads the 1x resolve_image directly
          * (HW replicates samples on load, exactly like the old fullscreen-tri
          * blit of resolved content). After no-MSAA RP writes / CPU writes /
          * sample switches the target holds newer content than resolve_image;
@@ -1163,15 +1181,34 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     }
 
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
+    /* Direct mode: the OPTIMAL target itself (created with the MSRTSS image
+     * flag) is the RP color attachment — no resolve scratch, no seed/resolve
+     * copies. loadOp=LOAD with initialLayout GENERAL absorbs all RP-external
+     * writes (uploads, copies, no-MSAA RPs). */
+    int direct = g_vk_ctx.msrtss_enabled && internal->msrtss_direct;
+    int rp_mode = g_vk_ctx.msrtss_enabled ? (direct ? 2 : 1) : 0;
     VkRenderPass rp;
     if (clear_value) {
-        /* Use CLEAR variant RP */
-        if (internal->clear_render_pass == VK_NULL_HANDLE)
-            internal->clear_render_pass = vg_lite_vulkan_create_render_pass_clear(vkfmt);
+        /* Use CLEAR variant RP (mode-stamped: recreate if the runtime mode
+         * changed since it was cached — attachment count/layouts differ). */
+        if (internal->clear_render_pass == VK_NULL_HANDLE || internal->clear_rp_mode != rp_mode) {
+            if (internal->clear_render_pass)
+                vkDestroyRenderPass(g_vk_ctx.device, internal->clear_render_pass, NULL);
+            internal->clear_render_pass = (rp_mode == 0)
+                ? vg_lite_vulkan_create_render_pass_clear(vkfmt)
+                : create_render_pass_msrtss(vkfmt, VK_ATTACHMENT_LOAD_OP_CLEAR, direct);
+            internal->clear_rp_mode = rp_mode;
+        }
         rp = internal->clear_render_pass;
     } else {
-        if (internal->render_pass == VK_NULL_HANDLE)
-            internal->render_pass = vg_lite_vulkan_create_render_pass(vkfmt);
+        if (internal->render_pass == VK_NULL_HANDLE || internal->rp_mode != rp_mode) {
+            if (internal->render_pass)
+                vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
+            internal->render_pass = (rp_mode == 0)
+                ? vg_lite_vulkan_create_render_pass(vkfmt)
+                : create_render_pass_msrtss(vkfmt, VK_ATTACHMENT_LOAD_OP_LOAD, direct);
+            internal->rp_mode = rp_mode;
+        }
         rp = internal->render_pass;
     }
     
@@ -1206,8 +1243,9 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
             return VG_LITE_OUT_OF_MEMORY;
     }
 
-    /* resolve_image is needed in both modes (color attachment under MSRTSS). */
-    {
+    /* resolve_image is needed in both scratch modes (color attachment under
+     * MSRTSS, resolve attachment in legacy). Direct mode skips it entirely. */
+    if (!direct) {
         vg_lite_error_t err = ensure_resolve_image(internal, target);
         if (err != VG_LITE_SUCCESS) return err;
     }
@@ -1215,7 +1253,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     VkImageView fb_views[3];
     uint32_t fb_att_count;
     if (g_vk_ctx.msrtss_enabled) {
-        fb_views[0] = internal->resolve_view;
+        fb_views[0] = direct ? internal->view : internal->resolve_view;
         fb_views[1] = internal->msaa_depth_view;
         fb_att_count = 2;
     } else {
@@ -1237,10 +1275,14 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     
     g_vk_ctx.current_fb = fb;
     g_vk_ctx.current_fb_image = internal->image;
-    /* No MSAA color sidecar under MSRTSS; NULL skips the end-of-pass barrier. */
+    /* No MSAA color sidecar under MSRTSS; NULL skips the end-of-pass barrier.
+     * Direct mode: no resolve scratch either — NULL makes end_render_pass take
+     * the plain GENERAL→GENERAL availability barrier on the target instead of
+     * marking it msaa_dirty (the store already resolved into it). */
     g_vk_ctx.current_msaa_color_image = g_vk_ctx.msrtss_enabled
         ? VK_NULL_HANDLE : internal->msaa_color_image;
-    g_vk_ctx.current_resolve_image = internal->resolve_image;
+    g_vk_ctx.current_resolve_image = (g_vk_ctx.msrtss_enabled && direct)
+        ? VK_NULL_HANDLE : internal->resolve_image;
     g_vk_ctx.current_fb_view = internal->view;
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
@@ -1280,6 +1322,13 @@ vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *interna
 {
     if (!internal || !internal->msaa_dirty)
         return VG_LITE_SUCCESS;
+
+    /* Direct mode: the MSRTSS store already resolved into the target itself
+     * and it lives in GENERAL (RP finalLayout) — nothing to copy. */
+    if (internal->msrtss_direct) {
+        internal->msaa_dirty = 0;
+        return VG_LITE_SUCCESS;
+    }
 
     /* MSRTSS: resolve_image lives in COLOR_ATTACHMENT_OPTIMAL (RP finalLayout
      * / creation barrier). Transition it out for the copy and back afterwards;
