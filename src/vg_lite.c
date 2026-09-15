@@ -12,8 +12,44 @@
 #include "shader_loader.h"
 
 /* Global pointer to the buffer with a pending fullscreen clear.
- * Set by vg_lite_clear, consumed by blit/draw, flushed by finish/read_ptr. */
+ * Set by vg_lite_clear, consumed by blit/draw, flushed by finish/read_ptr.
+ * NOTE: single-slot legacy convenience only — the authoritative multi-buffer
+ * tracking is g_pending_clear_list below (a second clear on another buffer
+ * used to silently drop the first one's clear at finish/read_ptr time). */
 vg_lite_buffer_t *g_pending_clear_buffer = NULL;
+
+/* Multi-buffer pending-clear tracking: every buffer whose clear is deferred
+ * (has_pending_clear) is registered here, so finish/read_ptr can materialize
+ * ALL pending clears, not just the most recent one. */
+static vg_lite_buffer_t **g_pending_clear_list = NULL;
+static int g_pending_clear_count = 0;
+static int g_pending_clear_cap   = 0;
+
+static void pending_clear_track(vg_lite_buffer_t *target)
+{
+    for (int i = 0; i < g_pending_clear_count; i++)
+        if (g_pending_clear_list[i] == target) return;
+    if (g_pending_clear_count == g_pending_clear_cap) {
+        int new_cap = g_pending_clear_cap ? g_pending_clear_cap * 2 : 8;
+        vg_lite_buffer_t **nl =
+            (vg_lite_buffer_t **)realloc(g_pending_clear_list,
+                                         new_cap * sizeof(*nl));
+        if (!nl) return;
+        g_pending_clear_list = nl;
+        g_pending_clear_cap = new_cap;
+    }
+    g_pending_clear_list[g_pending_clear_count++] = target;
+}
+
+static void pending_clear_untrack(vg_lite_buffer_t *target)
+{
+    for (int i = 0; i < g_pending_clear_count; i++) {
+        if (g_pending_clear_list[i] == target) {
+            g_pending_clear_list[i] = g_pending_clear_list[--g_pending_clear_count];
+            return;
+        }
+    }
+}
 
 /* Forward declarations */
 void flush_pending_clear_on_target(vg_lite_buffer_t *target);
@@ -502,6 +538,7 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
 vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
 {
     if (!buffer || !buffer->handle) return VG_LITE_INVALID_ARGUMENT;
+    pending_clear_untrack(buffer);
     vg_lite_vulkan_flush_render_pass();
     vg_lite_vulkan_begin_command();
     buffer_internal_t *internal = (buffer_internal_t *)buffer->handle;
@@ -1361,7 +1398,13 @@ void vg_lite_color_to_vk_clear(vg_lite_buffer_format_t format, vg_lite_color_t c
 void flush_pending_clear_on_target(vg_lite_buffer_t *target)
 {
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    if (!internal->has_pending_clear) return;
+    if (!internal->has_pending_clear) {
+        /* Already consumed elsewhere (e.g. loadOp=CLEAR at a draw site that
+         * only nulled the legacy single-slot pointer) — drop any stale
+         * tracking entry so the global flush loop terminates. */
+        pending_clear_untrack(target);
+        return;
+    }
 
     VkClearAttachment l_clear_att = {0};
     l_clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1393,15 +1436,18 @@ void flush_pending_clear_on_target(vg_lite_buffer_t *target)
     vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &l_clear_att, 1, &l_clear_rect);
 
     internal->has_pending_clear = 0;
+    pending_clear_untrack(target);
     g_pending_clear_buffer = NULL;
 }
 
-/* Flush any pending clear globally. Called at finish/read_ptr. */
+/* Flush any pending clear globally. Called at finish/read_ptr.
+ * Materializes ALL buffers with deferred clears (multi-buffer safe). */
 static void flush_pending_clear_global(void)
 {
-    if (g_pending_clear_buffer) {
-        flush_pending_clear_on_target(g_pending_clear_buffer);
-    }
+    /* flush_pending_clear_on_target always untracks (even on early return),
+     * so draining from the head terminates. */
+    while (g_pending_clear_count > 0)
+        flush_pending_clear_on_target(g_pending_clear_list[0]);
 }
 
 vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rect, vg_lite_color_t color)
@@ -1426,6 +1472,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
         internal->msaa_needs_seed = 1;
         internal->msaa_dirty = 0;
         g_pending_clear_buffer = target;
+        pending_clear_track(target);
         return VG_LITE_SUCCESS;
     }
 
@@ -1469,6 +1516,7 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
              !g_vk_ctx.current_fb_is_no_msaa);
         if (!resolve_current) internal->msaa_needs_seed = 1;
         g_pending_clear_buffer = target;
+        pending_clear_track(target);
         return VG_LITE_SUCCESS;
     }
 

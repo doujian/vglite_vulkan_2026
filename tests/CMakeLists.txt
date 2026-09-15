@@ -176,3 +176,6 @@ add_dependencies(test_msaaSwitch spirv_compilation)
 
 add_executable(test_optimal_dump_recover optimal_dump_recover/optimal_dump_recover.c)
 add_dependencies(test_optimal_dump_recover spirv_compilation)
+
+add_executable(test_clear_multi clear_multi/clear_multi.c)
+add_dependencies(test_clear_multi spirv_compilation)
