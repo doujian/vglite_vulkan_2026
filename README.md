@@ -60,16 +60,16 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 
 ### Blit Path
 
-All blits use the native path: `blit_native.frag` (OBB quad) / `blit_native_fs.frag` (fullscreen triangle) with Vulkan hardware pipeline blend (e.g. SRC_OVER = ONE, ONE_MINUS_SRC_ALPHA) + target seeding. Pipelines are cached per (VkFormat, blend group); render passes are generic per format. A seed draw copies the target's content into the 4x MSAA attachment at the start of each new render pass so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). Single-channel targets are handled by shader output flags (A8 -> alpha, L8 -> luminance) and seed through identity views. The legacy shader-blend path (`blit.frag`) is currently disabled in code.
+All blits use the native path: `blit_native.frag` (OBB quad) / `blit_native_fs.frag` (fullscreen triangle) with Vulkan hardware pipeline blend (e.g. SRC_OVER = ONE, ONE_MINUS_SRC_ALPHA). Pipelines are cached per (VkFormat, blend group); render passes are generic per format. Under MSRTSS the target's content is seeded into the 1x resolve attachment via `vkCmdCopyImage` before each new render pass so hardware blend reads the correct dst (needed when the target was filled externally, e.g. CPU-loaded via `vg_lite_load_raw`). Single-channel targets are handled by shader output flags (A8 -> alpha, L8 -> luminance) and seed through identity views. The legacy shader-blend path (`blit.frag`) is currently disabled in code.
 
 ### Delayed Clear Optimization
 
 Fullscreen `vg_lite_clear` (rect==NULL or covers entire target) is deferred — no GPU operations are executed immediately. The clear color is stored as pending state on the target buffer. When the next `vg_lite_blit` or `vg_lite_draw` targets the same buffer, the clear is merged into the render pass begin:
 
 - **no-MSAA path**: clear and blit/draw share a single render pass (saves 1 RP open/close).
-- **MSAA path**: pending clear is flushed to the target via a no-MSAA RP, then normal `seed_msaa` follows. (Cannot merge into MSAA RP due to llvmpipe `vkCmdClearAttachments` bug on 4x MSAA B5G6R5 attachments.)
+- **MSRTSS path (the only MSAA path)**: the pending clear is consumed by the render pass itself — fullscreen clear via `loadOp=CLEAR`, partial clear via `vkCmdClearAttachments` right after RP begin (all MSRTSS attachments are 1x).
 - **Flush points**: `vg_lite_finish` and `vg_lite_buffer_read_ptr` automatically flush any unconsumed pending clear.
-- **Partial clear** (rect != fullscreen): unchanged — executes immediately via `vkCmdClearAttachments`.
+- **Partial clear** (rect != fullscreen): also deferred into the next render pass; unconsumed ones are flushed at the flush points above.
 
 ### Runtime MSAA Sample Count (2x / 4x)
 
@@ -79,13 +79,12 @@ The MSAA sample count is runtime-configurable between 2x and 4x (default 4x):
 - Env var `VGLITE_MSAA_SAMPLES=2|4` — selects the sample count at `vg_lite_init` time.
 - Render passes, MSAA attachments and pipeline multisample state all read the global `g_msaa_samples`; shaders have no sample-count assumptions.
 
-### MSRTSS (Multisampled Render to Single Sampled)
+### MSRTSS (Multisampled Render to Single Sampled) — required
 
-On devices supporting `VK_EXT_multisampled_render_to_single_sampled`, the backend renders directly into the 1x target with N-sample rasterization: the hardware loads the 1x content replicated to all samples at render-pass begin and resolves back to 1x at store. When active, the 4x MSAA color sidecar image per render target is eliminated and the fullscreen seed draw is replaced by a plain `vkCmdCopyImage` (hardware load/resolve replaces the explicit resolve pass).
+MSRTSS via `VK_EXT_multisampled_render_to_single_sampled` is the **only** MSAA mechanism: the backend renders with N-sample rasterization into 1x attachments (the hardware loads the 1x content replicated to all samples at render-pass begin and resolves back to 1x at store). The legacy 4x sidecar path (4x color attachment + explicit fullscreen-triangle seed) has been removed.
 
-- Env var `VGLITE_MSRTSS`: `1` = force on (requires device support), `0` = disable, unset = auto-enable when the device supports the extension. Read once at `vg_lite_init` time.
-- GPUs without the extension transparently fall back to the legacy explicit-resolve MSAA path; no API or test changes are needed.
-- Tested status: the active path is verified on lavapipe (Mesa Vulkan 1.4 software rasterizer) with Khronos validation layers enabled — full test suite A/B (`VGLITE_MSRTSS=0` vs `1`) shows zero validation errors (only the two pre-existing `02275` usage-VUIDs on test_uploadBatch/test_uploadTiled, present in both modes), identical exit codes, and byte-identical dumps except documented minor resolve-filter rounding on AA edges in tiger/clock/ui (see FIXES.md) and scissors.png, where the MSRTSS output is the correct one (pre-existing legacy scissor+seed bug). The fallback path is verified across the full 8-config test matrix on a GPU without the extension. One confirm run on a real tile-based GPU is still recommended before production. `VGLITE_MSRTSS` semantics are unchanged: `1` = force on, `0` = disable, unset = auto.
+- `vg_lite_init` **fails** with a clear error message when the driver does not expose `VK_EXT_multisampled_render_to_single_sampled` (e.g. the Intel Windows driver). Run the tests on a driver that has it — e.g. lavapipe (Mesa software rasterizer): `VK_DRIVER_FILES=D:\tools\mesa\lvp\x64\lvp_icd.x86_64.json`.
+- Verified on lavapipe: full suite 46/46 PASS on all 8 build configurations after the legacy-path removal. One confirm run on a real tile-based GPU is still recommended before production.
 
 
 ## Build
