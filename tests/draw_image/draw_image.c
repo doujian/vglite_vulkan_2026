@@ -142,8 +142,19 @@ static int get_tolerance(vg_lite_buffer_format_t format, vg_lite_blend_t blend)
     else if (bpp >= 16) tol = 12;
     else tol = 8;
 
+    /* Multiplicative blend modes: unorm blend rounding differs between
+     * drivers (integer +127 round-half-up vs driver-side unorm8/float
+     * rounding), so allow +/-1 at full 8-bit precision. */
     switch (blend) {
     case VG_LITE_BLEND_SRC_OVER:
+    case VG_LITE_BLEND_DST_OVER:
+    case VG_LITE_BLEND_SRC_IN:
+    case VG_LITE_BLEND_DST_IN:
+    case VG_LITE_BLEND_SCREEN:
+    case VG_LITE_BLEND_ADDITIVE:
+    case VG_LITE_BLEND_SUBTRACT:
+    case VG_LITE_BLEND_NORMAL_LVGL:
+    case VG_LITE_BLEND_ADDITIVE_LVGL:
         tol += 1;
         break;
     default:
