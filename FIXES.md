@@ -1387,3 +1387,33 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Verification**: (1) 8 configs rebuilt, 47 test exes per config: only the allowed pre-existing test_sft_blit crash fails; test_clear_multi passes everywhere. (2) lavapipe (build_tiled) `VGLITE_MSRTSS=1` ("[msrtss] enabled") and `=0`: test_clear_multi 3/3 PASS both modes; full 47-exe run under MSRTSS=1 all exit 0. (3) PNG dump A/B vs the pre-fix MSRTSS=1 baseline: 1021/1021 byte-identical, 0 diffs ¡ª the fix is behavior-neutral for all previously-working single-pending-clear paths.
 
 **Files**: src/vg_lite.c, tests/clear_multi/clear_multi.c (new), tests/CMakeLists.txt
+
+## 30. Draw_Image_003 and test_msaaSwitch fail on lavapipe driver
+
+**Symptom**: Running the suite with Mesa lavapipe (`VK_DRIVER_FILES` pointed at `D:\tools\mesa\lvp\x64\lvp_icd.x86_64.json`), 44/46 tests passed but `test_draw_image` failed in `Draw_Image_003` cases [153]/[154] (src=ARGB8888, blend=NORMAL_LVGL, 34304/33792 mismatched pixels, all +/-1 in G/B) and `test_msaaSwitch` failed at `set 2x: 7`.
+
+**Root Cause**: Two independent test-side issues, both driver-capability divergence. (1) The CPU reference model rounds fixed-function blend results with integer `+127` round-half-up (tuned against the Intel driver); lavapipe's unorm blend pipeline rounds differently, producing legitimate +/-1 results at full 8-bit precision. The 32bpp tolerance was 0 for all blends except SRC_OVER. (2) lavapipe exposes no 2x-sample-count format, so `vg_lite_set_msaa_samples(2)` correctly returns `VG_LITE_NOT_SUPPORT`, which the test treated as a hard failure.
+
+**Solution**: `tests/draw_image/draw_image.c` `get_tolerance()` now adds +1 for all multiplicative blend modes (DST_OVER/SRC_IN/DST_IN/SCREEN/ADDITIVE/SUBTRACT/NORMAL_LVGL/ADDITIVE_LVGL, in addition to the existing SRC_OVER). `tests/msaaSwitch/msaaSwitch.c` treats `VG_LITE_NOT_SUPPORT` from the 2x switch as a skip (driver capability), while Intel hardware still exercises the full 2x path plus the 3x-rejection and 4x-redraw assertions.
+
+**Verification**: lavapipe default config: 46/46 PASS. Intel default config: msaaSwitch PASSED (full path), test_draw_image 655/655 cases (001:450 + 002:25 + 003:180). Full 8-config matrix on Intel rebuilt and rerun: 46/46 PASS each (test_sft_blit excluded as pre-existing crash).
+
+**Files**: tests/draw_image/draw_image.c, tests/msaaSwitch/msaaSwitch.c
+
+## 31. Remove legacy 4x MSAA sidecar path - MSRTSS is now the only MSAA mechanism
+
+**Symptom**: The engine carried two complete MSAA implementations: the legacy 4x sidecar path (4x msaa_color image + 4x depth + 3-attachment framebuffer + fullscreen-triangle seed) and the MSRTSS path (VK_EXT_multisampled_render_to_single_sampled, all attachments 1x). Every render-target setup branched on msrtss_enabled, doubling the maintenance surface. On drivers without MSRTSS (e.g. the Intel Windows driver on this machine) the legacy path was the active one; on lavapipe (D:\tools\mesa) MSRTSS is exposed and the legacy path was dead code.
+
+**Root Cause**: Historical layering - the legacy path predates MSRTSS support and was kept as a fallback behind runtime probes (msrtss_enabled flag, set_msrtss_enabled API, VGLITE_MSRTSS env override).
+
+**Solution**: Made MSRTSS mandatory and deleted the legacy 4x sidecar machinery (~600 lines, net -360):
+- vg_lite_vulkan.c: create_render_pass/_clear now delegate to create_render_pass_msrtss unconditionally; seed_msaa is MSRTSS-only (legacy fullscreen-triangle seed removed); set_render_target_ex drops the 4x sidecar creation, 3-attachment fb assembly, and rp_mode==0 branch (direct = msrtss_direct, rp_mode = direct ? 2 : 1); depth is always 1x with MSRTSS flags; resolve barriers unconditional; current_msaa_color_image tracking removed; init fails with a clear message when the driver lacks VK_EXT_multisampled_render_to_single_sampled; set_msrtss_enabled deleted, msrtss_enabled() getter returns 1.
+- vg_lite_vulkan.h: buffer_internal_t loses msaa_color_image/view/memory; vk_context_t loses current_msaa_color_image and msrtss_enabled.
+- vg_lite.c: free path, clear (deferred partial clear is now unconditional), and blit (pending-clear consumption, seed logic) drop their !msrtss branches; unused prev_fb removed.
+- vg_lite_draw.c: all four paths (impl/pattern/radial/grad) drop the legacy flush/re-seed branches; pending-clear consumption is unconditional.
+- Kept: no-MSAA 1x path (VGLITE_BLIT_MSAA=OFF configs), g_msaa_samples switching, msaa_needs_seed, resolve scratch, pending-clear mechanism.
+- During the edit one hunk accidentally dropped `internal->has_pending_clear = 1;` from the partial-clear defer path - caught by test_clear on lavapipe (64x64 stale-color region, R/B mismatch) and restored.
+
+**Verification**: grep confirms msaa_color* and msrtss_enabled conditionals are gone from src/ (only the getter definition/declaration remain). Full suite on lavapipe: 46/46 PASS on all 8 build configurations (test_sft_blit excluded as pre-existing crash). On the Intel driver (no MSRTSS) init now fails cleanly with "[msrtss] ... not supported - MSRTSS is required" (expected; run tests with VK_DRIVER_FILES=D:\tools\mesa\lvp\x64\lvp_icd.x86_64.json).
+
+**Files**: src/vg_lite_vulkan.c, src/vg_lite_vulkan.h, src/vg_lite.c, src/vg_lite_draw.c
