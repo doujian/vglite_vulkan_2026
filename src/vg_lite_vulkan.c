@@ -39,12 +39,6 @@ void vg_lite_vulkan_unregister_buffer(buffer_internal_t *internal)
 
 static void destroy_buffer_msaa_objects(buffer_internal_t *internal)
 {
-    if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
-    if (internal->msaa_color_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_color_image, NULL);
-    if (internal->msaa_color_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_color_memory, NULL);
-    internal->msaa_color_view = VK_NULL_HANDLE;
-    internal->msaa_color_image = VK_NULL_HANDLE;
-    internal->msaa_color_memory = VK_NULL_HANDLE;
     if (internal->msaa_depth_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_depth_view, NULL);
     if (internal->msaa_depth_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_depth_image, NULL);
     if (internal->msaa_depth_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_depth_memory, NULL);
@@ -78,7 +72,6 @@ static void invalidate_all_msaa_state(void)
     /* 2. Drop the current framebuffer binding (its views are about to die) */
     g_vk_ctx.current_fb = VK_NULL_HANDLE;
     g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
-    g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
     g_vk_ctx.current_resolve_image = VK_NULL_HANDLE;
     g_vk_ctx.current_fb_view = VK_NULL_HANDLE;
     g_vk_ctx.current_fb_internal = NULL;
@@ -133,28 +126,7 @@ void vg_lite_vulkan_set_msaa_samples(int samples)
 
 int vg_lite_vulkan_msrtss_enabled(void)
 {
-    return g_vk_ctx.msrtss_enabled;
-}
-
-/* on: 1 = enable MSRTSS path, 0 = disable, -1 = auto (= msrtss_supported).
- * VGLITE_MSRTSS is a process-lifetime env read once at init; runtime
- * toggling goes through this function, which can only turn MSRTSS on if
- * the extension was actually enabled at device creation (msrtss_supported);
- * otherwise the request is ignored and the legacy MSAA path stays active. */
-void vg_lite_vulkan_set_msrtss_enabled(int on)
-{
-    if (!g_vk_ctx.device) return;              /* pre-init: resolved at init */
-    int want = (on < 0) ? g_vk_ctx.msrtss_supported : (on && g_vk_ctx.msrtss_supported);
-    want = !!want;
-    if (want == g_vk_ctx.msrtss_enabled) return;
-    /* Reuse the sample-switch invalidation: flush, destroy per-buffer RPs,
-     * attachments and pipelines; they rebuild lazily in the new mode.
-     * needs_seed=1 is correct for MSRTSS too (resolve_image is destroyed,
-     * first pass must re-seed it from the target). set_msaa_samples cannot
-     * be used directly: it early-returns when the sample count is unchanged. */
-    invalidate_all_msaa_state();
-    g_vk_ctx.msrtss_enabled = want;
-    fprintf(stderr, "[msrtss] %s\n", want ? "enabled" : "disabled");
+    return 1; /* MSRTSS is the only MSAA path; always active when init succeeds */
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
@@ -382,26 +354,18 @@ vg_lite_error_t vg_lite_vulkan_init(void)
         }
     }
 
-    /* MSRTSS (VK_EXT_multisampled_render_to_single_sampled): enable at device
-     * creation when available; env VGLITE_MSRTSS overrides ('0'=force off,
-     * '1'=force on w/ warning if unsupported, unset=auto). The extension must
-     * be enabled here for the runtime toggle to be able to turn it on later. */
+    /* MSRTSS is mandatory: the legacy sidecar 4x MSAA path was removed.
+     * Devices without VK_EXT_multisampled_render_to_single_sampled (e.g.
+     * Intel Windows drivers) cannot init anymore. */
     static VkPhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT msrtss_features = {0};
     /* static → survives re-init; clear pNext/features so this init never
-     * carries a stale chain link or enables the feature when MSRTSS is off. */
+     * carries a stale chain link. */
     memset(&msrtss_features, 0, sizeof(msrtss_features));
     msrtss_features.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_FEATURES_EXT;
     msrtss_features.multisampledRenderToSingleSampled = VK_TRUE;
 
-    int msrtss_enable = msrtss_avail;
-    {
-        const char *env = getenv("VGLITE_MSRTSS");
-        if (env && env[0] == '0') msrtss_enable = 0;
-        if (env && env[0] == '1' && !msrtss_avail)
-            fprintf(stderr, "[msrtss] VGLITE_MSRTSS=1 but extension not supported\n");
-    }
-    if (msrtss_enable) {
+    if (msrtss_avail) {
         dev_exts[dev_ext_count++] =
             VK_EXT_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME;
         dev_ci.enabledExtensionCount = dev_ext_count;
@@ -414,8 +378,8 @@ vg_lite_error_t vg_lite_vulkan_init(void)
         g_vk_ctx.msrtss_supported = 1;
         fprintf(stderr, "[msrtss] VK_EXT_multisampled_render_to_single_sampled enabled\n");
     } else {
-        fprintf(stderr, "[msrtss] not available%s\n",
-                msrtss_avail ? " (disabled via VGLITE_MSRTSS=0)" : "");
+        fprintf(stderr, "[msrtss] VK_EXT_multisampled_render_to_single_sampled not supported - MSRTSS is required, init failed\n");
+        return VG_LITE_NO_CONTEXT;
     }
 
     /* Timestamp queries supported by default in Vulkan 1.0 — no feature flag needed.
@@ -430,7 +394,6 @@ vg_lite_error_t vg_lite_vulkan_init(void)
         pd_features2.features.shaderStorageImageWriteWithoutFormat ? 1 : 0;
     /* Overwrite device-level pointers with direct driver dispatch (performance) */
     volkLoadDevice(g_vk_ctx.device);
-    g_vk_ctx.msrtss_enabled = g_vk_ctx.msrtss_supported; /* auto; VGLITE_MSRTSS=0 already forced the enable branch off above */
     vkGetDeviceQueue(g_vk_ctx.device, g_vk_ctx.queue_family_index, 0, &g_vk_ctx.queue);
 
     /* Query timestamp period for GPU timing */
@@ -721,171 +684,16 @@ static VkRenderPass create_render_pass_msrtss(VkFormat format,
 
 VkRenderPass vg_lite_vulkan_create_render_pass(VkFormat format)
 {
-    if (g_vk_ctx.msrtss_enabled)
-        return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_LOAD, 0);
-    VkAttachmentDescription attachments[3] = {0};
-    /* MSAA color attachment */
-    attachments[0].format = format;
-    attachments[0].samples = g_msaa_samples;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    /* Resolve attachment: 1x OPTIMAL scratch. MSAA resolves here, then a
-     * vkCmdCopyImage moves it to the LINEAR target (direct resolve-to-LINEAR
-     * smears non-uniform content on this GPU). */
-    attachments[1].format = format;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    /* MSAA depth/stencil attachment */
-    attachments[2].format = VK_FORMAT_D24_UNORM_S8_UINT;
-    attachments[2].samples = g_msaa_samples;
-    attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[2].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    attachments[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    
-    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference resolve_ref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference stencil_ref = {2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-    
-    VkSubpassDescription sub = {0};
-    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    sub.colorAttachmentCount = 1;
-    sub.pColorAttachments = &color_ref;
-    sub.pResolveAttachments = &resolve_ref;
-    sub.pDepthStencilAttachment = &stencil_ref;
-
-    /* Make loadOp=LOAD across render-pass instances observe the previous
-     * pass's store; required for correct multi-pass MSAA accumulation. */
-    VkSubpassDependency deps[3] = {0};
-    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    deps[0].dstSubpass = 0;
-    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[0].dependencyFlags = 0;
-    deps[1].srcSubpass = 0;
-    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dependencyFlags = 0;
-    /* Self-dependency: a draw's color-attachment write (e.g. the seed blit)
-     * must be visible to a later draw's blend-dst read in the same subpass. */
-    deps[2].srcSubpass = 0;
-    deps[2].dstSubpass = 0;
-    deps[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[2].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[2].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[2].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-    VkRenderPassCreateInfo ci = {0};
-    ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    ci.attachmentCount = 3;
-    ci.pAttachments = attachments;
-    ci.subpassCount = 1;
-    ci.pSubpasses = &sub;
-    ci.dependencyCount = 3;
-    ci.pDependencies = deps;
-    
-    VkRenderPass rp;
-    if (vkCreateRenderPass(g_vk_ctx.device, &ci, NULL, &rp) != VK_SUCCESS) return VK_NULL_HANDLE;
-    return rp;
+    return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_LOAD, 0);
 }
 
 /* MSAA render pass with loadOp=CLEAR on color attachment.
  * Used for delayed clear optimization: when fullscreen clear is pending,
  * the next blit/draw RP begins with loadOp=CLEAR instead of LOAD+seed_msaa.
- * Identical to vg_lite_vulkan_create_render_pass except attachment[0].loadOp = CLEAR. */
+ * Identical to vg_lite_vulkan_create_render_pass except loadOp = CLEAR. */
 VkRenderPass vg_lite_vulkan_create_render_pass_clear(VkFormat format)
 {
-    if (g_vk_ctx.msrtss_enabled)
-        return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_CLEAR, 0);
-    VkAttachmentDescription attachments[3] = {0};
-    attachments[0].format = format;
-    attachments[0].samples = g_msaa_samples;
-    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachments[1].format = format;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    attachments[2].format = VK_FORMAT_D24_UNORM_S8_UINT;
-    attachments[2].samples = g_msaa_samples;
-    attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[2].initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    attachments[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference resolve_ref = {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-    VkAttachmentReference stencil_ref = {2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-
-    VkSubpassDescription sub = {0};
-    sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    sub.colorAttachmentCount = 1;
-    sub.pColorAttachments = &color_ref;
-    sub.pResolveAttachments = &resolve_ref;
-    sub.pDepthStencilAttachment = &stencil_ref;
-
-    VkSubpassDependency deps[3] = {0};
-    deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    deps[0].dstSubpass = 0;
-    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[0].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[0].dependencyFlags = 0;
-    deps[1].srcSubpass = 0;
-    deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[1].dependencyFlags = 0;
-    deps[2].srcSubpass = 0;
-    deps[2].dstSubpass = 0;
-    deps[2].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[2].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deps[2].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[2].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deps[2].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
-
-    VkRenderPassCreateInfo ci = {0};
-    ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    ci.attachmentCount = 3;
-    ci.pAttachments = attachments;
-    ci.subpassCount = 1;
-    ci.pSubpasses = &sub;
-    ci.dependencyCount = 3;
-    ci.pDependencies = deps;
-
-    VkRenderPass rp;
-    if (vkCreateRenderPass(g_vk_ctx.device, &ci, NULL, &rp) != VK_SUCCESS) return VK_NULL_HANDLE;
-    return rp;
+    return create_render_pass_msrtss(format, VK_ATTACHMENT_LOAD_OP_CLEAR, 0);
 }
 static int create_attachment(
     VkImage *out_image, VkDeviceMemory *out_memory, VkImageView *out_view,
@@ -986,8 +794,7 @@ double vg_lite_vulkan_get_elapsed_ns(uint32_t start_slot, uint32_t end_slot)
 #endif
 
 /* Lazily create the 1x OPTIMAL resolve scratch image (color attachment under
- * MSRTSS, resolve attachment in the legacy MSAA path). Shared by
- * set_render_target_ex and the MSRTSS seed copy. */
+ * MSRTSS). Shared by set_render_target_ex and the MSRTSS seed copy. */
 static vg_lite_error_t ensure_resolve_image(buffer_internal_t *internal, vg_lite_buffer_t *target)
 {
     if (internal->resolve_image != VK_NULL_HANDLE)
@@ -996,10 +803,8 @@ static vg_lite_error_t ensure_resolve_image(buffer_internal_t *internal, vg_lite
     /* MSRTSS: the 1x resolve scratch is an MSRTSS framebuffer attachment
      * (VUID-VkFramebufferCreateInfo-samples-06881 image flag) and the seed
      * copy writes it as TRANSFER_DST (VUID-vkCmdCopyImage-aspect-06663). */
-    VkImageCreateFlags msrtss_flags = g_vk_ctx.msrtss_enabled
-        ? VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT : 0;
-    VkImageUsageFlags extra_usage = g_vk_ctx.msrtss_enabled
-        ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0;
+    VkImageCreateFlags msrtss_flags = VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT;
+    VkImageUsageFlags extra_usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (create_attachment(&internal->resolve_image, &internal->resolve_memory, &internal->resolve_view,
             target->width, target->height, vkfmt, VK_SAMPLE_COUNT_1_BIT, msrtss_flags,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | extra_usage,
@@ -1014,156 +819,107 @@ static vg_lite_error_t ensure_resolve_image(buffer_internal_t *internal, vg_lite
 vg_lite_error_t vg_lite_vulkan_seed_msaa(vg_lite_buffer_t *target, VkSampler sampler)
 {
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    VkFormat vkfmt = vg_lite_format_to_vk(target->format);
 
-    if (g_vk_ctx.msrtss_enabled) {
-        /* Direct mode: the target itself is the color attachment and the RP
-         * loads it with initialLayout GENERAL + loadOp=LOAD — every RP-
-         * external write (seed copy target, no-MSAA RP, upload, CPU map) is
-         * already visible in it, so no seed of any kind is needed. */
-        if (internal->msrtss_direct)
-            return VG_LITE_SUCCESS;
-        /* MSRTSS scratch: no seed draw — the RP loads the 1x resolve_image directly
-         * (HW replicates samples on load, exactly like the old fullscreen-tri
-         * blit of resolved content). After no-MSAA RP writes / CPU writes /
-         * sample switches the target holds newer content than resolve_image;
-         * resync with a full-image copy target -> resolve_image. The copy
-         * must run OUTSIDE a render pass — callers invoke seed_msaa BEFORE
-         * set_render_target_ex begins the MSRTSS RP. */
-        (void)vkfmt;
-        (void)sampler;
-        vg_lite_error_t err = ensure_resolve_image(internal, target);
-        if (err != VG_LITE_SUCCESS)
-            return err;
-
-        /* resolve_image is in COLOR_ATTACHMENT_OPTIMAL (creation barrier /
-         * RP finalLayout); transition it to TRANSFER_DST for the copy. */
-        VkImageMemoryBarrier seed_dst_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        seed_dst_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        seed_dst_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        seed_dst_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        seed_dst_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        seed_dst_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_dst_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_dst_barrier.image = internal->resolve_image;
-        seed_dst_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        seed_dst_barrier.subresourceRange.levelCount = 1;
-        seed_dst_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &seed_dst_barrier);
-
-        /* Target image: GENERAL -> TRANSFER_SRC_OPTIMAL (mirror of
-         * resolve_msaa_to_target's dst_barrier, reversed direction). */
-        VkImageMemoryBarrier seed_src_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        seed_src_barrier.srcAccessMask = 0;
-        seed_src_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        seed_src_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        seed_src_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        seed_src_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_src_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_src_barrier.image = internal->image;
-        seed_src_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        seed_src_barrier.subresourceRange.levelCount = 1;
-        seed_src_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &seed_src_barrier);
-
-        VkImageCopy region = {0};
-        region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.srcSubresource.layerCount = 1;
-        region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.dstSubresource.layerCount = 1;
-        region.extent.width = internal->width;
-        region.extent.height = internal->height;
-        region.extent.depth = 1;
-        vkCmdCopyImage(g_vk_ctx.cmd_buf,
-            internal->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            internal->resolve_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &region);
-
-        /* resolve_image back to COLOR_ATTACHMENT_OPTIMAL (matches the MSRTSS
-         * RP att[0] initialLayout — mirror of the msrtss_post_barrier in
-         * resolve_msaa_to_target). */
-        VkImageMemoryBarrier seed_post_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        seed_post_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        seed_post_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        seed_post_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        seed_post_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        seed_post_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_post_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_post_barrier.image = internal->resolve_image;
-        seed_post_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        seed_post_barrier.subresourceRange.levelCount = 1;
-        seed_post_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &seed_post_barrier);
-
-        /* Target back to GENERAL (mirror of resolve_msaa_to_target's
-         * host_barrier; image was the copy SOURCE, so srcAccess=TRANSFER_READ). */
-        VkImageMemoryBarrier seed_host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        seed_host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        seed_host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-        seed_host_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        seed_host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        seed_host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        seed_host_barrier.image = internal->image;
-        seed_host_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        seed_host_barrier.subresourceRange.levelCount = 1;
-        seed_host_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &seed_host_barrier);
-
+    /* Direct mode: the target itself is the color attachment and the RP
+     * loads it with initialLayout GENERAL + loadOp=LOAD — every RP-
+     * external write (seed copy target, no-MSAA RP, upload, CPU map) is
+     * already visible in it, so no seed of any kind is needed. */
+    if (internal->msrtss_direct)
         return VG_LITE_SUCCESS;
-    }
+    /* MSRTSS scratch: no seed draw — the RP loads the 1x resolve_image directly
+     * (HW replicates samples on load, exactly like the old fullscreen-tri
+     * blit of resolved content). After no-MSAA RP writes / CPU writes /
+     * sample switches the target holds newer content than resolve_image;
+     * resync with a full-image copy target -> resolve_image. The copy
+     * must run OUTSIDE a render pass — callers invoke seed_msaa BEFORE
+     * set_render_target_ex begins the MSRTSS RP. */
+    (void)sampler;
+    vg_lite_error_t err = ensure_resolve_image(internal, target);
+    if (err != VG_LITE_SUCCESS)
+        return err;
 
-    VkPipeline seed_pipe = vg_lite_vulkan_get_pipeline_native_msaa(vkfmt, BG_NONE);
-    if (!seed_pipe) return VG_LITE_OUT_OF_MEMORY;
+    /* resolve_image is in COLOR_ATTACHMENT_OPTIMAL (creation barrier /
+     * RP finalLayout); transition it to TRANSFER_DST for the copy. */
+    VkImageMemoryBarrier seed_dst_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    seed_dst_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    seed_dst_barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    seed_dst_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    seed_dst_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    seed_dst_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_dst_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_dst_barrier.image = internal->resolve_image;
+    seed_dst_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    seed_dst_barrier.subresourceRange.levelCount = 1;
+    seed_dst_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &seed_dst_barrier);
 
-    VkDescriptorSet ds;
-    VkDescriptorSetAllocateInfo a = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    a.descriptorPool = g_vk_ctx.descriptor_pool;
-    a.descriptorSetCount = 1;
-    a.pSetLayouts = &g_vk_ctx.native_descriptor_layout;
-    if (vkAllocateDescriptorSets(g_vk_ctx.device, &a, &ds) != VK_SUCCESS)
-        return VG_LITE_OUT_OF_MEMORY;
-    /* Single-channel (A8/L8 -> R8) targets must seed through the identity
-     * view: their swizzle views move the payload to G/B (sampling yields 0
-     * in R) and would write a zero seed into the R8 MSAA attachment. */
-    VkImageView tview = (vkfmt == VK_FORMAT_R8_UNORM) ? internal->view
-        : (internal->swizzle_view ? internal->swizzle_view : internal->view);
-    VkDescriptorImageInfo ti = {sampler, tview, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, ds, 0, 0, 1,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ti, NULL, NULL};
-    vkUpdateDescriptorSets(g_vk_ctx.device, 1, &w, 0, NULL);
+    /* Target image: GENERAL -> TRANSFER_SRC_OPTIMAL (mirror of
+     * resolve_msaa_to_target's dst_barrier, reversed direction). */
+    VkImageMemoryBarrier seed_src_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    seed_src_barrier.srcAccessMask = 0;
+    seed_src_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    seed_src_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    seed_src_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    seed_src_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_src_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_src_barrier.image = internal->image;
+    seed_src_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    seed_src_barrier.subresourceRange.levelCount = 1;
+    seed_src_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &seed_src_barrier);
 
-    /* Target image barrier now issued in set_render_target before RP begin. */
+    VkImageCopy region = {0};
+    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.layerCount = 1;
+    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.layerCount = 1;
+    region.extent.width = internal->width;
+    region.extent.height = internal->height;
+    region.extent.depth = 1;
+    vkCmdCopyImage(g_vk_ctx.cmd_buf,
+        internal->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        internal->resolve_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &region);
 
-    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, seed_pipe);
-    vkCmdBindDescriptorSets(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        g_vk_ctx.native_pipeline_layout, 0, 1, &ds, 0, NULL);
+    /* resolve_image back to COLOR_ATTACHMENT_OPTIMAL (matches the MSRTSS
+     * RP att[0] initialLayout — mirror of the msrtss_post_barrier in
+     * resolve_msaa_to_target). */
+    VkImageMemoryBarrier seed_post_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    seed_post_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    seed_post_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    seed_post_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    seed_post_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    seed_post_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_post_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_post_barrier.image = internal->resolve_image;
+    seed_post_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    seed_post_barrier.subresourceRange.levelCount = 1;
+    seed_post_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &seed_post_barrier);
 
-    struct { float m[9]; unsigned color; int im_mode; int flags; float corners[8]; } pc = {0};
-    pc.m[0] = 1.0f; pc.m[4] = 1.0f; pc.m[8] = 1.0f;
-    float fullscreen_corners[8] = {-1.0f, -1.0f, 3.0f, -1.0f, 3.0f, 3.0f, -1.0f, 3.0f};
-    memcpy(pc.corners, fullscreen_corners, sizeof(fullscreen_corners));
-    vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+    /* Target back to GENERAL (mirror of resolve_msaa_to_target's
+     * host_barrier; image was the copy SOURCE, so srcAccess=TRANSFER_READ). */
+    VkImageMemoryBarrier seed_host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    seed_host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    seed_host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+    seed_host_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    seed_host_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    seed_host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    seed_host_barrier.image = internal->image;
+    seed_host_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    seed_host_barrier.subresourceRange.levelCount = 1;
+    seed_host_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &seed_host_barrier);
 
-    VkViewport vp = {0, 0, (float)target->width, (float)target->height, 0, 1};
-    vkCmdSetViewport(g_vk_ctx.cmd_buf, 0, 1, &vp);
-    vg_lite_vulkan_apply_scissor(target->width, target->height);
-
-    vkCmdDraw(g_vk_ctx.cmd_buf, 3, 1, 0, 0);
-
-    if (g_vk_ctx.pending_desc_count < MAX_PENDING_DESC)
-        g_vk_ctx.pending_desc_sets[g_vk_ctx.pending_desc_count++] = ds;
-    else
-        vkFreeDescriptorSets(g_vk_ctx.device, g_vk_ctx.descriptor_pool, 1, &ds);
     return VG_LITE_SUCCESS;
 }
 
@@ -1185,8 +941,8 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
      * flag) is the RP color attachment — no resolve scratch, no seed/resolve
      * copies. loadOp=LOAD with initialLayout GENERAL absorbs all RP-external
      * writes (uploads, copies, no-MSAA RPs). */
-    int direct = g_vk_ctx.msrtss_enabled && internal->msrtss_direct;
-    int rp_mode = g_vk_ctx.msrtss_enabled ? (direct ? 2 : 1) : 0;
+    int direct = internal->msrtss_direct;
+    int rp_mode = direct ? 2 : 1;
     VkRenderPass rp;
     if (clear_value) {
         /* Use CLEAR variant RP (mode-stamped: recreate if the runtime mode
@@ -1194,9 +950,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
         if (internal->clear_render_pass == VK_NULL_HANDLE || internal->clear_rp_mode != rp_mode) {
             if (internal->clear_render_pass)
                 vkDestroyRenderPass(g_vk_ctx.device, internal->clear_render_pass, NULL);
-            internal->clear_render_pass = (rp_mode == 0)
-                ? vg_lite_vulkan_create_render_pass_clear(vkfmt)
-                : create_render_pass_msrtss(vkfmt, VK_ATTACHMENT_LOAD_OP_CLEAR, direct);
+            internal->clear_render_pass = create_render_pass_msrtss(vkfmt, VK_ATTACHMENT_LOAD_OP_CLEAR, direct);
             internal->clear_rp_mode = rp_mode;
         }
         rp = internal->clear_render_pass;
@@ -1204,35 +958,17 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
         if (internal->render_pass == VK_NULL_HANDLE || internal->rp_mode != rp_mode) {
             if (internal->render_pass)
                 vkDestroyRenderPass(g_vk_ctx.device, internal->render_pass, NULL);
-            internal->render_pass = (rp_mode == 0)
-                ? vg_lite_vulkan_create_render_pass(vkfmt)
-                : create_render_pass_msrtss(vkfmt, VK_ATTACHMENT_LOAD_OP_LOAD, direct);
+            internal->render_pass = create_render_pass_msrtss(vkfmt, VK_ATTACHMENT_LOAD_OP_LOAD, direct);
             internal->rp_mode = rp_mode;
         }
         rp = internal->render_pass;
     }
-    
-    /* MSRTSS: no 4x color sidecar — the 1x resolve scratch IS the color
-     * attachment (hardware renders multisampled into it). */
-    if (!g_vk_ctx.msrtss_enabled && internal->msaa_color_image == VK_NULL_HANDLE) {
-        VkFormat vkfmt = vg_lite_format_to_vk(target->format);
-        if (create_attachment(&internal->msaa_color_image, &internal->msaa_color_memory, &internal->msaa_color_view,
-                target->width, target->height, vkfmt, g_msaa_samples, 0,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
-                VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) < 0)
-            return VG_LITE_OUT_OF_MEMORY;
-    }
 
     if (internal->msaa_depth_image == VK_NULL_HANDLE) {
-        /* depth is single-sampled under MSRTSS */
-        VkSampleCountFlagBits depth_samples = g_vk_ctx.msrtss_enabled
-            ? VK_SAMPLE_COUNT_1_BIT : g_msaa_samples;
-        /* 1x MSRTSS framebuffer attachment needs the MSRTSS image flag
-         * (VUID-VkFramebufferCreateInfo-samples-06881). */
-        VkImageCreateFlags depth_flags = g_vk_ctx.msrtss_enabled
-            ? VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT : 0;
+        /* depth is single-sampled under MSRTSS; the 1x framebuffer attachment
+         * needs the MSRTSS image flag (VUID-VkFramebufferCreateInfo-samples-06881). */
+        VkSampleCountFlagBits depth_samples = VK_SAMPLE_COUNT_1_BIT;
+        VkImageCreateFlags depth_flags = VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT;
         if (create_attachment(&internal->msaa_depth_image, &internal->msaa_depth_memory, &internal->msaa_depth_view,
                 target->width, target->height, VK_FORMAT_D24_UNORM_S8_UINT, depth_samples, depth_flags,
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
@@ -1243,25 +979,19 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
             return VG_LITE_OUT_OF_MEMORY;
     }
 
-    /* resolve_image is needed in both scratch modes (color attachment under
-     * MSRTSS, resolve attachment in legacy). Direct mode skips it entirely. */
+    /* resolve_image is needed in scratch mode (color attachment under
+     * MSRTSS). Direct mode skips it entirely. */
     if (!direct) {
         vg_lite_error_t err = ensure_resolve_image(internal, target);
         if (err != VG_LITE_SUCCESS) return err;
     }
 
-    VkImageView fb_views[3];
-    uint32_t fb_att_count;
-    if (g_vk_ctx.msrtss_enabled) {
-        fb_views[0] = direct ? internal->view : internal->resolve_view;
-        fb_views[1] = internal->msaa_depth_view;
-        fb_att_count = 2;
-    } else {
-        fb_views[0] = internal->msaa_color_view;
-        fb_views[1] = internal->resolve_view;
-        fb_views[2] = internal->msaa_depth_view;
-        fb_att_count = 3;
-    }
+    /* The 1x resolve scratch IS the color attachment (hardware renders
+     * multisampled into it); depth/stencil is the second attachment. */
+    VkImageView fb_views[2];
+    fb_views[0] = direct ? internal->view : internal->resolve_view;
+    fb_views[1] = internal->msaa_depth_view;
+    uint32_t fb_att_count = 2;
     VkFramebufferCreateInfo fb_ci = {0};
     fb_ci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fb_ci.renderPass = rp;
@@ -1275,14 +1005,10 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     
     g_vk_ctx.current_fb = fb;
     g_vk_ctx.current_fb_image = internal->image;
-    /* No MSAA color sidecar under MSRTSS; NULL skips the end-of-pass barrier.
-     * Direct mode: no resolve scratch either — NULL makes end_render_pass take
+    /* Direct mode: no resolve scratch — NULL makes end_render_pass take
      * the plain GENERAL→GENERAL availability barrier on the target instead of
      * marking it msaa_dirty (the store already resolved into it). */
-    g_vk_ctx.current_msaa_color_image = g_vk_ctx.msrtss_enabled
-        ? VK_NULL_HANDLE : internal->msaa_color_image;
-    g_vk_ctx.current_resolve_image = (g_vk_ctx.msrtss_enabled && direct)
-        ? VK_NULL_HANDLE : internal->resolve_image;
+    g_vk_ctx.current_resolve_image = direct ? VK_NULL_HANDLE : internal->resolve_image;
     g_vk_ctx.current_fb_view = internal->view;
     g_vk_ctx.current_fb_width = target->width;
     g_vk_ctx.current_fb_height = target->height;
@@ -1293,8 +1019,7 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_ex(vg_lite_buffer_t *target, co
     if (clear_value) {
         clear_values[0] = *clear_value;  /* color: pending clear color */
     }
-    /* depth/stencil clear value sits at the depth attachment index:
-     * 2 (legacy 3-att FB) or 1 (MSRTSS 2-att FB). */
+    /* depth/stencil clear value sits at the depth attachment index (1). */
     clear_values[fb_att_count - 1].depthStencil.depth = 0.0f;
     clear_values[fb_att_count - 1].depthStencil.stencil = 0;
 
@@ -1330,26 +1055,22 @@ vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *interna
         return VG_LITE_SUCCESS;
     }
 
-    /* MSRTSS: resolve_image lives in COLOR_ATTACHMENT_OPTIMAL (RP finalLayout
-     * / creation barrier). Transition it out for the copy and back afterwards;
-     * legacy mode keeps its TRANSFER_SRC_OPTIMAL finalLayout flow untouched. */
-    VkImageMemoryBarrier msrtss_pre_barrier;
-    if (g_vk_ctx.msrtss_enabled) {
-        msrtss_pre_barrier = (VkImageMemoryBarrier){VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        msrtss_pre_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        msrtss_pre_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        msrtss_pre_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        msrtss_pre_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        msrtss_pre_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        msrtss_pre_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        msrtss_pre_barrier.image = internal->resolve_image;
-        msrtss_pre_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        msrtss_pre_barrier.subresourceRange.levelCount = 1;
-        msrtss_pre_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &msrtss_pre_barrier);
-    }
+    /* resolve_image lives in COLOR_ATTACHMENT_OPTIMAL (RP finalLayout
+     * / creation barrier). Transition it out for the copy and back afterwards. */
+    VkImageMemoryBarrier msrtss_pre_barrier = (VkImageMemoryBarrier){VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    msrtss_pre_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    msrtss_pre_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    msrtss_pre_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    msrtss_pre_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    msrtss_pre_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    msrtss_pre_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    msrtss_pre_barrier.image = internal->resolve_image;
+    msrtss_pre_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    msrtss_pre_barrier.subresourceRange.levelCount = 1;
+    msrtss_pre_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &msrtss_pre_barrier);
 
     VkImageMemoryBarrier dst_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     dst_barrier.srcAccessMask = 0;
@@ -1379,25 +1100,22 @@ vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *interna
         internal->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         1, &region);
 
-    /* MSRTSS: put resolve_image back to COLOR_ATTACHMENT_OPTIMAL so the next
+    /* Put resolve_image back to COLOR_ATTACHMENT_OPTIMAL so the next
      * RP instance's initialLayout matches (see create_render_pass_msrtss). */
-    VkImageMemoryBarrier msrtss_post_barrier;
-    if (g_vk_ctx.msrtss_enabled) {
-        msrtss_post_barrier = (VkImageMemoryBarrier){VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        msrtss_post_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        msrtss_post_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-        msrtss_post_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        msrtss_post_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        msrtss_post_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        msrtss_post_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        msrtss_post_barrier.image = internal->resolve_image;
-        msrtss_post_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        msrtss_post_barrier.subresourceRange.levelCount = 1;
-        msrtss_post_barrier.subresourceRange.layerCount = 1;
-        vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-            VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &msrtss_post_barrier);
-    }
+    VkImageMemoryBarrier msrtss_post_barrier = (VkImageMemoryBarrier){VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    msrtss_post_barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    msrtss_post_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    msrtss_post_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    msrtss_post_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    msrtss_post_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    msrtss_post_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    msrtss_post_barrier.image = internal->resolve_image;
+    msrtss_post_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    msrtss_post_barrier.subresourceRange.levelCount = 1;
+    msrtss_post_barrier.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &msrtss_post_barrier);
 
     VkImageMemoryBarrier host_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1445,23 +1163,6 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
                 VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &host_barrier);
         }
 
-        if (g_vk_ctx.current_msaa_color_image) {
-            VkImageMemoryBarrier msaa_barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-            msaa_barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            msaa_barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            msaa_barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            msaa_barrier.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            msaa_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            msaa_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            msaa_barrier.image = g_vk_ctx.current_msaa_color_image;
-            msaa_barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            msaa_barrier.subresourceRange.levelCount = 1;
-            msaa_barrier.subresourceRange.layerCount = 1;
-            vkCmdPipelineBarrier(g_vk_ctx.cmd_buf,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &msaa_barrier);
-        }
-
         /* Enqueue current FB for deferred destruction on next submit.
          * If pending array is full, submit first to drain it, then enqueue. */
         if (g_vk_ctx.pending_fb_count >= MAX_PENDING_FB) {
@@ -1471,7 +1172,6 @@ vg_lite_error_t vg_lite_vulkan_end_render_pass(void)
         g_vk_ctx.pending_fb[g_vk_ctx.pending_fb_count++] = g_vk_ctx.current_fb;
         g_vk_ctx.current_fb = VK_NULL_HANDLE;
         g_vk_ctx.current_fb_image = VK_NULL_HANDLE;
-        g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
         g_vk_ctx.current_resolve_image = VK_NULL_HANDLE;
         g_vk_ctx.current_fb_is_no_msaa = 0;
         /* NOTE: current_fb_internal is deliberately NOT cleared here — its
@@ -1995,7 +1695,6 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa_ex(vg_lite_buffer_t *ta
 
     g_vk_ctx.current_fb = fb;
     g_vk_ctx.current_fb_image = internal->image;
-    g_vk_ctx.current_msaa_color_image = VK_NULL_HANDLE;
     g_vk_ctx.current_resolve_image = VK_NULL_HANDLE;
     g_vk_ctx.current_fb_view = internal->view;
     g_vk_ctx.current_fb_width = target->width;

@@ -500,19 +500,10 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         vg_lite_vulkan_resolve_msaa_to_target(internal);
     }
 
-    if (internal->has_pending_clear && !g_vk_ctx.msrtss_enabled) {
-        /* Legacy 4x MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA
-         * B5G6R5 attachments (R/B swap). Flush to target via no-MSAA RP,
-         * then normal seed_msaa.
-         * MSRTSS: keep the clear pending — consumed below (fullscreen via
-         * loadOp=CLEAR, partial via vkCmdClearAttachments inside the RP). */
-        flush_pending_clear_on_target(target);
-    }
-
     VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     VkClearValue pending_cv;
     int clear_loadop = 0;
-    if (g_vk_ctx.msrtss_enabled) {
+    {
         if (internal->has_pending_clear && internal->pending_clear_is_fullscreen) {
             /* Fullscreen clear → this draw RP's loadOp=CLEAR. All MSRTSS
              * attachments are 1x — the llvmpipe 4x clear bug cannot trigger.
@@ -558,10 +549,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         return err;
     }
 
-    if (!g_vk_ctx.msrtss_enabled && g_vk_ctx.current_fb != prev_fb) {
-        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
-        vg_lite_vulkan_seed_msaa(target, sampler);
-    } else if (g_vk_ctx.current_fb == prev_fb) {
+    if (g_vk_ctx.current_fb == prev_fb) {
         VkClearAttachment clr = {0};
         clr.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
         VkClearRect rect = {0};
@@ -571,7 +559,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clr, 1, &rect);
     }
 
-    if (g_vk_ctx.msrtss_enabled && internal->has_pending_clear) {
+    if (internal->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
          * drawing. The color attachment is 1x — the llvmpipe 4x B5G6R5
          * clear bug cannot trigger. loadOp=LOAD (or the continued RP)
@@ -850,17 +838,10 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     if (target_int->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
     }
-    if (target_int->has_pending_clear && !g_vk_ctx.msrtss_enabled) {
-        /* Legacy 4x MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA
-         * B5G6R5 attachments (R/B swap). Flush to target via no-MSAA RP,
-         * then normal seed_msaa. MSRTSS: keep pending — consumed below. */
-        flush_pending_clear_on_target(target);
-    }
     {
         VkClearValue pending_cv;
         int clear_loadop = 0;
-        if (g_vk_ctx.msrtss_enabled &&
-            target_int->has_pending_clear && target_int->pending_clear_is_fullscreen) {
+        if (target_int->has_pending_clear && target_int->pending_clear_is_fullscreen) {
             /* Fullscreen clear → this RP's loadOp=CLEAR (1x attachments —
              * the llvmpipe 4x clear bug cannot trigger). Content fully
              * replaced: no seed, no no-MSAA clear RP. */
@@ -870,7 +851,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
             g_pending_clear_buffer = NULL;
             target_int->msaa_needs_seed = 0;
         }
-        if (g_vk_ctx.msrtss_enabled && !clear_loadop) {
+        if (!clear_loadop) {
         /* MSRTSS: end any RP left active by the pending-clear flush — the
          * seed is an RP-external vkCmdCopyImage and must run BEFORE
          * set_render_target begins the MSRTSS RP. Seed when the previous
@@ -895,12 +876,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
             : vg_lite_vulkan_set_render_target(target);
     }
     if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
-    if (!g_vk_ctx.msrtss_enabled && (prev_was_no_msaa || target_int->msaa_needs_seed)) {
-        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
-        vg_lite_vulkan_seed_msaa(target, sampler);
-        target_int->msaa_needs_seed = 0;
-    }
-    if (g_vk_ctx.msrtss_enabled && target_int->has_pending_clear) {
+    if (target_int->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
          * drawing (1x color attachment — the llvmpipe 4x B5G6R5 clear bug
          * cannot trigger). loadOp=LOAD already presents the pre-clear
@@ -1177,17 +1153,10 @@ static vg_lite_error_t draw_radial_internal(
     if (target_int->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
     }
-    if (target_int->has_pending_clear && !g_vk_ctx.msrtss_enabled) {
-        /* Legacy 4x MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA
-         * B5G6R5 attachments (R/B swap). Flush to target via no-MSAA RP,
-         * then normal seed_msaa. MSRTSS: keep pending — consumed below. */
-        flush_pending_clear_on_target(target);
-    }
     {
         VkClearValue pending_cv;
         int clear_loadop = 0;
-        if (g_vk_ctx.msrtss_enabled &&
-            target_int->has_pending_clear && target_int->pending_clear_is_fullscreen) {
+        if (target_int->has_pending_clear && target_int->pending_clear_is_fullscreen) {
             /* Fullscreen clear → this RP's loadOp=CLEAR (1x attachments —
              * the llvmpipe 4x clear bug cannot trigger). Content fully
              * replaced: no seed, no no-MSAA clear RP. */
@@ -1197,7 +1166,7 @@ static vg_lite_error_t draw_radial_internal(
             g_pending_clear_buffer = NULL;
             target_int->msaa_needs_seed = 0;
         }
-        if (g_vk_ctx.msrtss_enabled && !clear_loadop) {
+        if (!clear_loadop) {
         /* MSRTSS: end any RP left active by the pending-clear flush — the
          * seed is an RP-external vkCmdCopyImage and must run BEFORE
          * set_render_target begins the MSRTSS RP. Seed when the previous
@@ -1222,12 +1191,7 @@ static vg_lite_error_t draw_radial_internal(
             : vg_lite_vulkan_set_render_target(target);
     }
     if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
-    if (!g_vk_ctx.msrtss_enabled && (prev_was_no_msaa || target_int->msaa_needs_seed)) {
-        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
-        vg_lite_vulkan_seed_msaa(target, sampler);
-        target_int->msaa_needs_seed = 0;
-    }
-    if (g_vk_ctx.msrtss_enabled && target_int->has_pending_clear) {
+    if (target_int->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
          * drawing (1x color attachment — the llvmpipe 4x B5G6R5 clear bug
          * cannot trigger). loadOp=LOAD already presents the pre-clear
@@ -1456,17 +1420,10 @@ static vg_lite_error_t draw_grad_internal(
     if (internal->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(internal);
     }
-    if (internal->has_pending_clear && !g_vk_ctx.msrtss_enabled) {
-        /* Legacy 4x MSAA: llvmpipe bug with vkCmdClearAttachments on 4x MSAA
-         * B5G6R5 attachments (R/B swap). Flush to target via no-MSAA RP,
-         * then normal seed_msaa. MSRTSS: keep pending — consumed below. */
-        flush_pending_clear_on_target(target);
-    }
     {
         VkClearValue pending_cv;
         int clear_loadop = 0;
-        if (g_vk_ctx.msrtss_enabled &&
-            internal->has_pending_clear && internal->pending_clear_is_fullscreen) {
+        if (internal->has_pending_clear && internal->pending_clear_is_fullscreen) {
             /* Fullscreen clear → this RP's loadOp=CLEAR (1x attachments —
              * the llvmpipe 4x clear bug cannot trigger). Content fully
              * replaced: no seed, no no-MSAA clear RP. */
@@ -1476,7 +1433,7 @@ static vg_lite_error_t draw_grad_internal(
             g_pending_clear_buffer = NULL;
             internal->msaa_needs_seed = 0;
         }
-        if (g_vk_ctx.msrtss_enabled && !clear_loadop) {
+        if (!clear_loadop) {
         /* MSRTSS: end any RP left active by the pending-clear flush — the
          * seed is an RP-external vkCmdCopyImage and must run BEFORE
          * set_render_target begins the MSRTSS RP. Seed when the previous
@@ -1501,12 +1458,7 @@ static vg_lite_error_t draw_grad_internal(
             : vg_lite_vulkan_set_render_target(target);
     }
     if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
-    if (!g_vk_ctx.msrtss_enabled && (prev_was_no_msaa || internal->msaa_needs_seed)) {
-        VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
-        vg_lite_vulkan_seed_msaa(target, sampler);
-        internal->msaa_needs_seed = 0;
-    }
-    if (g_vk_ctx.msrtss_enabled && internal->has_pending_clear) {
+    if (internal->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
          * drawing (1x color attachment — the llvmpipe 4x B5G6R5 clear bug
          * cannot trigger). loadOp=LOAD already presents the pre-clear

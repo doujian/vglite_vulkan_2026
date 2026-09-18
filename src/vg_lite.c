@@ -548,9 +548,6 @@ vg_lite_error_t vg_lite_free(vg_lite_buffer_t *buffer)
         g_vk_ctx.current_fb_internal = NULL;
     vg_lite_vulkan_submit_command(1);
     vg_lite_vulkan_unregister_buffer(internal);
-    if (internal->msaa_color_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_color_view, NULL);
-    if (internal->msaa_color_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_color_image, NULL);
-    if (internal->msaa_color_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_color_memory, NULL);
     if (internal->msaa_depth_view) vkDestroyImageView(g_vk_ctx.device, internal->msaa_depth_view, NULL);
     if (internal->msaa_depth_image) vkDestroyImage(g_vk_ctx.device, internal->msaa_depth_image, NULL);
     if (internal->msaa_depth_memory) vkFreeMemory(g_vk_ctx.device, internal->msaa_depth_memory, NULL);
@@ -1491,58 +1488,31 @@ vg_lite_error_t vg_lite_clear(vg_lite_buffer_t *target, vg_lite_rectangle_t *rec
         if (x >= r_bound || y >= b_bound) return VG_LITE_SUCCESS;
     }
 
-    if (g_vk_ctx.msrtss_enabled) {
-        /* MSRTSS: defer the partial clear into the next render pass —
-         * applied as vkCmdClearAttachments right after RP begin. All MSRTSS
-         * attachments are 1x, so the llvmpipe 4x B5G6R5 clear bug cannot
-         * trigger; this saves the no-MSAA clear RP + seed copy (1 RP, 0 copy
-         * instead of 2 RP + 1 copy). */
-        internal->has_pending_clear = 1;
-        internal->pending_clear_color = color;
-        internal->pending_clear_is_fullscreen = 0;
-        internal->pending_clear_x = x;
-        internal->pending_clear_y = y;
-        internal->pending_clear_w = r_bound - x;
-        internal->pending_clear_h = b_bound - y;
-        /* The latest content lives in the 1x resolve scratch when an MSRTSS
-         * RP is currently open on this target or it is msaa_dirty — then the
-         * next RP loads/continues from the scratch and NO seed is wanted
-         * (seeding would copy the stale LINEAR target over it). Otherwise
-         * the target image is authoritative and must be seeded. Direct-mode
-         * targets are themselves the attachment — always current, no seed. */
-        int resolve_current = internal->msrtss_direct || internal->msaa_dirty ||
-            (g_vk_ctx.current_fb != VK_NULL_HANDLE &&
-             g_vk_ctx.current_fb_image == internal->image &&
-             !g_vk_ctx.current_fb_is_no_msaa);
-        if (!resolve_current) internal->msaa_needs_seed = 1;
-        g_pending_clear_buffer = target;
-        pending_clear_track(target);
-        return VG_LITE_SUCCESS;
-    }
-
-    VkClearAttachment clear_att = {0};
-    clear_att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    clear_att.colorAttachment = 0;
-    vg_lite_color_to_vk_clear(target->format, color, &clear_att.clearValue);
-
-    vg_lite_vulkan_begin_command();
-    {
-        buffer_internal_t *ci = (buffer_internal_t *)target->handle;
-        if (!(g_vk_ctx.current_fb_image == ci->image && g_vk_ctx.current_fb_is_no_msaa))
-            vg_lite_vulkan_flush_render_pass();
-    }
-    vg_lite_vulkan_set_render_target_no_msaa(target);
-
-    VkClearRect clear_rect;
-    clear_rect.rect.offset.x = x;
-    clear_rect.rect.offset.y = y;
-    clear_rect.rect.extent.width = r_bound - x;
-    clear_rect.rect.extent.height = b_bound - y;
-    clear_rect.baseArrayLayer = 0;
-    clear_rect.layerCount = 1;
-    vkCmdClearAttachments(g_vk_ctx.cmd_buf, 1, &clear_att, 1, &clear_rect);
-    internal->msaa_needs_seed = 1;
-    internal->msaa_dirty = 0;
+    /* MSRTSS: defer the partial clear into the next render pass —
+     * applied as vkCmdClearAttachments right after RP begin. All MSRTSS
+     * attachments are 1x, so the llvmpipe 4x B5G6R5 clear bug cannot
+     * trigger; this saves the no-MSAA clear RP + seed copy (1 RP, 0 copy
+     * instead of 2 RP + 1 copy). */
+    internal->has_pending_clear = 1;
+    internal->pending_clear_color = color;
+    internal->pending_clear_is_fullscreen = 0;
+    internal->pending_clear_x = x;
+    internal->pending_clear_y = y;
+    internal->pending_clear_w = r_bound - x;
+    internal->pending_clear_h = b_bound - y;
+    /* The latest content lives in the 1x resolve scratch when an MSRTSS
+     * RP is currently open on this target or it is msaa_dirty — then the
+     * next RP loads/continues from the scratch and NO seed is wanted
+     * (seeding would copy the stale LINEAR target over it). Otherwise
+     * the target image is authoritative and must be seeded. Direct-mode
+     * targets are themselves the attachment — always current, no seed. */
+    int resolve_current = internal->msrtss_direct || internal->msaa_dirty ||
+        (g_vk_ctx.current_fb != VK_NULL_HANDLE &&
+         g_vk_ctx.current_fb_image == internal->image &&
+         !g_vk_ctx.current_fb_is_no_msaa);
+    if (!resolve_current) internal->msaa_needs_seed = 1;
+    g_pending_clear_buffer = target;
+    pending_clear_track(target);
     return VG_LITE_SUCCESS;
 }
 
@@ -1839,9 +1809,9 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         buffer_internal_t *tgt_int = (buffer_internal_t *)target->handle;
         if (tgt_int->has_pending_clear) {
 #if VGLITE_BLIT_MSAA
-            /* legacy 4x MSAA: flush to target, fall through to seed_msaa */
-            if (!g_vk_ctx.msrtss_enabled)
-                flush_pending_clear_on_target(target);
+            /* MSRTSS (only path): the pending clear is consumed below via
+             * loadOp=CLEAR (fullscreen) or vkCmdClearAttachments (partial)
+             * inside the blit RP. */
 #else
             /* no-MSAA: merge clear into blit's RP. Use the stored pending
              * rect (fullscreen flag ⇒ full extent; MSRTSS may have deferred
@@ -1876,11 +1846,10 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
     }
 
 #if VGLITE_BLIT_MSAA
-    VkFramebuffer prev_fb = g_vk_ctx.current_fb;
     VkClearValue pending_cv;
     int clear_loadop = 0;
     buffer_internal_t *t_int = (buffer_internal_t *)target->handle;
-    if (g_vk_ctx.msrtss_enabled) {
+    {
         if (t_int->has_pending_clear && t_int->pending_clear_is_fullscreen) {
             /* Fullscreen clear → this blit RP's loadOp=CLEAR (1x
              * attachments — the llvmpipe 4x clear bug cannot trigger).
@@ -1920,10 +1889,7 @@ vg_lite_error_t vg_lite_blit(vg_lite_buffer_t *target,
         vg_lite_vulkan_set_render_target_ex(target, &pending_cv);
     else
         vg_lite_vulkan_set_render_target(target);
-    if (!g_vk_ctx.msrtss_enabled && g_vk_ctx.current_fb != prev_fb) {
-        vg_lite_vulkan_seed_msaa(target, sampler);
-    }
-    if (g_vk_ctx.msrtss_enabled && t_int->has_pending_clear) {
+    if (t_int->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
          * the blit draw (1x color attachment — the llvmpipe 4x B5G6R5
          * clear bug cannot trigger). */
