@@ -4,7 +4,7 @@
  * - path_matrix: transforms path vertices to screen space (mat3)
  * - pattern_matrix: transforms screen position to pattern UV (mat3)
  * - pattern_mode: COLOR(0), PAD(1), REPEAT(2), REFLECT(3)
- * - pattern_color: color for COLOR mode (uint ARGB)
+ * - pattern_color: color for COLOR mode (vg_lite_color_t, 0xAABBGGRR)
  * - pattern_width/height: pattern image dimensions
  * - blend_mode: blend mode enum
  */
@@ -33,11 +33,13 @@ layout(location = 2) out vec4 vert_color;
 
 vec4 unpackColorARGB(uint c)
 {
-    /* VGLite color format: 0xAARRGGBB */
+    /* VGLite vg_lite_color_t = 0xAABBGGRR: R in the lower 8 bits, then G,
+     * B, alpha in the upper 8 bits (i.MX RT VGLite API Reference Manual).
+     * Same convention as vg_lite_color_to_vk_clear() and draw.vert. */
     float a = float((c >> 24) & 0xFFu) / 255.0;
-    float r = float((c >> 16) & 0xFFu) / 255.0;
+    float b = float((c >> 16) & 0xFFu) / 255.0;
     float g = float((c >>  8) & 0xFFu) / 255.0;
-    float b = float((c      ) & 0xFFu) / 255.0;
+    float r = float((c      ) & 0xFFu) / 255.0;
     return vec4(r, g, b, a);
 }
 
