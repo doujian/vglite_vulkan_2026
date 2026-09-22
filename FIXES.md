@@ -1417,3 +1417,15 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Verification**: grep confirms msaa_color* and msrtss_enabled conditionals are gone from src/ (only the getter definition/declaration remain). Full suite on lavapipe: 46/46 PASS on all 8 build configurations (test_sft_blit excluded as pre-existing crash). On the Intel driver (no MSRTSS) init now fails cleanly with "[msrtss] ... not supported - MSRTSS is required" (expected; run tests with VK_DRIVER_FILES=D:\tools\mesa\lvp\x64\lvp_icd.x86_64.json).
 
 **Files**: src/vg_lite_vulkan.c, src/vg_lite_vulkan.h, src/vg_lite.c, src/vg_lite_draw.c
+
+## 32. VG_LITE_PATTERN_COLOR solid fill rendered with R/B channels swapped
+
+**Symptom**: In test_patternFill frame 1 (bottom octagon, VG_LITE_PATTERN_COLOR mode) the out-of-bounds solid region rendered as light blue-gray (172,186,205 in the RGB565 target) instead of the API-intended warm beige. pattern_color=0xffaabbcc means RGB(204,187,170) per vg_lite_color_t = 0xAABBGGRR (i.MX RT VGLite API Reference Manual: "The red channel is in the lower 8 bits... alpha channel is in the upper 8 bits"). The rendered value (172,186,205) is exactly (170,187,204) after RGB565 quantization - i.e. R and B swapped. The region was 15087 perfectly uniform pixels covering the star area outside the [0,1] UV window; the same geometry under REFLECT (pattern_0) contains zero pixels of that value, proving it is the COLOR-mode solid fill, not texture sky.
+
+**Root Cause**: shaders/pattern.vert unpackColorARGB() unpacked the pattern_color push constant as 0xAARRGGBB (r=(c>>16)&0xFF, b=c&0xFF), per its own comment "VGLite color format: 0xAARRGGBB". The VGLite API packs vg_lite_color_t as 0xAABBGGRR - the same convention already implemented by vg_lite_color_to_vk_clear(), the vg_lite_format.c packers, and the net effect of draw.vert unpackColor(). Only patternFill frame-1's bottom star exercises the COLOR fallback in the suite (linear-gradient delegation uses PAD) and the test has no CPU verification, so exit 0 masked the swapped output.
+
+**Solution**: shaders/pattern.vert unpackColorARGB() now extracts b=(c>>16)&0xFF and r=c&0xFF (a/g unchanged), matching the official vg_lite_color_t byte order; comments updated to state 0xAABBGGRR with a pointer to the reference-manual definition.
+
+**Verification**: lavapipe: test_patternFill exit 0; the solid region is now 15087x (205,186,172) = beige (204,187,170) after the RGB565 round-trip, zero (172,186,205) pixels remain; texture window and bounds behavior unchanged. Regressions: test_linearGrad 153600/153600 PERFECT MATCH, test_stroke exit 0.
+
+**Files**: shaders/pattern.vert
