@@ -1374,8 +1374,8 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Root Cause**: Deferred clears were tracked by a single global pointer `g_pending_clear_buffer` (vg_lite.c). Every `vg_lite_clear` overwrote it, so at most one buffer could carry a pending clear; a second clear on another buffer orphaned the first one's `internal->has_pending_clear` flag with nothing to ever materialize it. `flush_pending_clear_global()` (called from `vg_lite_finish`/`vg_lite_flush`/read_ptr) flushed only the pointer's target. The partial-clear path masked the bug in common sequences (a partial clear on the same buffer force-flushes its own pending fullscreen clear first), which is why it survived the earlier clear work.
 
 **Solution** (src/vg_lite.c):
-1. New multi-buffer tracking list `g_pending_clear_list` (dynamic array) maintained by `pending_clear_track()` (called from both deferral branches of `vg_lite_clear`) and `pending_clear_untrack()` (called from `flush_pending_clear_on_target` on BOTH the early-return path ¡ª entries can be stale because draw/blit consumption sites only null the legacy single-slot pointer ¡ª and the normal completion path).
-2. `flush_pending_clear_global()` now drains the whole list: `while (count > 0) flush_pending_clear_on_target(list[0])` ¡ª terminates because every flush path untracks.
+1. New multi-buffer tracking list `g_pending_clear_list` (dynamic array) maintained by `pending_clear_track()` (called from both deferral branches of `vg_lite_clear`) and `pending_clear_untrack()` (called from `flush_pending_clear_on_target` on BOTH the early-return path ï¿½ï¿½ entries can be stale because draw/blit consumption sites only null the legacy single-slot pointer ï¿½ï¿½ and the normal completion path).
+2. `flush_pending_clear_global()` now drains the whole list: `while (count > 0) flush_pending_clear_on_target(list[0])` ï¿½ï¿½ terminates because every flush path untracks.
 3. `vg_lite_free()` untracks the buffer, preventing dangling pointers when a buffer is destroyed while a clear is still pending.
 4. `g_pending_clear_buffer` is kept (legacy convenience for the draw/blit consumption sites) but is no longer authoritative.
 
@@ -1384,7 +1384,7 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 - clear_multi_002: fullscreen + partial clear on A, fullscreen on B -> finish -> all materialize (guards the MSRTSS deferred-partial-clear fields too).
 - clear_multi_003: fullscreen clears on A and B -> `vg_lite_buffer_read_ptr(A)` with NO finish -> A must materialize (pre-fix: A stale).
 
-**Verification**: (1) 8 configs rebuilt, 47 test exes per config: only the allowed pre-existing test_sft_blit crash fails; test_clear_multi passes everywhere. (2) lavapipe (build_tiled) `VGLITE_MSRTSS=1` ("[msrtss] enabled") and `=0`: test_clear_multi 3/3 PASS both modes; full 47-exe run under MSRTSS=1 all exit 0. (3) PNG dump A/B vs the pre-fix MSRTSS=1 baseline: 1021/1021 byte-identical, 0 diffs ¡ª the fix is behavior-neutral for all previously-working single-pending-clear paths.
+**Verification**: (1) 8 configs rebuilt, 47 test exes per config: only the allowed pre-existing test_sft_blit crash fails; test_clear_multi passes everywhere. (2) lavapipe (build_tiled) `VGLITE_MSRTSS=1` ("[msrtss] enabled") and `=0`: test_clear_multi 3/3 PASS both modes; full 47-exe run under MSRTSS=1 all exit 0. (3) PNG dump A/B vs the pre-fix MSRTSS=1 baseline: 1021/1021 byte-identical, 0 diffs ï¿½ï¿½ the fix is behavior-neutral for all previously-working single-pending-clear paths.
 
 **Files**: src/vg_lite.c, tests/clear_multi/clear_multi.c (new), tests/CMakeLists.txt
 
@@ -1429,3 +1429,14 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Verification**: lavapipe: test_patternFill exit 0; the solid region is now 15087x (205,186,172) = beige (204,187,170) after the RGB565 round-trip, zero (172,186,205) pixels remain; texture window and bounds behavior unchanged. Regressions: test_linearGrad 153600/153600 PERFECT MATCH, test_stroke exit 0.
 
 **Files**: shaders/pattern.vert
+## 36. Redundant resolve copy and render pass churn on clear+draw to the same live target
+
+**Symptom**: After a `vg_lite_clear` followed by `vg_lite_draw*` on the same target, the draw path unconditionally flushed the render pass, resolved MSAA content back to the target (one full-size `vkCmdCopyImage`), then re-opened a render pass with loadOp=LOAD to read the just-copied data back - even though the MSRTSS render pass was still open and its resolve image held the live content. Fullscreen pending clears also forced a new render pass (loadOp=CLEAR) each time.
+
+**Root Cause**: The draw paths (impl/pattern/radial/grad in `src/vg_lite_draw.c`) had no notion of "the render pass is already live on this target": the else branch always flushed + re-seeded when `msaa_needs_seed` was set, and `vg_lite_clear` sets that flag unconditionally for fullscreen clears. The in-render-pass `vkCmdClearAttachments` mechanism (used for partial clears) was not reachable for this sequence.
+
+**Solution**: Added an `rp_live` guard to all four draw paths: when the current framebuffer belongs to the same target, the previous pass was not the no-MSAA one, and the only pending seed request comes from a pending fullscreen clear (a false positive here), the render pass is reused as-is. Pending clears (fullscreen and partial) are consumed inside the pass via `vkCmdClearAttachments` (fullscreen falls back to the full target rect because the tracked rect fields are stale for fullscreen clears), the draw proceeds without flush/resolve/seed, and the trailing logic clears `msaa_needs_seed` when the pending clear was consumed in-pass (mirroring the existing loadOp path).
+
+**Verification**: lavapipe full suite on all 8 configurations (Tiling x MSAA x OBB): 46/46 PASS each (test_sft_blit excluded as pre-existing crash), no golden FAIL lines.
+
+**Files**: src/vg_lite_draw.c (impl/pattern/radial/grad paths, 3 edits each)
