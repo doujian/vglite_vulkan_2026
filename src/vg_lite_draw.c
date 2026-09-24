@@ -704,8 +704,6 @@ struct {
     return err;
 }
 
-static VkSampler s_pattern_sampler = VK_NULL_HANDLE;
-
 void vg_lite_draw_cleanup(void)
 {
     if (g_draw_pipeline.fill_pipeline) {
@@ -753,30 +751,6 @@ void vg_lite_draw_cleanup(void)
         vkDestroyShaderModule(g_vk_ctx.device, g_draw_pipeline.frag_shader, NULL);
         g_draw_pipeline.frag_shader = VK_NULL_HANDLE;
     }
-    if (s_pattern_sampler != VK_NULL_HANDLE) {
-        vkDestroySampler(g_vk_ctx.device, s_pattern_sampler, NULL);
-        s_pattern_sampler = VK_NULL_HANDLE;
-    }
-}
-
-static VkSampler get_or_create_pattern_sampler(void)
-{
-    if (s_pattern_sampler != VK_NULL_HANDLE) return s_pattern_sampler;
-    
-    VkSamplerCreateInfo ci = {VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    ci.magFilter = VK_FILTER_NEAREST;
-    ci.minFilter = VK_FILTER_NEAREST;
-    ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    ci.anisotropyEnable = VK_FALSE;
-    ci.maxAnisotropy = 1.0f;
-    ci.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
-    ci.unnormalizedCoordinates = VK_FALSE;
-    ci.compareEnable = VK_FALSE;
-    ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    VK_CHECK(vkCreateSampler(g_vk_ctx.device, &ci, NULL, &s_pattern_sampler));
-    return s_pattern_sampler;
 }
 
 vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
@@ -791,7 +765,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
                                      vg_lite_color_t color,
                                      vg_lite_filter_t filter)
 {
-    (void)fill_rule; (void)color; (void)filter;
+    (void)fill_rule; (void)color;
     
     if (!target || !path || !pattern_image) return VG_LITE_INVALID_ARGUMENT;
     if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
@@ -983,7 +957,9 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         return VG_LITE_OUT_OF_MEMORY;
     }
     
-    VkSampler sampler = get_or_create_pattern_sampler();
+    /* Filter: POINT -> NEAREST fetch; LINEAR/BI_LINEAR/GAUSSIAN -> bilinear
+     * filtering (shared sampler cache with blit/draw_image). */
+    VkSampler sampler = get_or_create_sampler(filter);
     VkImageView pattern_view = pattern_int->swizzle_view ? pattern_int->swizzle_view : pattern_int->view;
     VkDescriptorImageInfo img_info = {sampler, pattern_view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet ws = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1293,7 +1269,8 @@ static vg_lite_error_t draw_radial_internal(
         return VG_LITE_OUT_OF_MEMORY;
     }
 
-    VkSampler sampler = get_or_create_pattern_sampler();
+    /* Radial LUT entries are pre-quantized ramp stops — nearest fetch. */
+    VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
     VkImageView lut_view = lut_int->swizzle_view ? lut_int->swizzle_view : lut_int->view;
     VkDescriptorImageInfo img_info = {sampler, lut_view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet ws = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -1600,7 +1577,8 @@ static vg_lite_error_t draw_grad_internal(
         return VG_LITE_OUT_OF_MEMORY;
     }
 
-    VkSampler sampler = get_or_create_pattern_sampler();
+    /* Gradient LUT: nearest fetch (pre-quantized ramp). */
+    VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
     VkImageView grad_view = grad_int->swizzle_view ? grad_int->swizzle_view : grad_int->view;
     VkDescriptorImageInfo img_info = {sampler, grad_view, VK_IMAGE_LAYOUT_GENERAL};
 
@@ -1717,11 +1695,13 @@ vg_lite_error_t vg_lite_draw_grad(vg_lite_buffer_t *target,
 
     /* Linear gradient API has no spread_mode field; default to PAD.
      * Pass grad->matrix through unchanged — pattern API uses it
-     * identically to draw_grad_internal (grad-local → screen). */
+     * identically to draw_grad_internal (grad-local → screen).
+     * Filter: the ramp LUT is pre-quantized — POINT (nearest) keeps the
+     * byte-exact CPU-reference match; LINEAR would blur between entries. */
     return vg_lite_draw_pattern(target, path, fill_rule, matrix,
                                 &grad->image, &grad->matrix, blend,
                                 VG_LITE_PATTERN_PAD,
-                                0, 0, VG_LITE_FILTER_LINEAR);
+                                0, 0, VG_LITE_FILTER_POINT);
 }
 
 vg_lite_error_t vg_lite_draw_radial_grad(vg_lite_buffer_t *target,
