@@ -290,15 +290,19 @@ vg_lite_error_t vg_lite_allocate(vg_lite_buffer_t *buffer)
     }
     int storage_flags_out = has_storage ? VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT : 0;
 
-    /* MSRTSS direct mode: an OPTIMAL target created with the MSRTSS image
+    /* MSRTSS direct mode: a target created with the MSRTSS image
      * flag (VUID-VkFramebufferCreateInfo-samples-06881) can be used directly
      * as the 1x color attachment of the MSRTSS render pass — the resolve
      * scratch, the seed copy and the resolve copy all disappear. Probe the
-     * exact image-creation combo (format + flags + usage); on failure the
-     * target silently keeps the resolve-scratch path. Skipped for
-     * g_dump_host_optimal (HOST_VISIBLE mapped CPU reads stay staging-based). */
+     * exact image-creation combo (format + tiling + flags + usage); on
+     * failure the target silently keeps the resolve-scratch path. The probe
+     * covers OPTIMAL and LINEAR tiling alike — whether LINEAR + the MSRTSS
+     * flag + color attachment usage is supported is driver-reported via
+     * vkGetPhysicalDeviceImageFormatProperties, not spec-forbidden. Skipped
+     * for g_dump_host_optimal (HOST_VISIBLE mapped CPU reads stay
+     * staging-based). */
     int msrtss_direct = 0;
-    if (tiled_alloc && !g_dump_host_optimal && g_vk_ctx.msrtss_supported) {
+    if (!g_dump_host_optimal && g_vk_ctx.msrtss_supported) {
         VkImageFormatProperties msrtss_props;
         if (vkGetPhysicalDeviceImageFormatProperties(g_vk_ctx.physical_device, image_fmt,
                 VK_IMAGE_TYPE_2D, tiling, usage,

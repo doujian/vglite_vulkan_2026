@@ -1440,3 +1440,15 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Verification**: lavapipe full suite on all 8 configurations (Tiling x MSAA x OBB): 46/46 PASS each (test_sft_blit excluded as pre-existing crash), no golden FAIL lines.
 
 **Files**: src/vg_lite_draw.c (impl/pattern/radial/grad paths, 3 edits each)
+
+## 37. MSRTSS direct mode never probed for LINEAR targets - resolve scratch kept alive unnecessarily
+
+**Symptom**: All LINEAR-tiling targets (the default allocation mode, configurations 1-4) always took the MSRTSS "scratch" path: a lazily created OPTIMAL resolve_image sidecar served as the render pass color attachment, a seed copy (target -> resolve_image) was needed whenever the render pass reopened, and a resolve copy (resolve_image -> target) ran after every pass. The direct-mode probe in vg_lite_allocate was gated on `tiled_alloc` (OPTIMAL only), so LINEAR + the MSRTSS image create flag + color attachment usage was never even queried.
+
+**Root Cause**: An untested assumption from the original MSRTSS work that the VK_IMAGE_CREATE_MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_BIT_EXT create flag is only viable with OPTIMAL tiling. The Vulkan spec imposes no such rule: support for the flag/tiling/usage/format combination is driver-reported via vkGetPhysicalDeviceImageFormatProperties, and the VkImageCreateFlagBits definition carries no tiling restriction. Direct mode is also layout-safe for LINEAR targets: the direct path keeps the target in GENERAL throughout (creation barrier, render pass initial/final layout, no-op resolve), which is the only layout family LINEAR images need.
+
+**Solution**: src/vg_lite.c vg_lite_allocate: drop the `tiled_alloc` term from the direct-mode probe gate. The probe now queries the actual creation combo (format + actual tiling + flags + usage) for every target; if the driver rejects it the buffer silently falls back to the resolve-scratch path, unchanged behavior. On lavapipe the probe succeeds for LINEAR targets (verified with a temporary probe log: `tiling=LINEAR direct=1`), so LINEAR targets now render straight into themselves under MSRTSS - no resolve_image sidecar, no seed copy, no resolve copy.
+
+**Verification**: lavapipe full suite: 46/46 PASS on all 8 configurations (Tiling x MSAA x OBB; test_sft_blit excluded as pre-existing crash), no golden FAIL lines. Probe behavior spot-checked via temporary stderr log before removal.
+
+**Files**: src/vg_lite.c
