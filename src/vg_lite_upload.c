@@ -422,7 +422,10 @@ vg_lite_error_t vg_lite_upload_buffer(vg_lite_buffer_t *buffer,
      *    mapped LINEAR images; repack + vg_lite_buffer_write otherwise,
      *    which covers shadow formats, cpu_cache invalidation and
      *    staging + CopyBufferToImage for OPTIMAL images). */
-    if (internal->is_optimal && internal->has_storage) {
+    /* ARGB8888 keeps a shadow-rotate CPU layout — the compute imageStore
+     * path would write unrotated words; route through vg_lite_buffer_write. */
+    if (internal->is_optimal && internal->has_storage &&
+        buffer->format != VG_LITE_ARGB8888) {
         vg_lite_error_t err = VG_LITE_NOT_SUPPORT;
         if (bpp_bits == 32) err = upload_buffer_tiled(buffer, pdata, data_stride, 4);
         else if (bpp_bits == 16) err = upload_buffer_tiled(buffer, pdata, data_stride, 2);
@@ -510,6 +513,15 @@ vg_lite_error_t vg_lite_upload_buffers(vg_lite_buffer_t **bufs,
         }
         it->size = (VkDeviceSize)it->row_bytes * b->height;
 
+        if (b->format == VG_LITE_ARGB8888) {
+            /* Shadow-rotate format (both tilings): keep out of the raw
+             * staging/compute/copy segments — delegated to
+             * vg_lite_buffer_write after the GPU phase. size = 0 keeps
+             * the staging memcpy and GPU loops away from it (offset 0
+             * belongs to the first planned segment). */
+            it->size = 0;
+            continue;
+        }
         if (!in->is_optimal) {
             /* LINEAR (incl. shadow formats): handled CPU-side below /
              * delegated after the GPU phase; no staging segment. */
@@ -556,7 +568,8 @@ plan_done:
         batch_item_t *it = &items[i];
         buffer_internal_t *in = (buffer_internal_t *)it->buf->handle;
         if (!in->is_optimal) {
-            if (it->buf->format == VG_LITE_A4 || it->buf->format == OPENVG_sRGBA_8888)
+            if (it->buf->format == VG_LITE_A4 || it->buf->format == OPENVG_sRGBA_8888 ||
+                it->buf->format == VG_LITE_ARGB8888)
                 continue; /* delegated after the GPU phase */
             if (!it->buf->memory) { err = VG_LITE_OUT_OF_MEMORY; break; }
             for (int32_t y = 0; y < it->buf->height; y++)
@@ -797,12 +810,15 @@ plan_done:
     }
 
 delegate:
-    /* Shadow-transform LINEAR formats keep their dedicated path. */
+    /* Shadow-transform LINEAR formats keep their dedicated path
+     * (ARGB8888 in both tilings — OPTIMAL items were kept out of the
+     * GPU phase above). */
     for (uint32_t i = 0; i < count; i++) {
         vg_lite_buffer_t *b = bufs[i];
         buffer_internal_t *in = (buffer_internal_t *)b->handle;
-        if (!in->is_optimal &&
-            (b->format == VG_LITE_A4 || b->format == OPENVG_sRGBA_8888)) {
+        if (b->format == VG_LITE_ARGB8888 ||
+            (!in->is_optimal &&
+             (b->format == VG_LITE_A4 || b->format == OPENVG_sRGBA_8888))) {
             uint32_t bpp_bits = vg_lite_format_bpp(b->format);
             uint32_t row_bytes = ((uint32_t)b->width * bpp_bits + 7) / 8;
             uint32_t data_stride = strides[i] ? strides[i] : row_bytes;

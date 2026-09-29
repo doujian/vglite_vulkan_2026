@@ -489,6 +489,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
     if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
+    if (target->format == VG_LITE_ARGB8888) internal->argb_gpu_dirty = 1;
 
     int need_flush = (internal->msaa_dirty);
     /* Captured BEFORE any flush below: they clear current_fb_is_no_msaa /
@@ -783,6 +784,10 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         vg_lite_error_t s_err = vg_lite_srgb_sync_to_gpu(pattern_image);
         if (s_err != VG_LITE_SUCCESS) return s_err;
     }
+    if (pattern_image->format == VG_LITE_ARGB8888) {
+        vg_lite_error_t r_err = vg_lite_argb_sync_to_gpu(pattern_image);
+        if (r_err != VG_LITE_SUCCESS) return r_err;
+    }
 
     VlcPath vlc_path;
     vlc_path_init(&vlc_path);
@@ -828,6 +833,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
     if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
+    if (target->format == VG_LITE_ARGB8888) target_int->argb_gpu_dirty = 1;
     if (target_int->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
     }
@@ -1161,6 +1167,11 @@ static vg_lite_error_t draw_radial_internal(
     vg_lite_vulkan_flush_render_pass();
 
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
+    /* Invalidate cached CPU data — GPU will render to this buffer */
+    if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
+    if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
+    if (target->format == VG_LITE_ARGB8888) target_int->argb_gpu_dirty = 1;
     if (target_int->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(target_int);
     }
@@ -1445,6 +1456,11 @@ static vg_lite_error_t draw_grad_internal(
     vg_lite_vulkan_flush_render_pass();
 
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
+    /* Invalidate cached CPU data — GPU will render to this buffer */
+    if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
+    if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
+    if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
+    if (target->format == VG_LITE_ARGB8888) internal->argb_gpu_dirty = 1;
     if (internal->msaa_dirty) {
         vg_lite_vulkan_resolve_msaa_to_target(internal);
     }

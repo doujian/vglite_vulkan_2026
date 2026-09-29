@@ -83,6 +83,14 @@ int a4_gpu_dirty;                /* GPU rendered into expanded image; shadow nee
 uint8_t *srgb_shadow;
 uint8_t *srgb_mapped;
 int srgb_gpu_dirty;
+/* VG_LITE_ARGB8888: CPU keeps the VGLite [A,R,G,B] byte layout in
+ * argb_shadow; the GPU image is R8G8B8A8_UNORM holding native [R,G,B,A]
+ * bytes (no sampling swizzle needed — the identity view reads correctly).
+ * argb_mapped = host-mapped GPU pixels (LINEAR only, includes layout
+ * offset; row pitch shared with gpu_pitch). */
+uint8_t *argb_shadow;
+uint8_t *argb_mapped;
+int argb_gpu_dirty;
 } buffer_internal_t;
 
 /* Expand+upload the packed A4 shadow to the GPU R8 image. Call before any
@@ -92,6 +100,10 @@ vg_lite_error_t vg_lite_a4_sync_to_gpu(vg_lite_buffer_t *buffer);
 /* Rotate+upload the [A,B,G,R] srgb shadow to the GPU [R,G,B,A] _SRGB image.
  * Call before any GPU use of an OPENVG_sRGBA_8888 buffer. */
 vg_lite_error_t vg_lite_srgb_sync_to_gpu(vg_lite_buffer_t *buffer);
+
+/* Rotate+upload the [A,R,G,B] shadow to the GPU native [R,G,B,A] image.
+ * Call before any GPU use of a VG_LITE_ARGB8888 buffer. */
+vg_lite_error_t vg_lite_argb_sync_to_gpu(vg_lite_buffer_t *buffer);
 
 typedef struct {
     VkPipeline pipeline;
