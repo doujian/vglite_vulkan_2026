@@ -179,3 +179,6 @@ add_dependencies(test_optimal_dump_recover spirv_compilation)
 
 add_executable(test_clear_multi clear_multi/clear_multi.c)
 add_dependencies(test_clear_multi spirv_compilation)
+
+add_executable(test_roundrect roundrect/roundrect.c)
+add_dependencies(test_roundrect spirv_compilation)
