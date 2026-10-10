@@ -1464,3 +1464,23 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Verification**: lavapipe: test_radialGrad 4 frames 0 mismatches (307200/307200 pixels, 100% pass rate), FILL and PAD frames byte-identical as the reference mandates, center pixel warm-red opaque. Regression: test_patternFill/test_linearGrad/test_stroke/test_draw_image/test_blit_mixed all exit 0 and 16 golden PNGs byte-identical to the pre-change baselines (fill_stroke, linearGrad, pattern_0/1, stroke0_0-stroke5) - the sampling-swizzle deletion is provably behavior-neutral for ARGB sources. Full matrix: all 8 configurations (Tiling x MSAA x OBB) rebuilt and full suite run - 46/47 PASS each (test_sft_blit excluded as pre-existing crash), radialGrad 0 mismatches in all 8 (including the OPTIMAL-tiling configs that exercise the cpu_cache download branch), linearGrad PERFECT MATCH in all 8.
 
 **Files**: src/vg_lite_vulkan.h, src/vg_lite.c, src/vg_lite_draw.c, src/vg_lite_upload.c
+
+## Geometry dump recorded pre-transform path coordinates
+
+**Symptom**: geometry_dump.txt vertices and AABB for records with a rotation/scale matrix (e.g. roundrect test frame 1, rotated 30 deg + scale 0.8) were byte-identical to the untransformed frame - the visualizer showed path-space geometry, not what actually lands on screen.
+
+**Root Cause**: the geom_dump hook fires right after tessellate_path(), which produces path-space vertices; the user matrix is concatenated into the screen-to-NDC push-constant and applied on the GPU (mat3_multiply at vg_lite_draw.c ~line 630), so the dump never saw the transform.
+
+**Solution**: geom_dump_tessellation() now takes the user matrix (NULL = identity), transforms a copy of the vertices with the standard affine form (x' = m00*x + m01*y + m02), and recomputes B from the transformed vertices. Call sites pass their in-scope matrix: fill -> matrix, pattern/radial -> path_matrix, grad -> grad_matrix. Dump file format unchanged. Verified: DRAW 3 now differs from DRAW 1 (bbox [16.61,18.95]x[239.39,237.05]); DRAW 4 (blend-only change) correctly still identical to DRAW 1. Full matrix after change: 8 configs x 47/48 PASS (only pre-existing test_sft_blit).
+
+**Files**: src/geom_dump.c, src/geom_dump.h, src/vg_lite_draw.c
+
+## Geometry dump bbox aligned with shader cover pass
+
+**Symptom**: the dump B line was recomputed from transformed tessellated vertices (a geometry-fitting AABB), while the pipeline's cover pass (vg_lite_draw.c ~line 662) transforms the 4 corners of path->bounding_box by the combined matrix and rasterizes that oriented quad - so the dumped box did not reflect what the shader actually uses.
+
+**Root Cause**: two different bbox definitions coexisted - tessellated-vertex extents vs path bbox corners; under rotation they differ (rounded-rect geometry never reaches the path bbox corners, so the cover quad is strictly larger than the geometry AABB).
+
+**Solution**: geom_dump now writes a C line with the 4 path-bbox corners transformed by the user matrix (exact same affine math as the cover pass) and B is the axis-aligned envelope of those corners; geom_visualizer parses C (backward compatible with old dumps) and draws it as a yellow solid oriented quad alongside the dashed orange AABB. Verified: DRAW 3 C corners form the rotated quad (90.83,6.78)-(251.57,99.58)-(165.17,249.22)-(4.43,156.42), B envelope [4.43,6.78]x[251.57,249.22]; identity-matrix records (DRAW 1/2/4) unchanged. Full matrix after change: 8 configs x 47/48 PASS (only pre-existing test_sft_blit).
+
+**Files**: src/geom_dump.c, src/geom_dump.h, tests/geom_visualizer/geom_visualizer.c
