@@ -187,12 +187,31 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_ui | CTS ui icons + translucent highlight (golden .raw compare) | PASS (100%) |
 | test_uploadBatch | vg_lite_upload_buffers batch API: mixed 6-buffer batch (linear/tiled × formats), single staging + single submit, byte-exact download compare | PASS |
 | test_msaaSwitch | Runtime MSAA 2x/4x switching (vg_lite_set_msaa_samples): pipeline/attachment invalidation, draw across switches | PASS |
+| test_roundrect | Rounded-rect path fill (identity/rotate 30°+scale 0.8/translucent SRC_OVER) + inner-rect multi-path draw | PASS |
 
-**Summary: 43 PASS / 1 FAIL**
+**Summary: 47 PASS / 1 FAIL**
 
 Note: on some machines test_gfx3 and test_imgIndex also fail locally (pre-existing, unrelated to current HEAD).
 
 Tiled buffers: `vg_lite_allocate` with `buffer->tiled = VG_LITE_TILED` (single-plane >=8bpp formats) creates a `VK_IMAGE_TILING_OPTIMAL`, device-local, unmapped image. The creation combo is decided once at allocate time by a capability probe chain, so upload never re-probes: (1) if the device supports OPTIMAL+STORAGE+MUTABLE_FORMAT, the image carries STORAGE usage (packed 16bpp images are created as R16_UINT views-compat so STORAGE is available, sampling views keep the original format) and `vg_lite_upload_buffer` fills it via the single `shaders/upload_tiled.comp`: user rows are packed into a staging SSBO, the compute shader reads bytes/halfwords/words per `bytes_per_pixel` and writes them through a formatless `uimage2D` (R32/R16/R8_UINT storage view, requires `shaderStorageImageWriteWithoutFormat`) — the hardware resolves tile addressing; 32bpp, 16bpp (RGB565 family) and 8bpp formats are supported. (2) On devices without OPTIMAL+STORAGE support the image is created in the real format with base usage and upload goes through a staging + `vkCmdCopyBufferToImage` path. (3) If even base OPTIMAL is rejected, allocation degrades to LINEAR. Set `VGLITE_DISABLE_STORAGE_UPLOAD=1` to force path (2) for testing.
+
+## Geometry Dump & Visualizer
+
+Optional debugging tooling for `vg_lite_draw` path rendering (tessellation output):
+
+1. **Dump** — set `VGLITE_DUMP_GEOMETRY` before running a test:
+   - unset/empty: inactive (zero overhead)
+   - `1`/`on`: records appended to `<dumpdir>/geometry_dump.txt`
+   - `<name>`: records appended to `<dumpdir>/<name>`
+
+   Each record contains the post-transform tessellation result of one draw call (`fill`/`pattern`/`radial`/`grad` call site): vertices (`V`), triangle indices (`T`), the cover-pass oriented quad (`C`, path-bbox corners transformed by the user matrix — exactly what the shader's cover pass rasterizes), its axis-aligned envelope (`B`), and the target framebuffer size (`F`).
+
+2. **Visualizer** — `geom_visualizer <dump_file> [output.png] [selection]` (pure C99, builds on Linux/Windows):
+   - `all` (default): all records aggregated into one PNG
+   - `each`: one PNG per record (`<base>_<seq>.png`)
+   - list, e.g. `1,3` or `1-2`: only those DRAW records aggregated
+
+   Canvas size comes from the `F` line with 1:1 coordinate-to-pixel mapping, so the PNG aligns pixel-perfect with the test's own framebuffer output (triangles translucent + wireframe, AABB orange dashed, cover quad yellow, vertices white dots).
 
 ## Expected Buffer Tracker
 
