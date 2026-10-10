@@ -7,6 +7,7 @@ add_library(vg_lite
     vlc_parser.c
     tessellator.c
     vg_lite_draw.c
+    geom_dump.c
     vg_lite_gradient.c
     vg_lite_upload.c
     shader_loader.c

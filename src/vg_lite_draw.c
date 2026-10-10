@@ -3,15 +3,16 @@
 #include "vg_lite_math.h"
 #include "vlc_parser.h"
 #include "tessellator.h"
+#include "geom_dump.h"
 #include "shader_loader.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
 
-/* Declared in vg_lite.c — tracks buffer with pending deferred clear */
+/* Declared in vg_lite.c �?tracks buffer with pending deferred clear */
 extern vg_lite_buffer_t *g_pending_clear_buffer;
-/* Declared in vg_lite.c — flushes pending fullscreen clear to target via no-MSAA RP */
+/* Declared in vg_lite.c �?flushes pending fullscreen clear to target via no-MSAA RP */
 extern void flush_pending_clear_on_target(vg_lite_buffer_t *target);
 
 #define MAX_PENDING_BUFFERS 512
@@ -389,7 +390,7 @@ static void upload_geom(VkBuffer vbo, VkDeviceMemory vbo_mem, VkBuffer ibo, VkDe
 
 /* Create a 32-byte vertex buffer for a bounding-box cover quad (4 verts × 2 floats).
  * Follows the same pattern as create_vertex_buffer() but fixed-size for cover geometry.
- * Does NOT create an IBO — the cover index buffer is shared/global. */
+ * Does NOT create an IBO �?the cover index buffer is shared/global. */
 static void create_cover_vbo(float ndc_verts[8], VkBuffer* vbo, VkDeviceMemory* vbo_mem)
 {
     VkBufferCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
@@ -467,7 +468,8 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         vlc_path_free(&vlc_path);
         return VG_LITE_SUCCESS;
     }
-    
+    geom_dump_tessellation(&geom, matrix, target->width, target->height, "fill");
+
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
     init_draw_pipeline(vkfmt);
     
@@ -485,7 +487,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         return err;
     }
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    /* Invalidate cached CPU data — GPU will render to this buffer */
+    /* Invalidate cached CPU data �?GPU will render to this buffer */
     if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
     if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
@@ -506,7 +508,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     int clear_loadop = 0;
     {
         /* Fast path: an MSRTSS RP is already open on this same target and
-         * no RP-external seed is required — continue the RP instead of
+         * no RP-external seed is required �?continue the RP instead of
          * flush + resolve + re-seed + new RP (saves the resolve copy and
          * RP churn for consecutive draws / clear+draw on one target). Any
          * pending clear (fullscreen included) is applied in-RP below via
@@ -518,8 +520,8 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
                         (internal->has_pending_clear &&
                          internal->pending_clear_is_fullscreen)));
         if (internal->has_pending_clear && internal->pending_clear_is_fullscreen && !rp_live) {
-            /* Fullscreen clear → this draw RP's loadOp=CLEAR. All MSRTSS
-             * attachments are 1x — the llvmpipe 4x clear bug cannot trigger.
+            /* Fullscreen clear �?this draw RP's loadOp=CLEAR. All MSRTSS
+             * attachments are 1x �?the llvmpipe 4x clear bug cannot trigger.
              * Content is fully replaced: no seed, no no-MSAA clear RP
              * (1 RP + 0 copies instead of 2 RP + 1 copy). */
             clear_loadop = 1;
@@ -530,7 +532,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
             if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
                 vg_lite_vulkan_flush_render_pass();
         } else if (!rp_live) {
-        /* MSRTSS: seed is an RP-external vkCmdCopyImage — must run BEFORE
+        /* MSRTSS: seed is an RP-external vkCmdCopyImage �?must run BEFORE
          * set_render_target begins the MSRTSS RP. End any active RP (the
          * pending-clear flush leaves a no-MSAA RP bound; a clean RP on
          * another buffer may also be active), then seed when the previous
@@ -539,7 +541,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
         /* The flush may have left the previous target msaa_dirty (its
-         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * latest content in the 1x resolve scratch, LINEAR image stale) �?
          * resolve before seeding so later reads/sampling are not stale. */
         if (prev_internal && prev_internal->msaa_dirty)
             vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
@@ -577,7 +579,7 @@ vg_lite_error_t vg_lite_draw_impl(vg_lite_buffer_t *target, vg_lite_path_t *path
     if (internal->has_pending_clear) {
         /* Deferred clear (partial or fullscreen-consumed-in-RP): apply
          * inside the open MSRTSS RP before drawing. The color attachment
-         * is 1x — the llvmpipe 4x B5G6R5 clear bug cannot trigger.
+         * is 1x �?the llvmpipe 4x B5G6R5 clear bug cannot trigger.
          * loadOp=LOAD (or the continued RP) already presents the pre-clear
          * content; this composes the clear rect on top. */
         VkClearAttachment pclr = {0};
@@ -774,8 +776,8 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     buffer_internal_t *pattern_int = (buffer_internal_t *)pattern_image->handle;
     if (!pattern_int) return VG_LITE_INVALID_ARGUMENT;
 
-    /* A4 pattern sources keep packed 4bpp on the CPU side — expand first.
-     * sRGBA pattern sources keep [A,B,G,R] words — rotate first. */
+    /* A4 pattern sources keep packed 4bpp on the CPU side �?expand first.
+     * sRGBA pattern sources keep [A,B,G,R] words �?rotate first. */
     if (pattern_image->format == VG_LITE_A4) {
         vg_lite_error_t a4_err = vg_lite_a4_sync_to_gpu(pattern_image);
         if (a4_err != VG_LITE_SUCCESS) return a4_err;
@@ -805,7 +807,8 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         vlc_path_free(&vlc_path);
         return VG_LITE_SUCCESS;
     }
-    
+    geom_dump_tessellation(&geom, path_matrix, target->width, target->height, "pattern");
+
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
     vg_lite_vulkan_init_pattern_pipeline(vkfmt);
     
@@ -829,7 +832,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     vg_lite_vulkan_flush_render_pass();
     
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
-    /* Invalidate cached CPU data — GPU will render to this buffer */
+    /* Invalidate cached CPU data �?GPU will render to this buffer */
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
     if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
@@ -841,7 +844,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         VkClearValue pending_cv;
         int clear_loadop = 0;
         /* Fast path: MSRTSS RP already open on this same target, no
-         * RP-external seed needed — continue the RP (pending clear is
+         * RP-external seed needed �?continue the RP (pending clear is
          * applied in-RP below; fullscreen clear replaces all content, so
          * its seed flag is dropped). See vg_lite_draw_impl for details. */
         int rp_live = (g_vk_ctx.current_fb != VK_NULL_HANDLE &&
@@ -850,7 +853,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
                         (target_int->has_pending_clear &&
                          target_int->pending_clear_is_fullscreen)));
         if (target_int->has_pending_clear && target_int->pending_clear_is_fullscreen && !rp_live) {
-            /* Fullscreen clear → this RP's loadOp=CLEAR (1x attachments —
+            /* Fullscreen clear �?this RP's loadOp=CLEAR (1x attachments �?
              * the llvmpipe 4x clear bug cannot trigger). Content fully
              * replaced: no seed, no no-MSAA clear RP. */
             clear_loadop = 1;
@@ -860,7 +863,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
             target_int->msaa_needs_seed = 0;
         }
         if (!clear_loadop && !rp_live) {
-        /* MSRTSS: end any RP left active by the pending-clear flush — the
+        /* MSRTSS: end any RP left active by the pending-clear flush �?the
          * seed is an RP-external vkCmdCopyImage and must run BEFORE
          * set_render_target begins the MSRTSS RP. Seed when the previous
          * RP was no-MSAA (target written outside MSRTSS), a seed is
@@ -868,7 +871,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
         /* The flush may have left the previous target msaa_dirty (its
-         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * latest content in the 1x resolve scratch, LINEAR image stale) �?
          * resolve before seeding so later reads/sampling are not stale. */
         if (prev_internal && prev_internal->msaa_dirty)
             vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
@@ -888,7 +891,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
     if (target_int->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
-         * drawing (1x color attachment — the llvmpipe 4x B5G6R5 clear bug
+         * drawing (1x color attachment �?the llvmpipe 4x B5G6R5 clear bug
          * cannot trigger). loadOp=LOAD already presents the pre-clear
          * content; this composes the clear rect on top. */
         VkClearAttachment pclr = {0};
@@ -932,7 +935,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     
     /* Compute inverse of pattern_matrix, then normalize by pattern dimensions.
      * This gives a matrix that transforms screen pixel coords to normalized UV [0,1].
-     * Pattern matrix is screen-space — do NOT chain through path_matrix inverse. */
+     * Pattern matrix is screen-space �?do NOT chain through path_matrix inverse. */
     float pattern_inv[3][3] = {0};
     float m[3][3];
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) m[i][j] = pattern_matrix->m[i][j];
@@ -949,7 +952,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         pattern_inv[1][2] /= pattern_image->height;
     }
 
-    /* Descriptor set creation — bind pattern texture */
+    /* Descriptor set creation �?bind pattern texture */
     VkDescriptorSetAllocateInfo ds_alloc = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ds_alloc.descriptorPool = g_vk_ctx.descriptor_pool;
     ds_alloc.descriptorSetCount = 1;
@@ -1143,6 +1146,7 @@ static vg_lite_error_t draw_radial_internal(
         vlc_path_free(&vlc_path);
         return VG_LITE_SUCCESS;
     }
+    geom_dump_tessellation(&geom, path_matrix, target->width, target->height, "radial");
 
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
     vg_lite_vulkan_init_radial_pipeline(vkfmt);
@@ -1167,7 +1171,7 @@ static vg_lite_error_t draw_radial_internal(
     vg_lite_vulkan_flush_render_pass();
 
     buffer_internal_t *target_int = (buffer_internal_t *)target->handle;
-    /* Invalidate cached CPU data — GPU will render to this buffer */
+    /* Invalidate cached CPU data �?GPU will render to this buffer */
     if (target_int->cpu_cache) { free(target_int->cpu_cache); target_int->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) target_int->a4_gpu_dirty = 1;
     if (target->format == OPENVG_sRGBA_8888) target_int->srgb_gpu_dirty = 1;
@@ -1179,7 +1183,7 @@ static vg_lite_error_t draw_radial_internal(
         VkClearValue pending_cv;
         int clear_loadop = 0;
         /* Fast path: MSRTSS RP already open on this same target, no
-         * RP-external seed needed — continue the RP (pending clear is
+         * RP-external seed needed �?continue the RP (pending clear is
          * applied in-RP below; fullscreen clear replaces all content, so
          * its seed flag is dropped). See vg_lite_draw_impl for details. */
         int rp_live = (g_vk_ctx.current_fb != VK_NULL_HANDLE &&
@@ -1188,7 +1192,7 @@ static vg_lite_error_t draw_radial_internal(
                         (target_int->has_pending_clear &&
                          target_int->pending_clear_is_fullscreen)));
         if (target_int->has_pending_clear && target_int->pending_clear_is_fullscreen && !rp_live) {
-            /* Fullscreen clear → this RP's loadOp=CLEAR (1x attachments —
+            /* Fullscreen clear �?this RP's loadOp=CLEAR (1x attachments �?
              * the llvmpipe 4x clear bug cannot trigger). Content fully
              * replaced: no seed, no no-MSAA clear RP. */
             clear_loadop = 1;
@@ -1198,7 +1202,7 @@ static vg_lite_error_t draw_radial_internal(
             target_int->msaa_needs_seed = 0;
         }
         if (!clear_loadop && !rp_live) {
-        /* MSRTSS: end any RP left active by the pending-clear flush — the
+        /* MSRTSS: end any RP left active by the pending-clear flush �?the
          * seed is an RP-external vkCmdCopyImage and must run BEFORE
          * set_render_target begins the MSRTSS RP. Seed when the previous
          * RP was no-MSAA (target written outside MSRTSS), a seed is
@@ -1206,7 +1210,7 @@ static vg_lite_error_t draw_radial_internal(
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
         /* The flush may have left the previous target msaa_dirty (its
-         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * latest content in the 1x resolve scratch, LINEAR image stale) �?
          * resolve before seeding so later reads/sampling are not stale. */
         if (prev_internal && prev_internal->msaa_dirty)
             vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
@@ -1226,7 +1230,7 @@ static vg_lite_error_t draw_radial_internal(
     if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
     if (target_int->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
-         * drawing (1x color attachment — the llvmpipe 4x B5G6R5 clear bug
+         * drawing (1x color attachment �?the llvmpipe 4x B5G6R5 clear bug
          * cannot trigger). loadOp=LOAD already presents the pre-clear
          * content; this composes the clear rect on top. */
         VkClearAttachment pclr = {0};
@@ -1280,7 +1284,7 @@ static vg_lite_error_t draw_radial_internal(
         return VG_LITE_OUT_OF_MEMORY;
     }
 
-    /* Radial LUT entries are pre-quantized ramp stops — nearest fetch. */
+    /* Radial LUT entries are pre-quantized ramp stops �?nearest fetch. */
     VkSampler sampler = get_or_create_sampler(VG_LITE_FILTER_POINT);
     VkImageView lut_view = lut_int->swizzle_view ? lut_int->swizzle_view : lut_int->view;
     VkDescriptorImageInfo img_info = {sampler, lut_view, VK_IMAGE_LAYOUT_GENERAL};
@@ -1295,8 +1299,8 @@ static vg_lite_error_t draw_radial_internal(
 
     /* Push constant struct: matches radial.vert/frag layout (124B) */
     struct {
-        float path_m[12];       /* mat3 as 3 vec4 columns (std140) — 48B */
-        float radial_coef[12];  /* mat3 as 3 vec4 columns (std140) — 48B */
+        float path_m[12];       /* mat3 as 3 vec4 columns (std140) �?48B */
+        float radial_coef[12];  /* mat3 as 3 vec4 columns (std140) �?48B */
         int   spread_mode;      /* 4B */
         uint32_t paint_color;   /* 4B */
         int   target_width;     /* 4B */
@@ -1411,7 +1415,7 @@ static vg_lite_error_t draw_grad_internal(
 {
     if (!target || !path || !grad_image) return VG_LITE_INVALID_ARGUMENT;
     if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
-    (void)pattern_color; /* unused — no COLOR mode in gradient shader */
+    (void)pattern_color; /* unused �?no COLOR mode in gradient shader */
 
     buffer_internal_t *grad_int = (buffer_internal_t *)grad_image->handle;
     if (!grad_int) return VG_LITE_INVALID_ARGUMENT;
@@ -1432,6 +1436,7 @@ static vg_lite_error_t draw_grad_internal(
         vlc_path_free(&vlc_path);
         return VG_LITE_SUCCESS;
     }
+    geom_dump_tessellation(&geom, grad_matrix, target->width, target->height, "grad");
 
     VkFormat vkfmt = vg_lite_format_to_vk(target->format);
     vg_lite_vulkan_init_grad_pipeline(vkfmt);
@@ -1456,7 +1461,7 @@ static vg_lite_error_t draw_grad_internal(
     vg_lite_vulkan_flush_render_pass();
 
     buffer_internal_t *internal = (buffer_internal_t *)target->handle;
-    /* Invalidate cached CPU data — GPU will render to this buffer */
+    /* Invalidate cached CPU data �?GPU will render to this buffer */
     if (internal->cpu_cache) { free(internal->cpu_cache); internal->cpu_cache = NULL; }
     if (target->format == VG_LITE_A4) internal->a4_gpu_dirty = 1;
     if (target->format == OPENVG_sRGBA_8888) internal->srgb_gpu_dirty = 1;
@@ -1468,7 +1473,7 @@ static vg_lite_error_t draw_grad_internal(
         VkClearValue pending_cv;
         int clear_loadop = 0;
         /* Fast path: MSRTSS RP already open on this same target, no
-         * RP-external seed needed — continue the RP (pending clear is
+         * RP-external seed needed �?continue the RP (pending clear is
          * applied in-RP below; fullscreen clear replaces all content, so
          * its seed flag is dropped). See vg_lite_draw_impl for details. */
         int rp_live = (g_vk_ctx.current_fb != VK_NULL_HANDLE &&
@@ -1477,7 +1482,7 @@ static vg_lite_error_t draw_grad_internal(
                         (internal->has_pending_clear &&
                          internal->pending_clear_is_fullscreen)));
         if (internal->has_pending_clear && internal->pending_clear_is_fullscreen && !rp_live) {
-            /* Fullscreen clear → this RP's loadOp=CLEAR (1x attachments —
+            /* Fullscreen clear �?this RP's loadOp=CLEAR (1x attachments �?
              * the llvmpipe 4x clear bug cannot trigger). Content fully
              * replaced: no seed, no no-MSAA clear RP. */
             clear_loadop = 1;
@@ -1487,7 +1492,7 @@ static vg_lite_error_t draw_grad_internal(
             internal->msaa_needs_seed = 0;
         }
         if (!clear_loadop && !rp_live) {
-        /* MSRTSS: end any RP left active by the pending-clear flush — the
+        /* MSRTSS: end any RP left active by the pending-clear flush �?the
          * seed is an RP-external vkCmdCopyImage and must run BEFORE
          * set_render_target begins the MSRTSS RP. Seed when the previous
          * RP was no-MSAA (target written outside MSRTSS), a seed is
@@ -1495,7 +1500,7 @@ static vg_lite_error_t draw_grad_internal(
         if (g_vk_ctx.current_fb != VK_NULL_HANDLE)
             vg_lite_vulkan_flush_render_pass();
         /* The flush may have left the previous target msaa_dirty (its
-         * latest content in the 1x resolve scratch, LINEAR image stale) —
+         * latest content in the 1x resolve scratch, LINEAR image stale) �?
          * resolve before seeding so later reads/sampling are not stale. */
         if (prev_internal && prev_internal->msaa_dirty)
             vg_lite_vulkan_resolve_msaa_to_target(prev_internal);
@@ -1515,7 +1520,7 @@ static vg_lite_error_t draw_grad_internal(
     if (err != VG_LITE_SUCCESS) { destroy_buffer(vbo, vbo_mem); destroy_buffer(ibo, ibo_mem); tess_geometry_free(&geom); vlc_path_free(&vlc_path); return err; }
     if (internal->has_pending_clear) {
         /* Deferred partial clear: apply inside the open MSRTSS RP before
-         * drawing (1x color attachment — the llvmpipe 4x B5G6R5 clear bug
+         * drawing (1x color attachment �?the llvmpipe 4x B5G6R5 clear bug
          * cannot trigger). loadOp=LOAD already presents the pre-clear
          * content; this composes the clear rect on top. */
         VkClearAttachment pclr = {0};
@@ -1710,9 +1715,9 @@ vg_lite_error_t vg_lite_draw_grad(vg_lite_buffer_t *target,
     if (!grad || !grad->image.handle) return VG_LITE_INVALID_ARGUMENT;
 
     /* Linear gradient API has no spread_mode field; default to PAD.
-     * Pass grad->matrix through unchanged — pattern API uses it
-     * identically to draw_grad_internal (grad-local → screen).
-     * Filter: the ramp LUT is pre-quantized — POINT (nearest) keeps the
+     * Pass grad->matrix through unchanged �?pattern API uses it
+     * identically to draw_grad_internal (grad-local �?screen).
+     * Filter: the ramp LUT is pre-quantized �?POINT (nearest) keeps the
      * byte-exact CPU-reference match; LINEAR would blur between entries. */
     return vg_lite_draw_pattern(target, path, fill_rule, matrix,
                                 &grad->image, &grad->matrix, blend,
