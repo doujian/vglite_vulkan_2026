@@ -6,10 +6,11 @@
  * Related APIs: vg_lite_clear / vg_lite_get_path_length / vg_lite_init_path /
  *               vg_lite_append_path / vg_lite_draw / vg_lite_finish /
  *               vg_lite_save_png
- * Description: Render a rounded rectangle (200x120, corner radius 40) built
+ * Description: Render a rounded rectangle (232x216, corner radius 48) built
  *              from 4 LINE + 4 QUAD segments (control point at the corner,
  *              giving an approximate 90-degree arc). Three frames:
- *                0) identity matrix, BLEND_NONE, solid fill
+ *                0) identity matrix, BLEND_NONE, solid fill + a plain
+ *                   rectangle drawn in the middle (two-path sequence)
  *                1) rotated ~30 deg + scaled 0.8, BLEND_NONE
  *                2) identity translate, BLEND_SRC_OVER semi-transparent fill
  *                   on top of frame-1 content
@@ -30,7 +31,7 @@ static int fb_width = 256, fb_height = 256;
 static vg_lite_buffer_t buffer;
 static vg_lite_buffer_t *fb;
 
-/* Rounded rect: x in [28,228], y in [68,188], corner radius 40. */
+/* Rounded rect: x in [12,244], y in [20,236], corner radius 48. */
 static uint8_t rect_cmd[] = {
     VLC_OP_MOVE,                 /* start top-left after corner */
     VLC_OP_LINE,                 /* top edge */
@@ -46,18 +47,35 @@ static uint8_t rect_cmd[] = {
 
 /* QUAD data order: control point (cx,cy) then end point (x,y). */
 static float rect_data[] = {
-    68.0f, 68.0f,                              /* MOVE  */
-    188.0f, 68.0f,                             /* LINE  */
-    228.0f, 68.0f,   228.0f, 108.0f,           /* QUAD  */
-    228.0f, 148.0f,                            /* LINE  */
-    228.0f, 188.0f,  188.0f, 188.0f,           /* QUAD  */
-    68.0f, 188.0f,                             /* LINE  */
-    28.0f, 188.0f,   28.0f, 148.0f,            /* QUAD  */
-    28.0f, 108.0f,                             /* LINE  */
-    28.0f, 68.0f,    68.0f, 68.0f              /* QUAD  */
+    60.0f, 20.0f,                              /* MOVE  */
+    196.0f, 20.0f,                             /* LINE  */
+    244.0f, 20.0f,   244.0f, 68.0f,            /* QUAD  */
+    244.0f, 188.0f,                            /* LINE  */
+    244.0f, 236.0f,  196.0f, 236.0f,           /* QUAD  */
+    60.0f, 236.0f,                             /* LINE  */
+    12.0f, 236.0f,   12.0f, 188.0f,            /* QUAD  */
+    12.0f, 68.0f,                              /* LINE  */
+    12.0f, 20.0f,    60.0f, 20.0f              /* QUAD  */
 };
 
 static vg_lite_path_t path;
+
+/* Inner rectangle centered in the rounded rect: x in [64,192], y in [80,176]. */
+static uint8_t inner_cmd[] = {
+    VLC_OP_MOVE,
+    VLC_OP_LINE,                 /* top edge */
+    VLC_OP_LINE,                 /* right edge */
+    VLC_OP_LINE,                 /* bottom edge */
+    VLC_OP_CLOSE,                /* close back to the MOVE point */
+    VLC_OP_END
+};
+
+static float inner_data[] = {
+    64.0f,  80.0f,               /* MOVE  */
+    192.0f, 80.0f,               /* LINE  */
+    192.0f, 176.0f,              /* LINE  */
+    64.0f,  176.0f               /* LINE  */
+};
 
 void cleanup(void)
 {
@@ -94,7 +112,9 @@ int main(int argc, const char *argv[])
 
     data_size = vg_lite_get_path_length(rect_cmd, sizeof(rect_cmd), VG_LITE_FP32);
 
-    /* Frame 0: identity, BLEND_NONE, solid green fill on blue background. */
+    /* Frame 0: identity, BLEND_NONE, solid green fill on blue background,
+     * then a plain red rectangle drawn in the middle (same render pass
+     * sequence, second vg_lite_draw call). */
     CHECK_ERROR(vg_lite_clear(fb, NULL, 0xFFFF0000));
     snprintf(filename, sizeof(filename), "roundrect0.png");
 
@@ -107,6 +127,24 @@ int main(int argc, const char *argv[])
                                     sizeof(rect_cmd)));
     CHECK_ERROR(vg_lite_draw(fb, &path, VG_LITE_FILL_EVEN_ODD, &matrix,
                               VG_LITE_BLEND_NONE, 0xFF00FF00));
+
+    {
+        uint32_t inner_size = vg_lite_get_path_length(inner_cmd,
+                                                      sizeof(inner_cmd),
+                                                      VG_LITE_FP32);
+        vg_lite_path_t inner_path;
+        memset(&inner_path, 0, sizeof(vg_lite_path_t));
+        vg_lite_init_path(&inner_path, VG_LITE_FP32, VG_LITE_HIGH, inner_size,
+                          NULL, 0.0f, 0.0f, 0.0f, 0.0f);
+        inner_path.path = malloc(inner_size);
+        CHECK_ERROR(vg_lite_append_path(&inner_path, inner_cmd, inner_data,
+                                        sizeof(inner_cmd)));
+        CHECK_ERROR(vg_lite_draw(fb, &inner_path, VG_LITE_FILL_EVEN_ODD,
+                                  &matrix, VG_LITE_BLEND_NONE, 0xFF0000FF));
+        vg_lite_clear_path(&inner_path);
+        free(inner_path.path);
+        inner_path.path = NULL;
+    }
     CHECK_ERROR(vg_lite_finish());
     vg_lite_save_png(filename, fb);
     printf("Saved %s\n", filename);
