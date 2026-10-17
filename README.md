@@ -197,21 +197,35 @@ Tiled buffers: `vg_lite_allocate` with `buffer->tiled = VG_LITE_TILED` (single-p
 
 ## Geometry Dump & Visualizer
 
-Optional debugging tooling for `vg_lite_draw` path rendering (tessellation output):
+Optional debugging tooling for `vg_lite_draw` path rendering (tessellation output) and `vg_lite_blit` rasterized geometry:
 
 1. **Dump** — set `VGLITE_DUMP_GEOMETRY` before running a test:
    - unset/empty: inactive (zero overhead)
    - `1`/`on`: records appended to `<dumpdir>/geometry_dump.txt`
    - `<name>`: records appended to `<dumpdir>/<name>`
 
-   Each record contains the post-transform tessellation result of one draw call (`fill`/`pattern`/`radial`/`grad` call site): vertices (`V`), triangle indices (`T`), the cover-pass oriented quad (`C`, path-bbox corners transformed by the user matrix — exactly what the shader's cover pass rasterizes), its axis-aligned envelope (`B`), and the target framebuffer size (`F`).
+   Each draw call appends a `DRAW` record with the post-transform tessellation result of one draw call (`fill`/`pattern`/`radial`/`grad` call site): vertices (`V`), triangle indices (`T`), the cover-pass oriented quad (`C`, path-bbox corners transformed by the user matrix — exactly what the shader's cover pass rasterizes), its axis-aligned envelope (`B`), and the target framebuffer size (`F`).
+
+   Each blit call appends a `BLIT` record with the geometry actually rasterized, in destination pixel space (y-down, 1:1 with the framebuffer):
+   - `BLIT <seq> obb` — the 4 source corners (0,0)(w,0)(w,h)(0,h) transformed by the blit matrix (same math as `compute_blit_obb`, before NDC conversion): `V 4` + `T 2` (quad as triangles 0-1-2 / 2-1-3), `C` = the same 4 corners, `B` = their AABB.
+   - `BLIT <seq> fullscreen` — the fullscreen triangle's corners mapped back from NDC to pixels: `V 3` + `T 1 0 1 2`, `C` = the 4 screen corners, `B` = the full target.
+
+   `DRAW` and `BLIT` records share one increasing sequence counter and interleave in the same dump file.
 
 2. **Visualizer** — `geom_visualizer <dump_file> [output.png] [selection]` (pure C99, builds on Linux/Windows):
    - `all` (default): all records aggregated into one PNG
    - `each`: one PNG per record (`<base>_<seq>.png`)
-   - list, e.g. `1,3` or `1-2`: only those DRAW records aggregated
+   - list, e.g. `1,3` or `1-2`: only those records (DRAW or BLIT) aggregated
+   - `blit`: only BLIT records aggregated (DRAW records skipped)
 
-   Canvas size comes from the `F` line with 1:1 coordinate-to-pixel mapping, so the PNG aligns pixel-perfect with the test's own framebuffer output (triangles translucent + wireframe, AABB orange dashed, cover quad yellow, vertices white dots).
+   Canvas size comes from the `F` line with 1:1 coordinate-to-pixel mapping, so the PNG aligns pixel-perfect with the test's own framebuffer output (triangles translucent + wireframe, AABB orange dashed, cover quad yellow, vertices white dots). For BLIT records the triangle fill/wireframe shows the rasterized blit area and the yellow quad the OBB (or screen) corners.
+
+3. **One-command blit visualization** — `tests/run_blit_vis.ps1` (Windows PowerShell) runs a single test with geometry dumping enabled (lavapipe ICD set automatically if unset), then renders only that run's BLIT records into one PNG:
+   ```
+   powershell -File tests/run_blit_vis.ps1 -Test test_blit_switch [-OutDir <dir>]
+   ```
+   The PNG lands at a predictable path next to the test exe: `build/tests/Debug/<test>_blit_vis.png` (pass `-OutDir` to redirect). The script deletes stale `geometry_dump.txt` files first so the PNG is guaranteed to show only this run's blit OBBs, and prints the absolute PNG and dump paths on success.
+   On Linux use `tests/run_blit_vis.sh` (bash equivalent: `tests/run_blit_vis.sh -Test <name> [-OutDir <dir>]`, or positional `tests/run_blit_vis.sh <name>`; `RUN_BLIT_VIS_ROOT` overrides the repo root). It never sets `VK_DRIVER_FILES` itself — for a software driver (lavapipe/swiftshader) export it before running.
 
 ## Expected Buffer Tracker
 
