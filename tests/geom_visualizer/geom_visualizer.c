@@ -7,16 +7,24 @@
  * selection:
  *   all            all records aggregated into one PNG (default)
  *   each           one PNG per record (<out base>_<seq>.png)
- *   list           comma-separated DRAW sequence numbers and/or inclusive
- *                  ranges, e.g. "2" or "1,3" or "1-2" or "1,3-4" - only
- *                  those records are aggregated into one PNG
+ *   list           comma-separated record (DRAW or BLIT) sequence numbers
+ *                  and/or inclusive ranges, e.g. "2" or "1,3" or "1-2" or
+ *                  "1,3-4" - only those records are aggregated into one PNG
+ *   blit           only BLIT records are aggregated into one PNG
+ *                  (DRAW records are skipped entirely)
  *
  * Reads the text record format produced by src/geom_dump.c:
  *   DRAW <seq> <entry_name>
+ *   BLIT <seq> obb|fullscreen
  *   F <fb_width> <fb_height>
  *   V <vertex_count> x0 y0 x1 y1 ...
  *   T <tri_count> i0 i1 i2 i0 i1 i2 ...
  *   B <min_x> <min_y> <max_x> <max_y>
+ *
+ * DRAW records are vg_lite_draw tessellations; BLIT records are the actual
+ * rasterized geometry of vg_lite_blit calls (OBB quad or fullscreen
+ * triangle). Both record types share one increasing sequence number and may
+ * interleave in the same dump file.
  *
  * Renders all triangles (translucent fill + solid 1px wireframe), all AABBs
  * (dashed rectangle outlines) and all vertices (2x2 white dots) onto a dark
@@ -45,7 +53,8 @@
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    char name[64];
+    char name[64];       /* DRAW: entry name; BLIT: mode tag ("obb"/"fullscreen") */
+    char kind[8];        /* record type: "DRAW" or "BLIT" */
     unsigned int seq;
     int fb_w, fb_h;      /* F line: target framebuffer size (0 = absent) */
     float* verts;        /* 2 floats per vertex */
@@ -161,7 +170,7 @@ static int parse_dump(const char* path)
 
         if (line[0] == '\0') continue;
 
-        if (strncmp(line, "DRAW ", 5) == 0) {
+        if (strncmp(line, "DRAW ", 5) == 0 || strncmp(line, "BLIT ", 5) == 0) {
             /* flush previous record */
             if (have_cur) {
                 if (g_record_count >= g_record_cap) {
@@ -180,6 +189,8 @@ static int parse_dump(const char* path)
                 const char* q = parse_uint(line + 5, &seq);
                 const char* nm;
                 cur.seq = seq;
+                strncpy(cur.kind, (line[0] == 'D') ? "DRAW" : "BLIT",
+                        sizeof(cur.kind) - 1);
                 nm = skip_ws(q);
                 if (nm) {
                     strncpy(cur.name, nm, sizeof(cur.name) - 1);
@@ -299,10 +310,25 @@ static int parse_dump(const char* path)
 /* Selection modes */
 enum { SEL_ALL = 0, SEL_EACH, SEL_LIST };
 
+/* Case-insensitive compare, C99 (no POSIX strcasecmp on MSVC). */
+static int spec_ieq(const char* a, const char* b)
+{
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca - 'A' + 'a');
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb - 'A' + 'a');
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
 /*
  * Parse a selection spec into a per-record "selected" bitmap.
  * Returns SEL_ALL / SEL_EACH / SEL_LIST, or -1 on hard error (nothing valid).
- * Numbers refer to DRAW sequence numbers (record .seq), not file order.
+ * Numbers refer to record (DRAW or BLIT) sequence numbers (record .seq),
+ * not file order. The token "blit" (case-insensitive) selects every BLIT
+ * record and skips DRAW records.
  */
 static int parse_selection(const char* spec, unsigned char** sel_out)
 {
@@ -319,6 +345,24 @@ static int parse_selection(const char* spec, unsigned char** sel_out)
     if (!sel) {
         fprintf(stderr, "error: out of memory\n");
         return -1;
+    }
+
+    /* "blit": select all BLIT records, skip DRAW records entirely */
+    if (spec_ieq(spec, "blit")) {
+        int rec;
+        for (rec = 0; rec < g_record_count; rec++) {
+            if (strcmp(g_records[rec].kind, "BLIT") == 0) {
+                sel[rec] = 1;
+                any = 1;
+            }
+        }
+        if (!any) {
+            fprintf(stderr, "error: dump contains no BLIT records\n");
+            free(sel);
+            return -1;
+        }
+        *sel_out = sel;
+        return SEL_LIST;
     }
 
     while (*p) {
@@ -680,7 +724,8 @@ static int render_records(const int* recs, int nrecs, const char* out_path)
 
     printf("records: %d, triangles: %d\n", nrecs, total_tris);
     if (nrecs == 1)
-        printf("draw: %u %s\n", g_records[recs[0]].seq, g_records[recs[0]].name);
+        printf("%s: %u %s\n", g_records[recs[0]].kind[0] ? g_records[recs[0]].kind : "DRAW",
+               g_records[recs[0]].seq, g_records[recs[0]].name);
     printf("bounds: [%.2f, %.2f] x [%.2f, %.2f]\n",
            (double)gminx, (double)gminy, (double)gmaxx, (double)gmaxy);
     printf("canvas: %dx%d\n", w, h);
@@ -705,7 +750,7 @@ int main(int argc, char** argv)
     if (argc < 2) {
         printf("geom_visualizer - render a VGLITE geometry dump as PNG(s)\n");
         printf("usage: geom_visualizer <dump_file> [output.png] [selection]\n");
-        printf("  selection: all (default) | each | list e.g. 2, 1,3, 1-2, 1,3-4\n");
+        printf("  selection: all (default) | each | blit (only BLIT records) | list e.g. 2, 1,3, 1-2, 1,3-4\n");
         return 0;
     }
 
