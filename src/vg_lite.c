@@ -2115,10 +2115,16 @@ blit_draw_setup:
             }
             geom_dump_blit(corners_px, 1, target->width, target->height, NULL);
         } else {
-            /* Map the fullscreen-triangle NDC corners back to pixel space */
-            for (int i = 0; i < 4; i++) {
-                corners_px[i * 2 + 0] = (default_corners[i * 2 + 0] + 1.0f) * 0.5f * (float)target->width;
-                corners_px[i * 2 + 1] = (default_corners[i * 2 + 1] + 1.0f) * 0.5f * (float)target->height;
+            /* The fullscreen triangle actually rasterized by blit.vert is
+             * NDC (-1,-1), (3,-1), (-1,3) (TRIANGLE_LIST, 3 verts).
+             * default_corners is the 4-corner OBB array and is NOT the
+             * triangle - map the real 3 positions back to pixel space. */
+            static const float fs_tri_ndc[6] = {
+                -1.0f, -1.0f,  3.0f, -1.0f,  -1.0f, 3.0f
+            };
+            for (int i = 0; i < 3; i++) {
+                corners_px[i * 2 + 0] = (fs_tri_ndc[i * 2 + 0] + 1.0f) * 0.5f * (float)target->width;
+                corners_px[i * 2 + 1] = (fs_tri_ndc[i * 2 + 1] + 1.0f) * 0.5f * (float)target->height;
             }
             geom_dump_blit(corners_px, 0, target->width, target->height, NULL);
         }

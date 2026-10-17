@@ -215,11 +215,14 @@ void geom_dump_blit(const float corners_px[8],
     fprintf(f, "F %d %d\n", dst_w, dst_h);
 
     if (use_obb) {
-        /* Quad as TRIANGLE_STRIP decomposition: triangles 0-1-2 and 2-1-3. */
+        /* Exactly what Vulkan rasterizes: blit_obb.vert emits the 4 corners
+         * (v0=src(0,0) v1=src(w,0) v2=src(w,h) v3=src(0,h)) as a
+         * TRIANGLE_STRIP in order v0,v3,v1,v2, which produces the two
+         * triangles (v0,v3,v1) and (v1,v3,v2) - diagonal v1-v3. */
         fprintf(f, "V 4 %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
                 corners_px[0], corners_px[1], corners_px[2], corners_px[3],
                 corners_px[4], corners_px[5], corners_px[6], corners_px[7]);
-        fprintf(f, "T 2 0 1 2 2 1 3\n");
+        fprintf(f, "T 2 0 3 1 1 3 2\n");
     } else {
         /* Fullscreen triangle: the 3 mapped pixel-space corners. */
         fprintf(f, "V 3 %.4f %.4f %.4f %.4f %.4f %.4f\n",

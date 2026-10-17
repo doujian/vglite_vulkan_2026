@@ -1484,3 +1484,14 @@ Net effect for MSRTSS clear->draw: 1 render pass, 0 copies (was 2 RP + 1 copy). 
 **Solution**: geom_dump now writes a C line with the 4 path-bbox corners transformed by the user matrix (exact same affine math as the cover pass) and B is the axis-aligned envelope of those corners; geom_visualizer parses C (backward compatible with old dumps) and draws it as a yellow solid oriented quad alongside the dashed orange AABB. Verified: DRAW 3 C corners form the rotated quad (90.83,6.78)-(251.57,99.58)-(165.17,249.22)-(4.43,156.42), B envelope [4.43,6.78]x[251.57,249.22]; identity-matrix records (DRAW 1/2/4) unchanged. Full matrix after change: 8 configs x 47/48 PASS (only pre-existing test_sft_blit).
 
 **Files**: src/geom_dump.c, src/geom_dump.h, tests/geom_visualizer/geom_visualizer.c
+
+
+## Geometry dump blit triangulation mirrored to Vulkan's actual rasterization
+
+**Symptom**: BLIT obb records dumped `T 2 0 1 2 2 1 3` (triangles {v0,v1,v2} + {v2,v1,v3}); those two triangles share the quad edge v1-v2 and use both diagonals, leaving a gap near v0 - the visualizer PNG showed a non-quad coverage. BLIT fullscreen records dumped a third triangle corner of (3,3) NDC (= (2w,2h) pixels) that Vulkan never rasterizes.
+
+**Root Cause**: the OBB pipeline renders the 4 corners as a TRIANGLE_STRIP in shader order v0,v3,v1,v2 (shaders/blit_obb.vert:40, topology set at vg_lite_vulkan.c:1571, drawn via vkCmdDraw(...,4,...) at vg_lite.c:2158), producing triangles (v0,v3,v1) and (v1,v3,v2) with diagonal v1-v3 - a different decomposition than the hardcoded dump indices. The fullscreen path (blit.vert:17-21, TRIANGLE_LIST, 3 verts) uses NDC (-1,-1),(3,-1),(-1,3), but the dump mapped the first 3 entries of default_corners (the 4-corner OBB array (-1,-1),(3,-1),(3,3),(-1,3)) - wrong third vertex.
+
+**Solution**: geom_dump.c OBB records now emit `T 2 0 3 1 1 3 2` = exactly the strip triangles (v0,v3,v1)/(v1,v3,v2); vg_lite.c fullscreen dump maps the real triangle NDC (-1,-1),(3,-1),(-1,3) to pixel space. Vulkan rendering untouched (CPU-side dump only). Also geom_visualizer: new `noaabb` CLI token suppresses the orange dashed AABB, and every rendered PNG gets a sidecar `<outpng-basename>.txt` with per-kind counts and per-record triangle counts. Verified on lavapipe (build/): test_scale 8/8 PASS (8 BLIT records, 16 triangles), test_rotate PASS, test_roundrect PASS with 'all' mode (4 DRAW records, 3087 triangles, DRAW path unaffected); noaabb removes 373 orange pixels -> 0; README Geometry Dump section updated.
+
+**Files**: src/geom_dump.c, src/vg_lite.c, tests/geom_visualizer/geom_visualizer.c, README.md
