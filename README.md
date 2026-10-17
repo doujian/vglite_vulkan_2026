@@ -207,16 +207,21 @@ Optional debugging tooling for `vg_lite_draw` path rendering (tessellation outpu
    Each draw call appends a `DRAW` record with the post-transform tessellation result of one draw call (`fill`/`pattern`/`radial`/`grad` call site): vertices (`V`), triangle indices (`T`), the cover-pass oriented quad (`C`, path-bbox corners transformed by the user matrix — exactly what the shader's cover pass rasterizes), its axis-aligned envelope (`B`), and the target framebuffer size (`F`).
 
    Each blit call appends a `BLIT` record with the geometry actually rasterized, in destination pixel space (y-down, 1:1 with the framebuffer):
-   - `BLIT <seq> obb` — the 4 source corners (0,0)(w,0)(w,h)(0,h) transformed by the blit matrix (same math as `compute_blit_obb`, before NDC conversion): `V 4` + `T 2` (quad as triangles 0-1-2 / 2-1-3), `C` = the same 4 corners, `B` = their AABB.
-   - `BLIT <seq> fullscreen` — the fullscreen triangle's corners mapped back from NDC to pixels: `V 3` + `T 1 0 1 2`, `C` = the 4 screen corners, `B` = the full target.
+   - `BLIT <seq> obb` — the 4 source corners (0,0)(w,0)(w,h)(0,h) transformed by the blit matrix (same math as `compute_blit_obb`, before NDC conversion): `V 4` + `T 2 0 3 1 1 3 2` — triangles (v0,v3,v1) and (v1,v3,v2), exactly what Vulkan rasterizes (`blit_obb.vert` feeds the 4 corners as a TRIANGLE_STRIP in order v0,v3,v1,v2; diagonal v1–v3), `C` = the same 4 corners, `B` = their AABB.
+   - `BLIT <seq> fullscreen` — the fullscreen triangle's corners mapped back from NDC to pixels: `V 3` + `T 1 0 1 2` (the real `blit.vert` triangle (-1,-1),(3,-1),(-1,3) in NDC), `C` = the 4 screen corners, `B` = the full target.
+
+   Per-record triangle count in any dump file = the first number after the `T` (e.g. `T 2 ...` = 2 triangles), so counts can be read straight from the dump without running the visualizer.
 
    `DRAW` and `BLIT` records share one increasing sequence counter and interleave in the same dump file.
 
-2. **Visualizer** — `geom_visualizer <dump_file> [output.png] [selection]` (pure C99, builds on Linux/Windows):
+2. **Visualizer** — `geom_visualizer <dump_file> [output.png] [selection] [noaabb]` (pure C99, builds on Linux/Windows):
    - `all` (default): all records aggregated into one PNG
    - `each`: one PNG per record (`<base>_<seq>.png`)
    - list, e.g. `1,3` or `1-2`: only those records (DRAW or BLIT) aggregated
    - `blit`: only BLIT records aggregated (DRAW records skipped)
+   - `noaabb`: optional flag token (case-insensitive), combinable with any selection token in any order (e.g. `... out.png blit noaabb`) — suppresses the orange dashed AABB rectangles. Default (absent) keeps drawing them.
+
+   Every rendered PNG also gets a sidecar summary `<outpng-basename>.txt` with per-kind counts (`DRAW records/triangles`, `BLIT records/triangles`), the total, and one line per selected record (`seq <n> <kind>: <triangles> triangles`). The same summary is printed to stdout.
 
    Canvas size comes from the `F` line with 1:1 coordinate-to-pixel mapping, so the PNG aligns pixel-perfect with the test's own framebuffer output (triangles translucent + wireframe, AABB orange dashed, cover quad yellow, vertices white dots). For BLIT records the triangle fill/wireframe shows the rasterized blit area and the yellow quad the OBB (or screen) corners.
 

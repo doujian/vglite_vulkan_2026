@@ -1,7 +1,7 @@
 /*
  * geom_visualizer - render a VGLITE geometry dump as one aggregated PNG
  *
- * Usage: geom_visualizer <dump_file> [output.png] [selection]
+ * Usage: geom_visualizer <dump_file> [output.png] [selection] [noaabb]
  * Default output: <dump_file minus extension>_vis.png
  *
  * selection:
@@ -12,6 +12,9 @@
  *                  "1,3-4" - only those records are aggregated into one PNG
  *   blit           only BLIT records are aggregated into one PNG
  *                  (DRAW records are skipped entirely)
+ *   noaabb         optional flag (case-insensitive, combinable with any
+ *                  selection token in any order): suppress the orange
+ *                  dashed AABB rectangles
  *
  * Reads the text record format produced by src/geom_dump.c:
  *   DRAW <seq> <entry_name>
@@ -71,6 +74,9 @@ static int g_record_count = 0;
 static int g_record_cap = 0;
 
 static int g_total_tris = 0;
+
+/* Option flags (set from extra CLI tokens, e.g. "noaabb"). */
+static int g_noaabb = 0;
 
 /* ------------------------------------------------------------------ */
 /* Parsing helpers                                                     */
@@ -687,7 +693,7 @@ static int render_records(const int* recs, int nrecs, const char* out_path)
             draw_line(&cv, cx, cy, ax, ay, col[0], col[1], col[2]);
         }
 
-        if (r->bbmaxx >= r->bbminx && r->bbmaxy >= r->bbminy) {
+        if (!g_noaabb && r->bbmaxx >= r->bbminx && r->bbmaxy >= r->bbminy) {
             int x0 = MAPX(r->bbminx);
             int y0 = MAPY(r->bbminy);
             int x1 = MAPX(r->bbmaxx);
@@ -722,6 +728,44 @@ static int render_records(const int* recs, int nrecs, const char* out_path)
         return -1;
     }
 
+    /* Sidecar summary next to the PNG: <outpng-basename>.txt with
+     * per-kind counts, total, and one line per selected record. */
+    {
+        char side[1024];
+        FILE* sf;
+        int draw_rec = 0, blit_rec = 0, draw_tri = 0, blit_tri = 0;
+        size_t nlen = strlen(out_path);
+
+        for (k = 0; k < nrecs; k++) {
+            const Record* r = &g_records[recs[k]];
+            if (strcmp(r->kind, "BLIT") == 0) { blit_rec++; blit_tri += r->idx_count / 3; }
+            else                             { draw_rec++; draw_tri += r->idx_count / 3; }
+        }
+
+        if (snprintf(side, sizeof(side), "%s", out_path) >= (int)sizeof(side))
+            side[sizeof(side) - 1] = '\0';
+        if (nlen > 4 && strcmp(side + strlen(side) - 4, ".png") == 0)
+            side[strlen(side) - 4] = '\0';
+        strcat(side, ".txt");
+
+        sf = fopen(side, "w");
+        if (sf) {
+            fprintf(sf, "records: %d, triangles: %d\n", nrecs, total_tris);
+            fprintf(sf, "DRAW records: %d, DRAW triangles: %d\n", draw_rec, draw_tri);
+            fprintf(sf, "BLIT records: %d, BLIT triangles: %d\n", blit_rec, blit_tri);
+            for (k = 0; k < nrecs; k++) {
+                const Record* r = &g_records[recs[k]];
+                fprintf(sf, "seq %u %s: %d triangles\n", r->seq,
+                        r->kind[0] ? r->kind : "DRAW", r->idx_count / 3);
+            }
+            fprintf(sf, "canvas: %dx%d\n", w, h);
+            fclose(sf);
+            printf("summary: %s\n", side);
+        } else {
+            fprintf(stderr, "warning: cannot write sidecar '%s'\n", side);
+        }
+    }
+
     printf("records: %d, triangles: %d\n", nrecs, total_tris);
     if (nrecs == 1)
         printf("%s: %u %s\n", g_records[recs[0]].kind[0] ? g_records[recs[0]].kind : "DRAW",
@@ -749,8 +793,11 @@ int main(int argc, char** argv)
 
     if (argc < 2) {
         printf("geom_visualizer - render a VGLITE geometry dump as PNG(s)\n");
-        printf("usage: geom_visualizer <dump_file> [output.png] [selection]\n");
+        printf("usage: geom_visualizer <dump_file> [output.png] [selection] [noaabb]\n");
         printf("  selection: all (default) | each | blit (only BLIT records) | list e.g. 2, 1,3, 1-2, 1,3-4\n");
+        printf("  noaabb:   optional flag token (case-insensitive), may be combined with a\n");
+        printf("            selection token in any order - suppresses the orange dashed AABB\n");
+        printf("            rectangles (default: AABBs are drawn)\n");
         return 0;
     }
 
@@ -759,7 +806,14 @@ int main(int argc, char** argv)
         fprintf(stderr, "error: no usable records in '%s'\n", dump_path);
         return 1;
     }
-    if (argc >= 4) sel_spec = argv[3];
+    /* Extra tokens (argv[3..]): "noaabb" (case-insensitive) sets the flag,
+     * any other token is the selection spec (last one wins). */
+    for (i = 3; i < argc; i++) {
+        if (spec_ieq(argv[i], "noaabb"))
+            g_noaabb = 1;
+        else
+            sel_spec = argv[i];
+    }
 
     /* default output base: <dump minus extension>_vis */
     {
