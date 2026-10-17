@@ -10,6 +10,7 @@
 
 #include "vg_lite_math.h"
 #include "shader_loader.h"
+#include "geom_dump.h"
 
 /* Global pointer to the buffer with a pending fullscreen clear.
  * Set by vg_lite_clear, consumed by blit/draw, flushed by finish/read_ptr.
@@ -2094,7 +2095,35 @@ blit_draw_setup:
         compute_blit_obb(matrix, source->width, source->height,
                          target->width, target->height, pc.corners);
     }
-    
+
+    /* Geometry dump: pure CPU-side snapshot of the rasterized geometry in
+     * destination pixel space. No Vulkan state is touched. */
+    if (geom_dump_active()) {
+        float corners_px[8];
+        if (g_vk_ctx.use_obb_blit) {
+            /* Same corner transform as compute_blit_obb, pre-NDC (pixel space) */
+            float m = 0.0f;
+            float corners_src[4][2] = {
+                {-m, -m}, {(float)source->width + m, -m},
+                {(float)source->width + m, (float)source->height + m},
+                {-m, (float)source->height + m}
+            };
+            for (int i = 0; i < 4; i++) {
+                float cxs = corners_src[i][0], cys = corners_src[i][1];
+                corners_px[i * 2 + 0] = matrix->m[0][0] * cxs + matrix->m[0][1] * cys + matrix->m[0][2];
+                corners_px[i * 2 + 1] = matrix->m[1][0] * cxs + matrix->m[1][1] * cys + matrix->m[1][2];
+            }
+            geom_dump_blit(corners_px, 1, target->width, target->height, NULL);
+        } else {
+            /* Map the fullscreen-triangle NDC corners back to pixel space */
+            for (int i = 0; i < 4; i++) {
+                corners_px[i * 2 + 0] = (default_corners[i * 2 + 0] + 1.0f) * 0.5f * (float)target->width;
+                corners_px[i * 2 + 1] = (default_corners[i * 2 + 1] + 1.0f) * 0.5f * (float)target->height;
+            }
+            geom_dump_blit(corners_px, 0, target->width, target->height, NULL);
+        }
+    }
+
     /* Single push: 80B covering vertex (matrix+corners) + fragment (color/im_mode/flags) */
     vkCmdPushConstants(g_vk_ctx.cmd_buf, g_vk_ctx.native_pipeline_layout,
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);

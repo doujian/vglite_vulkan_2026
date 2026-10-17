@@ -14,6 +14,10 @@
 /* Cached activation state: 0 = unchecked, 1 = off, 2 = on */
 static int g_geom_dump_state = 0;
 
+/* Shared incrementing record counter for DRAW and BLIT records: both record
+ * types get unique increasing sequence numbers in one dump file. */
+static unsigned int g_geom_dump_seq = 0;
+
 static int geom_dump_enabled(void)
 {
     if (g_geom_dump_state == 0) {
@@ -50,35 +54,46 @@ static int geom_dump_default_name(void)
     return 0;
 }
 
-void geom_dump_tessellation(const TessGeometry* geom,
-                             const vg_lite_matrix_t* matrix,
-                             int fb_width, int fb_height,
-                             const char* entry_name)
+int geom_dump_active(void)
 {
-    static unsigned int seq = 0;      /* incrementing record counter, starts at 1 */
+    return geom_dump_enabled();
+}
+
+/* Resolve the dump file path (env-selected name or default) and open it for
+ * append. Returns NULL when the file cannot be opened. */
+static FILE* geom_dump_open(char* outpath, size_t cap)
+{
+    const char* envval = getenv("VGLITE_DUMP_GEOMETRY");
+
+    if (!envval) envval = "";
+
+    if (geom_dump_default_name()) {
+        snprintf(outpath, cap, "%s/%s",
+                 vg_lite_dump_dir(), "geometry_dump.txt");
+    } else {
+        snprintf(outpath, cap, "%s/%s",
+                 vg_lite_dump_dir(), envval);
+    }
+
+    return fopen(outpath, "a");
+}
+
+void geom_dump_tessellation(const TessGeometry* geom,
+                              const vg_lite_matrix_t* matrix,
+                              int fb_width, int fb_height,
+                              const char* entry_name)
+{
     char outpath[512];
-    const char* envval;
     FILE* f;
     int i;
 
     if (!geom_dump_enabled()) return;
     if (!geom) return;
 
-    envval = getenv("VGLITE_DUMP_GEOMETRY");
-    if (!envval) envval = "";
-
-    if (geom_dump_default_name()) {
-        snprintf(outpath, sizeof(outpath), "%s/%s",
-                 vg_lite_dump_dir(), "geometry_dump.txt");
-    } else {
-        snprintf(outpath, sizeof(outpath), "%s/%s",
-                 vg_lite_dump_dir(), envval);
-    }
-
-    f = fopen(outpath, "a");
+    f = geom_dump_open(outpath, sizeof(outpath));
     if (!f) return;
 
-    seq++;
+    g_geom_dump_seq++;
 
     /* Cover-pass-consistent snapshot: the pipeline's cover pass transforms
      * the 4 corners of the path-space bbox by the user matrix and uses the
@@ -129,7 +144,7 @@ void geom_dump_tessellation(const TessGeometry* geom,
             }
         }
 
-        fprintf(f, "DRAW %u %s\n", seq, entry_name ? entry_name : "?");
+        fprintf(f, "DRAW %u %s\n", g_geom_dump_seq, entry_name ? entry_name : "?");
         fprintf(f, "F %d %d\n", fb_width, fb_height);
 
         fprintf(f, "V %d", geom->vertex_count);
@@ -155,6 +170,69 @@ void geom_dump_tessellation(const TessGeometry* geom,
 
         free(tx);
     }
+
+    fclose(f);   /* close after each record: crash-safe */
+}
+
+void geom_dump_blit(const float corners_px[8],
+                    int use_obb,
+                    int dst_w, int dst_h,
+                    const char* entry_name)
+{
+    char outpath[512];
+    FILE* f;
+    float cx[8];   /* C line corners, 4 x (x,y) */
+    float minx, miny, maxx, maxy;
+    int c;
+
+    if (!geom_dump_enabled()) return;
+
+    f = geom_dump_open(outpath, sizeof(outpath));
+    if (!f) return;
+
+    g_geom_dump_seq++;
+
+    /* C line: OBB mode -> the 4 transformed source corners themselves;
+     * fullscreen mode -> the 4 screen corners. */
+    if (use_obb) {
+        for (c = 0; c < 8; c++) cx[c] = corners_px[c];
+    } else {
+        cx[0] = 0.0f;        cx[1] = 0.0f;
+        cx[2] = (float)dst_w; cx[3] = 0.0f;
+        cx[4] = (float)dst_w; cx[5] = (float)dst_h;
+        cx[6] = 0.0f;        cx[7] = (float)dst_h;
+    }
+    minx = maxx = cx[0]; miny = maxy = cx[1];
+    for (c = 1; c < 4; c++) {
+        if (cx[c * 2]     < minx) minx = cx[c * 2];
+        if (cx[c * 2]     > maxx) maxx = cx[c * 2];
+        if (cx[c * 2 + 1] < miny) miny = cx[c * 2 + 1];
+        if (cx[c * 2 + 1] > maxy) maxy = cx[c * 2 + 1];
+    }
+
+    fprintf(f, "BLIT %u %s\n", g_geom_dump_seq,
+            entry_name ? entry_name : (use_obb ? "obb" : "fullscreen"));
+    fprintf(f, "F %d %d\n", dst_w, dst_h);
+
+    if (use_obb) {
+        /* Quad as TRIANGLE_STRIP decomposition: triangles 0-1-2 and 2-1-3. */
+        fprintf(f, "V 4 %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                corners_px[0], corners_px[1], corners_px[2], corners_px[3],
+                corners_px[4], corners_px[5], corners_px[6], corners_px[7]);
+        fprintf(f, "T 2 0 1 2 2 1 3\n");
+    } else {
+        /* Fullscreen triangle: the 3 mapped pixel-space corners. */
+        fprintf(f, "V 3 %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                corners_px[0], corners_px[1],
+                corners_px[2], corners_px[3],
+                corners_px[4], corners_px[5]);
+        fprintf(f, "T 1 0 1 2\n");
+    }
+
+    fprintf(f, "C %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
+            cx[0], cx[1], cx[2], cx[3], cx[4], cx[5], cx[6], cx[7]);
+
+    fprintf(f, "B %.4f %.4f %.4f %.4f\n", minx, miny, maxx, maxy);
 
     fclose(f);   /* close after each record: crash-safe */
 }
