@@ -20,6 +20,7 @@ layout(push_constant) uniform PatternPushConstants {
     int   pattern_width;
     int   pattern_height;
     int   blend_mode;
+    uint  color;
 } pc;
 
 layout(set = 0, binding = 0) uniform sampler2D pattern_texture;
@@ -61,19 +62,35 @@ vec2 apply_pattern_mode(vec2 uv)
     return uv;
 }
 
+/* vg_lite_color_t = 0xAABBGGRR: R in the lower 8 bits, then G, B, alpha in
+ * the upper 8 bits (same helper as pattern.vert). */
+vec4 unpackColorARGB(uint c)
+{
+    float a = float((c >> 24) & 0xFFu) / 255.0;
+    float b = float((c >> 16) & 0xFFu) / 255.0;
+    float g = float((c >>  8) & 0xFFu) / 255.0;
+    float r = float((c      ) & 0xFFu) / 255.0;
+    return vec4(r, g, b, a);
+}
+
 void main()
 {
     vec2 final_uv = apply_pattern_mode(pattern_uv);
-    
+
     /* For COLOR mode: check if outside pattern bounds */
     if (pc.pattern_mode == PATTERN_MODE_COLOR && !is_inside_pattern(pattern_uv)) {
-        /* Outside bounds: use pattern_color from push constants */
+        /* Outside bounds: use pattern_color from push constants (tint does
+         * not apply to the COLOR-mode fallback) */
         out_color = vert_color;
         return;
     }
-    
+
     /* Sample pattern texture */
     vec4 pattern_color = texture(pattern_texture, final_uv);
-    
-    out_color = pattern_color;
+
+    /* Tint: API (color) modulates the sampled texel. 0 = identity
+     * passthrough — legacy callers pass 0 and expect the untinted texel
+     * (compatibility baseline, 0 is NOT transparent black). */
+    out_color = (pc.color != 0u) ? pattern_color * unpackColorARGB(pc.color)
+                                 : pattern_color;
 }

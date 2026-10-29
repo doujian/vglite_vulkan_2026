@@ -1806,6 +1806,7 @@ void vg_lite_vulkan_destroy_pipelines(void)
     if (g_vk_ctx.pattern_vert_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.pattern_vert_shader, NULL); g_vk_ctx.pattern_vert_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.pattern_frag_shader) { vkDestroyShaderModule(g_vk_ctx.device, g_vk_ctx.pattern_frag_shader, NULL); g_vk_ctx.pattern_frag_shader = VK_NULL_HANDLE; }
     if (g_vk_ctx.pattern_stencil_pipeline) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.pattern_stencil_pipeline, NULL); g_vk_ctx.pattern_stencil_pipeline = VK_NULL_HANDLE; }
+    if (g_vk_ctx.pattern_stencil_pipeline_nz) { vkDestroyPipeline(g_vk_ctx.device, g_vk_ctx.pattern_stencil_pipeline_nz, NULL); g_vk_ctx.pattern_stencil_pipeline_nz = VK_NULL_HANDLE; }
     if (g_vk_ctx.pattern_cover_vbo) { vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo, NULL); g_vk_ctx.pattern_cover_vbo = VK_NULL_HANDLE; }
     if (g_vk_ctx.pattern_cover_vbo_mem) { vkFreeMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_vbo_mem, NULL); g_vk_ctx.pattern_cover_vbo_mem = VK_NULL_HANDLE; }
     if (g_vk_ctx.pattern_cover_ibo) { vkDestroyBuffer(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo, NULL); g_vk_ctx.pattern_cover_ibo = VK_NULL_HANDLE; }
@@ -1851,11 +1852,12 @@ void vg_lite_vulkan_init_pattern_pipeline(VkFormat format)
     g_vk_ctx.pattern_frag_shader = load_shader_module(g_vk_ctx.device, "pattern_frag");
 
     /* Push constant: mat3 path_matrix(48B) + mat3 pattern_matrix(48B) +
-     * pattern_mode(4B) + pattern_color(4B) + 4 ints(16B) + blend_mode(4B) = 124B */
+     * pattern_mode(4B) + pattern_color(4B) + 4 ints(16B) + blend_mode(4B) +
+     * tint color(4B) = 128B */
     VkPushConstantRange pc_range = {0};
     pc_range.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     pc_range.offset = 0;
-    pc_range.size = 124;
+    pc_range.size = 128;
 
     /* Binding 0: pattern texture (combined image sampler) */
     VkDescriptorSetLayoutBinding ds_binding = {0};
@@ -1950,6 +1952,20 @@ void vg_lite_vulkan_init_pattern_pipeline(VkFormat format)
 
     VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_vk_ctx.pattern_stencil_pipeline));
 
+    /* NON_ZERO winding variant: front +1 / back -1 over the full 8-bit stencil
+     * (writeMask 0x01 would fold the +/-1 count into a bit0 parity toggle,
+     * degenerating to even-odd). cullMode stays NONE so mirror matrices
+     * (negative determinant) keep the winding sign correct automatically.
+     * The matching cover pipeline switches to 8-bit masks in
+     * vg_lite_vulkan_get_pattern_cover_pipeline(). */
+    if (!g_vk_ctx.pattern_stencil_pipeline_nz) {
+        stencil_ds.front.passOp = VK_STENCIL_OP_INCREMENT_AND_WRAP;
+        stencil_ds.front.writeMask = 0xFF;
+        stencil_ds.back = stencil_ds.front;
+        stencil_ds.back.passOp = VK_STENCIL_OP_DECREMENT_AND_WRAP;
+        VK_CHECK(vkCreateGraphicsPipelines(g_vk_ctx.device, VK_NULL_HANDLE, 1, &gp_ci, NULL, &g_vk_ctx.pattern_stencil_pipeline_nz));
+    }
+
     vkDestroyRenderPass(g_vk_ctx.device, rp, NULL);
 
     /* Cover quad VBO: fullscreen triangle-list quad */
@@ -1991,11 +2007,12 @@ void vg_lite_vulkan_init_pattern_pipeline(VkFormat format)
     vkUnmapMemory(g_vk_ctx.device, g_vk_ctx.pattern_cover_ibo_mem);
 }
 
-VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group)
+VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group, int fill_rule)
 {
     for (int i = 0; i < g_vk_ctx.pattern_pipeline_cache_count; i++) {
         if (g_vk_ctx.pattern_pipeline_cache[i].format == format &&
-            g_vk_ctx.pattern_pipeline_cache[i].blend_group == blend_group)
+            g_vk_ctx.pattern_pipeline_cache[i].blend_group == blend_group &&
+            g_vk_ctx.pattern_pipeline_cache[i].mode == fill_rule)
             return g_vk_ctx.pattern_pipeline_cache[i].pipeline;
     }
     if (!g_vk_ctx.pattern_vert_shader) return VK_NULL_HANDLE;
@@ -2009,8 +2026,11 @@ VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_
     cover_ds.front.passOp = VK_STENCIL_OP_ZERO;
     cover_ds.front.depthFailOp = VK_STENCIL_OP_KEEP;
     cover_ds.front.compareOp = VK_COMPARE_OP_NOT_EQUAL;
-    cover_ds.front.compareMask = 0x01;
-    cover_ds.front.writeMask = 0x01;
+    /* EVEN_ODD tests only bit0 (INVERT parity); NON_ZERO must test the whole
+     * 8-bit winding count and the ZERO pass-op must clean all 8 bits. */
+    int nz = (fill_rule != 0);
+    cover_ds.front.compareMask = nz ? 0xFF : 0x01;
+    cover_ds.front.writeMask = nz ? 0xFF : 0x01;
     cover_ds.front.reference = 0;
     cover_ds.back = cover_ds.front;
 
@@ -2077,6 +2097,7 @@ VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_
         g_vk_ctx.pattern_pipeline_cache[g_vk_ctx.pattern_pipeline_cache_count].pipeline = pipeline;
         g_vk_ctx.pattern_pipeline_cache[g_vk_ctx.pattern_pipeline_cache_count].format = format;
         g_vk_ctx.pattern_pipeline_cache[g_vk_ctx.pattern_pipeline_cache_count].blend_group = blend_group;
+        g_vk_ctx.pattern_pipeline_cache[g_vk_ctx.pattern_pipeline_cache_count].mode = fill_rule;
         g_vk_ctx.pattern_pipeline_cache_count++;
     }
     return pipeline;

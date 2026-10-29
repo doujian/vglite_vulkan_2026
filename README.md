@@ -48,7 +48,7 @@ docs/vg_lite_draw.md     - vg_lite_draw API documentation
 - **vg_lite_init_path** - Programmatic path creation (bounding box, quality, format, data)
 - **vg_lite_draw_grad** - Linear gradient fill with dedicated Vulkan shaders
 - **vg_lite_draw_radial_grad** - Radial gradient fill
-- **vg_lite_draw_pattern** - Pattern image fill with transform and blend
+- **vg_lite_draw_pattern** - Pattern image fill with transform and blend; fill rules EVEN_ODD/NON_ZERO (non-zero via front/back stencil INCR/DECR, see docs/pattern_fillrule_color_design.md); `color` parameter tints the sampled texel (0 = identity)
 - **vg_lite_set_CLUT** - 256-entry color lookup table for INDEX_8 format
 - **Scissor clip** - vg_lite_set_scissor, vg_lite_scissor_rects (multi-rect), enable/disable
 - **Matrix ops** - identity, translate, scale, rotate
@@ -188,8 +188,9 @@ This allows shader modifications without recompiling C code �?just rebuild sha
 | test_uploadBatch | vg_lite_upload_buffers batch API: mixed 6-buffer batch (linear/tiled × formats), single staging + single submit, byte-exact download compare | PASS |
 | test_msaaSwitch | Runtime MSAA 2x/4x switching (vg_lite_set_msaa_samples): pipeline/attachment invalidation, draw across switches | PASS |
 | test_roundrect | Rounded-rect path fill (identity/rotate 30°+scale 0.8/translucent SRC_OVER) + inner-rect multi-path draw | PASS |
+| test_fillrule_pattern | draw_pattern fill_rule (EVEN_ODD/NON_ZERO: overlap/donut/triple-nesting/mirror) + color tint (0/identity/half), analytic point sampling | PASS |
 
-**Summary: 47 PASS / 1 FAIL**
+**Summary: 48 PASS / 1 FAIL**
 
 Note: on some machines test_gfx3 and test_imgIndex also fail locally (pre-existing, unrelated to current HEAD).
 

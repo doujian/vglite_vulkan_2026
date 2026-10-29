@@ -7,6 +7,7 @@
  * - pattern_color: color for COLOR mode (vg_lite_color_t, 0xAABBGGRR)
  * - pattern_width/height: pattern image dimensions
  * - blend_mode: blend mode enum
+ * - color: tint color multiplied into the sampled texel (0 = identity passthrough)
  */
 layout(push_constant) uniform PatternPushConstants {
     mat3  path_matrix;
@@ -18,6 +19,7 @@ layout(push_constant) uniform PatternPushConstants {
     int   pattern_width;
     int   pattern_height;
     int   blend_mode;
+    uint  color;
 } pc;
 
 layout(location = 0) in vec2 in_pos;

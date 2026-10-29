@@ -168,6 +168,10 @@ typedef struct {
     VkShaderModule pattern_vert_shader;
     VkShaderModule pattern_frag_shader;
     VkPipeline pattern_stencil_pipeline;
+    /* NON_ZERO winding variant: front INCREMENT_AND_WRAP / back DECREMENT_AND_WRAP,
+     * writeMask 0xFF (the LSB-masked even-odd pipeline would fold +/-1 into a
+     * bit0 parity toggle). See docs/pattern_fillrule_color_design.md */
+    VkPipeline pattern_stencil_pipeline_nz;
     VkBuffer pattern_cover_vbo;
     VkDeviceMemory pattern_cover_vbo_mem;
     VkBuffer pattern_cover_ibo;
@@ -306,7 +310,8 @@ vg_lite_error_t vg_lite_vulkan_set_render_target_no_msaa_ex(vg_lite_buffer_t *ta
 vg_lite_error_t vg_lite_vulkan_resolve_msaa_to_target(buffer_internal_t *internal);
 VkPipeline vg_lite_vulkan_get_pattern_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_init_pattern_pipeline(VkFormat format);
-VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group);
+/* fill_rule: 0 = EVEN_ODD (bit0 masks), 1 = NON_ZERO (8-bit winding masks) */
+VkPipeline vg_lite_vulkan_get_pattern_cover_pipeline(VkFormat format, int blend_group, int fill_rule);
 void vg_lite_vulkan_init_radial_pipeline(VkFormat format);
 VkPipeline vg_lite_vulkan_get_radial_cover_pipeline(VkFormat format, int blend_group);
 void vg_lite_vulkan_destroy_pipelines(void);

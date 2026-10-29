@@ -183,4 +183,7 @@ add_dependencies(test_clear_multi spirv_compilation)
 add_executable(test_roundrect roundrect/roundrect.c)
 add_dependencies(test_roundrect spirv_compilation)
 
+add_executable(test_fillrule_pattern fillrule_pattern/fillrule_pattern.c)
+add_dependencies(test_fillrule_pattern spirv_compilation)
+
 add_executable(geom_visualizer geom_visualizer/geom_visualizer.c)

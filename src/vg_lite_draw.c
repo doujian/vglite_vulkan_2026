@@ -768,8 +768,12 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
                                      vg_lite_color_t color,
                                      vg_lite_filter_t filter)
 {
-    (void)fill_rule; (void)color;
-    
+    /* fill_rule: NON_ZERO gets the INCR/DECR stencil pipeline (8-bit winding
+     * count); anything else keeps the legacy INVERT even-odd pipeline.
+     * color: tint modulated into the sampled texel in pattern.frag
+     * (0 = identity passthrough). See docs/pattern_fillrule_color_design.md */
+    int nonzero = (fill_rule == VG_LITE_FILL_NON_ZERO);
+
     if (!target || !path || !pattern_image) return VG_LITE_INVALID_ARGUMENT;
     if (!path->path || path->path_length == 0) return VG_LITE_INVALID_ARGUMENT;
     
@@ -980,7 +984,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     ws.pImageInfo = &img_info;
     vkUpdateDescriptorSets(g_vk_ctx.device, 1, &ws, 0, NULL);
 
-    /* Push constant struct: matches pattern.vert/frag layout (124B) */
+    /* Push constant struct: matches pattern.vert/frag layout (128B) */
     struct {
         float path_m[12];      /* mat3 as 3 vec4 columns (std140) */
         float pattern_m[12];   /* mat3 as 3 vec4 columns (std140) */
@@ -991,6 +995,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
         int pattern_width;
         int pattern_height;
         int blend_mode;
+        uint32_t color;        /* tint (0 = identity) */
     } pc_data = {0};
     
     /* Convert vg_lite pattern mode to shader internal mode:
@@ -1015,6 +1020,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     pc_data.pattern_width = pattern_image->width;
     pc_data.pattern_height = pattern_image->height;
     pc_data.blend_mode = (int)blend;
+    pc_data.color = color;
 
     /* Stencil pass: path_m = screen_to_ndc * path_matrix, pattern_m = pattern_inv */
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) {
@@ -1033,7 +1039,9 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     VkDeviceSize vbo_offset = 0;
     vkCmdBindVertexBuffers(g_vk_ctx.cmd_buf, 0, 1, &vbo, &vbo_offset);
     vkCmdBindIndexBuffer(g_vk_ctx.cmd_buf, ibo, 0, VK_INDEX_TYPE_UINT32);
-    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_vk_ctx.pattern_stencil_pipeline);
+    vkCmdBindPipeline(g_vk_ctx.cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      nonzero ? g_vk_ctx.pattern_stencil_pipeline_nz
+                              : g_vk_ctx.pattern_stencil_pipeline);
     vkCmdDrawIndexed(g_vk_ctx.cmd_buf, geom.index_count, 1, 0, 0, 0);
 
     /* Compute bbox NDC corners using path_combined matrix for cover pass */
@@ -1062,6 +1070,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
     pc_data.pattern_width = pattern_image->width;
     pc_data.pattern_height = pattern_image->height;
     pc_data.blend_mode = (int)blend;
+    pc_data.color = color;
     pc_data.path_m[0] = 1.0f;   /* identity col0 */
     pc_data.path_m[5] = 1.0f;   /* identity col1 */
     pc_data.path_m[10] = 1.0f;  /* identity col2 */
@@ -1073,7 +1082,7 @@ vg_lite_error_t vg_lite_draw_pattern(vg_lite_buffer_t *target,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc_data), &pc_data);
     
-    VkPipeline cover_pipeline = vg_lite_vulkan_get_pattern_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend));
+    VkPipeline cover_pipeline = vg_lite_vulkan_get_pattern_cover_pipeline(vkfmt, vg_lite_blend_to_group(blend), nonzero);
     if (!cover_pipeline) {
         tess_geometry_free(&geom);
         vlc_path_free(&vlc_path);
